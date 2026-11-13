@@ -1071,6 +1071,222 @@ router.post('/lc/issue',
 );
 
 /**
+ * POST /api/v1/banking/lc/standby/issue
+ * Issue Standby Letter of Credit (SBLC) - UCP 600 / ISP98
+ * Used for performance guarantees, advance payment guarantees, bid bonds
+ *
+ * REGISTRATION ORDER IS LOAD-BEARING: this route MUST stay above
+ * router.post('/lc/:lcID/issue') below. Express matches in registration
+ * order, and '/lc/:lcID/issue' would otherwise swallow this path with
+ * :lcID = "standby" — which is exactly what happened before this fix:
+ * the standby handler was unreachable, the regular LC-issue validator
+ * demanded `terms`, and with `terms` supplied the regular handler
+ * failed on-chain with "LC standby does not exist".
+ *
+ * LEDGER-FIRST (seq 12): IssueStandbyLC now exists in the chaincode
+ * and is called BEFORE the PG insert. A chaincode failure returns 500
+ * with no PG row — the old code swallowed the chaincode error ("using
+ * database only") and returned a PG-only 201 for an LC that did not
+ * exist on the ledger. The PG mirror stores the chain tx id.
+ */
+router.post('/lc/standby/issue',
+  authMiddleware,
+  requireRole(['BANKS', 'BANK_ADMIN']),
+  [
+    body('standbyLCNumber').notEmpty().withMessage('Standby LC number is required'),
+    body('contractId').notEmpty().withMessage('Contract ID is required'),
+    body('amount').isNumeric().withMessage('Amount must be numeric'),
+    body('currency').notEmpty().withMessage('Currency is required'),
+    body('expiryDate').notEmpty().withMessage('Expiry date is required'),
+    body('type').isIn(['PERFORMANCE', 'ADVANCE_PAYMENT', 'BID_BOND', 'FINANCIAL']).withMessage('Invalid standby LC type'),
+    body('purpose').notEmpty().withMessage('Purpose is required'),
+    body('beneficiary').notEmpty().withMessage('Beneficiary is required'),
+    body('applicant').notEmpty().withMessage('Applicant is required'),
+  ],
+  validateRequest,
+  async (req: Request, res: Response) => {
+    try {
+      const {
+        standbyLCNumber,
+        contractId,
+        amount,
+        currency,
+        expiryDate,
+        type,
+        purpose,
+        beneficiary,
+        applicant,
+        terms,
+        issuingBank,
+        advisingBank
+      } = req.body;
+      const user = (req as any).user;
+
+      logger.info(`[BANKING] Issuing Standby LC: ${standbyLCNumber}`);
+
+      const standbyId = `SBLC-${Date.now()}`;
+
+      // Duplicate-number pre-check BEFORE the chain write: the PG
+      // standby_lc_number UNIQUE constraint would otherwise fail only
+      // after the ledger doc exists, leaving a ledger doc with no PG row.
+      const existing = await dbService.get(
+        `SELECT standby_lc_id FROM standby_letters_of_credit WHERE standby_lc_number = $1`,
+        [standbyLCNumber]
+      );
+      if (existing) {
+        return res.status(409).json({
+          success: false,
+          error: {
+            code: 'DUPLICATE_STANDBY_LC',
+            message: `Standby LC number ${standbyLCNumber} already exists (${existing.standby_lc_id})`
+          },
+          timestamp: new Date().toISOString()
+        });
+      }
+
+      // Ledger first, signed as BanksMSP (the chaincode enforces the
+      // bank-MSP gate; the API pins the org the same way IssueLC does).
+      await fabricService.connectAsOrg('BanksMSP');
+      const chainResult = await fabricService.invokeChaincode('IssueStandbyLC', [
+        standbyId,
+        standbyLCNumber,
+        contractId,
+        amount.toString(),
+        currency,
+        expiryDate,
+        type,
+        purpose,
+        beneficiary,
+        applicant,
+        terms || '',
+        issuingBank || '',
+        advisingBank || ''
+      ], 'BanksMSP');
+
+      if (!chainResult.success) {
+        logger.error(`[BANKING] Standby LC chaincode issue failed for ${standbyLCNumber}: ${chainResult.error}`);
+        return res.status(500).json({
+          success: false,
+          error: {
+            code: 'STANDBY_LC_FAILED',
+            message: chainResult.error || 'Failed to issue standby LC on the ledger'
+          },
+          timestamp: new Date().toISOString()
+        });
+      }
+
+      // Mirror to Postgres only after the ledger write succeeded.
+      await dbService.run(`
+        INSERT INTO standby_letters_of_credit (
+          standby_lc_id, standby_lc_number, contract_id, amount, currency,
+          expiry_date, type, purpose, beneficiary, applicant, terms,
+          issuing_bank, advising_bank, issued_by, issue_date,
+          status, blockchain_tx_id, created_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, CURRENT_TIMESTAMP)
+      `, [
+        standbyId,
+        standbyLCNumber,
+        contractId,
+        amount,
+        currency,
+        expiryDate,
+        type,
+        purpose,
+        beneficiary,
+        applicant,
+        terms || 'Payable on first written demand with beneficiary statement',
+        issuingBank || user.organization,
+        advisingBank || '',
+        user.username,
+        new Date().toISOString(),
+        'ISSUED',
+        chainResult.txId || null
+      ]);
+
+      logger.info(`✅ [BANKING] Standby LC issued: ${standbyId} (tx ${chainResult.txId})`);
+
+      res.status(201).json({
+        success: true,
+        data: {
+          standbyLCId: standbyId,
+          standbyLCNumber,
+          type,
+          amount,
+          currency,
+          beneficiary,
+          applicant,
+          status: 'ISSUED',
+          issueDate: new Date().toISOString(),
+          expiryDate,
+          blockchainTxId: chainResult.txId
+        },
+        txId: chainResult.txId,
+        message: 'Standby Letter of Credit issued successfully',
+        timestamp: new Date().toISOString()
+      });
+
+    } catch (error: any) {
+      logger.error('[BANKING] Error issuing standby LC:', error);
+      res.status(500).json({
+        success: false,
+        error: { code: 'STANDBY_LC_FAILED', message: error.message || 'Failed to issue standby LC' },
+        timestamp: new Date().toISOString()
+      });
+    }
+  }
+);
+
+/**
+ * GET /api/v1/banking/lc/standby/:standbyId
+ * Read a Standby LC — ledger first, PG mirror as fallback.
+ * Registered here (above GET /lc/:lcID) for the same shadowing reason
+ * as the POST route above: '/lc/:lcID' would otherwise swallow
+ * '/lc/standby/<id>' with :lcID = "standby".
+ */
+router.get('/lc/standby/:standbyId',
+  authMiddleware,
+  async (req: Request, res: Response) => {
+    try {
+      const { standbyId } = req.params;
+      const ledger = await fabricService.getStandbyLC(standbyId);
+      if (ledger.success && ledger.data) {
+        return res.json({
+          success: true,
+          data: ledger.data,
+          source: 'blockchain',
+          timestamp: new Date().toISOString()
+        });
+      }
+      const pgRow = await dbService.get(
+        `SELECT * FROM standby_letters_of_credit WHERE standby_lc_id = $1 OR standby_lc_number = $1`,
+        [standbyId]
+      );
+      if (!pgRow) {
+        return res.status(404).json({
+          success: false,
+          error: { code: 'STANDBY_LC_NOT_FOUND', message: `Standby LC ${standbyId} does not exist` },
+          timestamp: new Date().toISOString()
+        });
+      }
+      return res.json({
+        success: true,
+        data: pgRow,
+        source: 'database',
+        ledgerError: ledger.error || undefined,
+        timestamp: new Date().toISOString()
+      });
+    } catch (error: any) {
+      logger.error('[BANKING] Error fetching standby LC:', error);
+      res.status(500).json({
+        success: false,
+        error: { code: 'STANDBY_LC_FETCH_FAILED', message: error.message || 'Failed to fetch standby LC' },
+        timestamp: new Date().toISOString()
+      });
+    }
+  }
+);
+
+/**
  * @swagger
  * /api/v1/banking/lc/{lcID}/issue:
  *   post:
@@ -4582,127 +4798,6 @@ router.post('/lc/:lcID/transfer',
       res.status(500).json({
         success: false,
         error: { code: 'TRANSFER_FAILED', message: 'Failed to transfer LC' },
-        timestamp: new Date().toISOString()
-      });
-    }
-  }
-);
-
-/**
- * POST /api/v1/banking/lc/standby/issue
- * Issue Standby Letter of Credit (SBLC) - UCP 600 / ISP98
- * Used for performance guarantees, advance payment guarantees, bid bonds
- */
-router.post('/lc/standby/issue',
-  authMiddleware,
-  requireRole(['BANKS', 'BANK_ADMIN']),
-  [
-    body('standbyLCNumber').notEmpty().withMessage('Standby LC number is required'),
-    body('contractId').notEmpty().withMessage('Contract ID is required'),
-    body('amount').isNumeric().withMessage('Amount must be numeric'),
-    body('currency').notEmpty().withMessage('Currency is required'),
-    body('expiryDate').notEmpty().withMessage('Expiry date is required'),
-    body('type').isIn(['PERFORMANCE', 'ADVANCE_PAYMENT', 'BID_BOND', 'FINANCIAL']).withMessage('Invalid standby LC type'),
-    body('purpose').notEmpty().withMessage('Purpose is required'),
-    body('beneficiary').notEmpty().withMessage('Beneficiary is required'),
-    body('applicant').notEmpty().withMessage('Applicant is required'),
-  ],
-  validateRequest,
-  async (req: Request, res: Response) => {
-    try {
-      const {
-        standbyLCNumber,
-        contractId,
-        amount,
-        currency,
-        expiryDate,
-        type,
-        purpose,
-        beneficiary,
-        applicant,
-        terms,
-        issuingBank,
-        advisingBank
-      } = req.body;
-      const user = (req as any).user;
-
-      logger.info(`[BANKING] Issuing Standby LC: ${standbyLCNumber}`);
-
-      const standbyId = `SBLC-${Date.now()}`;
-
-      // Store in database
-      const { DatabaseService } = await import('../services/databaseService');
-      const db = DatabaseService.getInstance();
-
-      await db.run(`
-        INSERT INTO standby_letters_of_credit (
-          standby_lc_id, standby_lc_number, contract_id, amount, currency,
-          expiry_date, type, purpose, beneficiary, applicant, terms,
-          issuing_bank, advising_bank, issued_by, issue_date,
-          status, created_at
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, CURRENT_TIMESTAMP)
-      `, [
-        standbyId,
-        standbyLCNumber,
-        contractId,
-        amount,
-        currency,
-        expiryDate,
-        type,
-        purpose,
-        beneficiary,
-        applicant,
-        terms || 'Payable on first written demand with beneficiary statement',
-        issuingBank || user.organization,
-        advisingBank || '',
-        user.username,
-        new Date().toISOString(),
-        'ISSUED'
-      ]);
-
-      // Record on blockchain (optional)
-      try {
-        await fabricService.invokeChaincode('IssueStandbyLC', [
-          standbyId,
-          standbyLCNumber,
-          contractId,
-          amount.toString(),
-          currency,
-          expiryDate,
-          type,
-          purpose,
-          beneficiary,
-          applicant
-        ]);
-      } catch (chaincodeError) {
-        logger.warn('[BANKING] Chaincode IssueStandbyLC not available, using database only');
-      }
-
-      logger.info(`✅ [BANKING] Standby LC issued: ${standbyId}`);
-
-      res.status(201).json({
-        success: true,
-        data: {
-          standbyLCId: standbyId,
-          standbyLCNumber,
-          type,
-          amount,
-          currency,
-          beneficiary,
-          applicant,
-          status: 'ISSUED',
-          issueDate: new Date().toISOString(),
-          expiryDate
-        },
-        message: 'Standby Letter of Credit issued successfully',
-        timestamp: new Date().toISOString()
-      });
-
-    } catch (error) {
-      logger.error('[BANKING] Error issuing standby LC:', error);
-      res.status(500).json({
-        success: false,
-        error: { code: 'STANDBY_LC_FAILED', message: 'Failed to issue standby LC' },
         timestamp: new Date().toISOString()
       });
     }

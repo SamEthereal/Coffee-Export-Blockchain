@@ -1100,10 +1100,10 @@ func (c *CoffeeContract) ConvertRetention(ctx contractapi.TransactionContextInte
 // path (SettlePayment), not here.
 // Called by PaymentService.releasePayment with (paymentID,
 // releaseAmount, releasedBy, releaseRef, releaseDate). The API
-// connects as NBEMSP: the release is an NBE action.
-// NOTE: needs a chaincode redeploy (seq 11) before the API can invoke
-// it; until then the API falls back to the PG-only release with a
-// warning (see paymentService.releasePayment).
+// connects as NBEMSP: the release is an NBE action. Deployed in
+// chaincode v2.3 seq 11 and invoked live by the API since then (the
+// transitional PG-only fallback in paymentService.releasePayment was
+// removed in c34201ff); there is no PG-only release path anymore.
 func (c *CoffeeContract) RecordRetentionRelease(ctx contractapi.TransactionContextInterface,
 	paymentID, releaseAmountStr, releasedBy, releaseRef, releaseDate string) error {
 	if err := ValidateID(paymentID, "paymentID"); err != nil {
