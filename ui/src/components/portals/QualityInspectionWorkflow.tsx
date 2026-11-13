@@ -31,6 +31,7 @@ import {
 import { AnimatedButton } from '@/components/modern';
 import { NotificationDialog } from '@/components/common/NotificationDialog';
 import { useNotification } from '@/hooks/useNotification';
+import { extractTxId } from '@/utils/txId';
 import api from '@/utils/api';
 
 // Transport Mode Type
@@ -221,7 +222,8 @@ export const QualityInspectionWorkflow: React.FC<QualityInspectionWorkflowProps>
         showSuccess(
           'Inspection Recorded',
           `Physical & cupping inspection completed for ${shipment.shipmentId}. Score: ${calculateTotalScore()}/1000 — ${getQualityGrade()}`,
-          'The inspection record is now on the blockchain. Go to the Quality Control tab → All Inspections to Approve or Reject this inspection and then issue the Export Permit.'
+          'The inspection record is now on the blockchain. Go to the Quality Control tab → All Inspections to Approve or Reject this inspection and then issue the Export Permit.',
+          extractTxId(response),
         );
         setStep('done');
       } else {
@@ -631,6 +633,9 @@ export const QualityInspectionWorkflow: React.FC<QualityInspectionWorkflowProps>
                 variant="contained"
                 onClick={handlePerformInspection}
                 disabled={loading || !inspectionForm.inspectorName}
+                loading={loading}
+                loadingLabel="Completing…"
+                ledgerWrite
                 startIcon={<Assignment />}
                 brandColor="#2e7d32"
               >
@@ -659,6 +664,7 @@ export const QualityInspectionWorkflow: React.FC<QualityInspectionWorkflowProps>
         type={notification.type}
         title={notification.title}
         message={notification.message}
+        txId={notification.txId}
         onClose={closeNotification}
       />
     </>

@@ -76,6 +76,7 @@ import {
   StatusChip,
 } from '@/components/shared/portal';
 import { CustomsInspection } from './CustomsInspection';
+import { extractTxId, shortTxId } from '@/utils/txId';
 import { CustomsClearedShipments } from './CustomsClearedShipments';
 import { DocumentUploadDialog } from './DocumentUploadDialog';
 import UserManagement from '@/components/admin/UserManagement';
@@ -881,6 +882,13 @@ ${solution}`);
     message: '',
     severity: 'success',
   });
+  // Customs' success surface is a Snackbar with a plain message string,
+  // so the ledger txId is appended to the message text (short form).
+  // Empty when the API returned no id.
+  const txSuffix = (res: unknown): string => {
+    const tx = extractTxId(res);
+    return tx ? ` Blockchain TX: ${shortTxId(tx)}` : '';
+  };
 
   // Auto-map exporter and shipment data for inspection scheduling
   const autoMapInspectionData = async (declaration: CustomsDeclaration) => {
@@ -1570,7 +1578,7 @@ ${inspectionForm.internalNotes ? '\n🔒 Internal Notes:\n' + inspectionForm.int
         // Show success message with shipping info
         setSnackbar({
           open: true,
-          message: `Declaration cleared! Clearance #${result.data.clearanceNumber}. ${result.data?.debug?.shipmentIdFound ? 'Shipment updated on blockchain.' : 'Warning: No shipment ID found!'} Navigate to Shipping Portal.`,
+          message: `Declaration cleared! Clearance #${result.data.clearanceNumber}. ${result.data?.debug?.shipmentIdFound ? 'Shipment updated on blockchain.' : 'Warning: No shipment ID found!'} Navigate to Shipping Portal.${txSuffix(result)}`,
           severity: 'success',
         });
         
@@ -1675,7 +1683,7 @@ ${rejectionForm.officerNotes ? '\n[INTERNAL NOTES - NOT VISIBLE TO EXPORTER]:\n'
         
         setSnackbar({
           open: true,
-          message: `Declaration rejected. Exporter notified with rejection details and appeal rights (${rejectionForm.appealDeadline} days).`,
+          message: `Declaration rejected. Exporter notified with rejection details and appeal rights (${rejectionForm.appealDeadline} days).${txSuffix(result)}`,
           severity: 'warning',
         });
         
@@ -1816,7 +1824,7 @@ ${rejectionForm.officerNotes ? '\n[INTERNAL NOTES - NOT VISIBLE TO EXPORTER]:\n'
         // Show professional success message
         setSnackbar({
           open: true,
-          message: `Declaration ${declarationId} submitted successfully. Status: SUBMITTED - Ready for inspection.`,
+          message: `Declaration ${declarationId} submitted successfully. Status: SUBMITTED - Ready for inspection.${txSuffix(result)}`,
           severity: 'success',
         });
         
@@ -2954,10 +2962,9 @@ ${rejectionForm.officerNotes ? '\n[INTERNAL NOTES - NOT VISIBLE TO EXPORTER]:\n'
             </GhostButton>
             <DangerButton
               brand="CUSTOMS"
-              onClick={() => {
-                if (!selectedDeclaration) return;
-                handleRejectDeclaration(selectedDeclaration.declarationId);
-              }}
+              loadingLabel="Rejecting…"
+              ledgerWrite
+              onClick={() => selectedDeclaration && handleRejectDeclaration(selectedDeclaration.declarationId)}
             >
               Confirm Rejection
             </DangerButton>
@@ -3191,10 +3198,9 @@ ${rejectionForm.officerNotes ? '\n[INTERNAL NOTES - NOT VISIBLE TO EXPORTER]:\n'
             </GhostButton>
             <PrimaryButton
               brand="CUSTOMS"
-              onClick={() => {
-                if (!selectedDeclaration) return;
-                handleClearDeclaration(selectedDeclaration.declarationId);
-              }}
+              loadingLabel="Authorizing clearance…"
+              ledgerWrite
+              onClick={() => selectedDeclaration && handleClearDeclaration(selectedDeclaration.declarationId)}
             >
               Authorize Clearance
             </PrimaryButton>
@@ -3297,13 +3303,15 @@ ${rejectionForm.officerNotes ? '\n[INTERNAL NOTES - NOT VISIBLE TO EXPORTER]:\n'
                       <Typography variant="body2" color="textSecondary" sx={{ mb: 2 }}>
                         Duty has not been calculated for this declaration yet.
                       </Typography>
-                      <Button
-                        variant="outlined"
+                      <SecondaryButton
+                        brand="CUSTOMS"
+                        loading={dutyCalcLoading}
+                        loadingLabel="Calculating…"
                         disabled={dutyCalcLoading}
                         onClick={() => selectedDeclaration && handleCalculateDuty(selectedDeclaration)}
                       >
-                        {dutyCalcLoading ? 'Calculating…' : 'Calculate Duty (API)'}
-                      </Button>
+                        Calculate Duty (API)
+                      </SecondaryButton>
                     </Box>
                   )}
                   <Grid container spacing={2} sx={{ mt: 1 }}>
@@ -3368,13 +3376,15 @@ ${rejectionForm.officerNotes ? '\n[INTERNAL NOTES - NOT VISIBLE TO EXPORTER]:\n'
                     />
                   </Grid>
                   <Grid item xs={12}>
-                    <Button
-                      variant="outlined"
+                    <SecondaryButton
+                      brand="CUSTOMS"
+                      loadingLabel="Recording…"
+                      ledgerWrite
                       onClick={() => selectedDeclaration && handleRecordValuation(selectedDeclaration)}
                       disabled={!valuationForm.adjustedValue}
                     >
                       Record Valuation (API)
-                    </Button>
+                    </SecondaryButton>
                     {valuationResult && (
                       <Alert severity="success" sx={{ mt: 2 }}>
                         <Typography variant="body2">{valuationResult}</Typography>
@@ -3617,11 +3627,9 @@ ${rejectionForm.officerNotes ? '\n[INTERNAL NOTES - NOT VISIBLE TO EXPORTER]:\n'
             </GhostButton>
             <PrimaryButton
               brand="CUSTOMS"
-              onClick={() => {
-                if (selectedDeclaration) {
-                  handleScheduleInspection(selectedDeclaration.declarationId);
-                }
-              }}
+              loadingLabel="Scheduling…"
+              ledgerWrite
+              onClick={() => selectedDeclaration && handleScheduleInspection(selectedDeclaration.declarationId)}
             >
               Schedule Inspection
             </PrimaryButton>
@@ -3897,6 +3905,8 @@ ${rejectionForm.officerNotes ? '\n[INTERNAL NOTES - NOT VISIBLE TO EXPORTER]:\n'
             </GhostButton>
             <PrimaryButton
               brand="CUSTOMS"
+              loadingLabel="Submitting…"
+              ledgerWrite
               onClick={handleSubmitNewDeclaration}
               disabled={
                 !newDeclarationForm.shipmentId ||

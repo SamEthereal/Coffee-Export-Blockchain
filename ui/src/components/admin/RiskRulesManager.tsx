@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Box, TextField, Button, Typography, Alert } from '@mui/material';
 import api from '@/utils/api';
+import { AnimatedButton } from '@/components/modern';
 
 const RiskRulesManager: React.FC = () => {
   const [rules, setRules] = useState<any>({ highValueThreshold: 50000, hsPrefixesMedium: ['07','08','09'] });
@@ -74,7 +75,7 @@ const RiskRulesManager: React.FC = () => {
       />
 
       <Box sx={{ display: 'flex', gap: 1 }}>
-        <Button variant="contained" onClick={handleSave} disabled={loading}>Save</Button>
+        <AnimatedButton variant="contained" onClick={handleSave} disabled={loading} loading={loading} loadingLabel="Saving…">Save</AnimatedButton>
         <Button variant="outlined" onClick={() => { setRules({ highValueThreshold: 50000, hsPrefixesMedium: ['07','08','09'] }); }}>Reset</Button>
       </Box>
     </Box>

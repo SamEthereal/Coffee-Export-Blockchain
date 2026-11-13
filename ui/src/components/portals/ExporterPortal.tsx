@@ -112,6 +112,7 @@ import {
 } from '@/components/shared/portal';
 import { NotificationDialog } from '@/components/common/NotificationDialog';
 import { useNotification } from '@/hooks/useNotification';
+import { extractTxId } from '@/utils/txId';
 import { useTabFromQuery } from '@/hooks/useTabFromQuery';
 import AuditTrailViewer from './AuditTrailViewer';
 import { DocumentValidationDialog } from './DocumentValidationDialog';
@@ -1350,7 +1351,8 @@ const ExporterPortal: React.FC = () => {
           'Contract Resubmitted',
           `Contract ${contract.contractId} is back with ECTA for re-evaluation (status REGISTERED).`,
           'You will be notified once ECTA reviews it. The contract keeps its original ID.'
-        );
+        ,
+          extractTxId(result));
         loadExporterData();
       } else {
         showError('Resubmit Failed', result.error?.message || 'Failed to resubmit contract');
@@ -1639,7 +1641,8 @@ const ExporterPortal: React.FC = () => {
           isUpdate
             ? `Contract ID: ${contractId}\nThe updated information has been saved and will be reflected in the system.`
             : `Contract ID: ${contractId}\n${correctingRejectedContractId ? `Replaces: ${correctingRejectedContractId}\n` : ''}\nNext Steps:\n1. ECTA will review compliance\n2. NBE will approve for forex allocation\n3. You can track progress in the "My Contracts" tab`
-        );
+        ,
+          extractTxId(result));
         setCreateContractDialogOpen(false);
         setNewContract({
           buyerName: '',
@@ -1823,7 +1826,8 @@ const ExporterPortal: React.FC = () => {
           `3. If quality passes (Grade 1-5) → ECTA approves & issues Export Permit\n` +
           `4. You can then proceed to: Customs Declaration → Shipping → Payment Settlement\n\n` +
           `Track progress in the "Shipments" tab. You'll be notified when inspection is complete.`
-        );
+        ,
+          extractTxId(result));
         setCreateShipmentDialogOpen(false);
         setShipmentJustCreated(true); // Hide workflow alert during reload
         setNewShipment({
@@ -1986,7 +1990,8 @@ const ExporterPortal: React.FC = () => {
           '• EUDR compliance verified for EU destinations\n' +
           '• Customs clearance issued upon approval\n\n' +
           'You will be notified of any updates. Track status in Shipments tab.'
-        );
+        ,
+          extractTxId(result));
         
         // Force re-render by updating shipments array reference
         setShipments([...shipments]);
@@ -2064,7 +2069,8 @@ const ExporterPortal: React.FC = () => {
           '• Container and bill of lading are issued by the shipping line\n' +
           '• This is a post-delivery booking: the shipment stays DELIVERED (booking no longer moves it to FREIGHT_BOOKED)\n' +
           '• Proceed to Payment Settlement'
-        );
+        ,
+          extractTxId(result));
         setBookShippingDialogOpen(false);
         setSelectedShipmentForShipping(null);
         setShippingForm({
@@ -2198,7 +2204,8 @@ const ExporterPortal: React.FC = () => {
           '• NBE processes forex conversion & retention\n' +
           '• Funds credited to your account (3-5 business days)\n' +
           '• Transaction complete - export cycle finished!'
-        );
+        ,
+          extractTxId(result));
 
         setPaymentSettlementDialogOpen(false);
         setSelectedShipmentForPayment(null);
@@ -2252,7 +2259,8 @@ const ExporterPortal: React.FC = () => {
           '• Document verification (1-2 business days)\n' +
           '• Payment release upon approval\n' +
           '• Funds transfer to your account'
-        );
+        ,
+          extractTxId(result));
         
         loadExporterData();
       } else {
@@ -2383,7 +2391,8 @@ const ExporterPortal: React.FC = () => {
           `4. Bank allocates forex for the transaction\n` +
           `5. You can then proceed with shipment preparation\n\n` +
           `Track status in the "Forex & Banking" tab.`
-        );
+        ,
+          extractTxId(result));
         
         // Close dialog and reload data
         setLcRequestDialogOpen(false);
@@ -2466,7 +2475,8 @@ const ExporterPortal: React.FC = () => {
           'Forex Request Submitted',
           `Forex request ${forexId} has been submitted for contract ${forexRequestForm.contractId}.`,
           'NBE will review and confirm it; the bank then allocates the forex. Track it in the "Forex Allocations" list below.'
-        );
+        ,
+          extractTxId(result));
         setForexRequestDialogOpen(false);
         setForexRequestForm({ contractId: '', lcId: '', amount: '', currency: 'USD' });
         setTimeout(() => { loadExporterData(); }, 2000);
@@ -3781,6 +3791,9 @@ const ExporterPortal: React.FC = () => {
             </GhostButton>
             <PrimaryButton brand='EXPORTER' 
               onClick={handleCreateContract}
+              loading={isCreatingContract}
+              loadingLabel={isEditMode ? 'Updating…' : 'Registering…'}
+              ledgerWrite
               disabled={isCreatingContract || !newContract.buyerCompany || !newContract.buyerCountry || 
                         !newContract.buyerBank || !newContract.exporterBank ||
                         !newContract.buyerEmail || !newContract.coffeeType || !newContract.quantity || 
@@ -3789,9 +3802,7 @@ const ExporterPortal: React.FC = () => {
               size="large"
               sx={{ minWidth: 150 }}
             >
-              {isCreatingContract 
-                ? (isEditMode ? 'Updating...' : 'Registering...') 
-                : (isEditMode ? 'Update Contract' : 'Register Contract')}
+              {isEditMode ? 'Update Contract' : 'Register Contract'}
             </PrimaryButton>
           
   </>}
@@ -5300,9 +5311,11 @@ const ExporterPortal: React.FC = () => {
                       fullWidth
                       startIcon={<Download />}
                       disabled={isGeneratingReport}
+                      loading={isGeneratingReport}
+                      loadingLabel="Generating…"
                       onClick={handleGenerateReport}
                     >
-                      {isGeneratingReport ? 'Generating...' : 'Generate'}
+                      Generate
                     </PrimaryButton>
                   </Grid>
                 </Grid>
@@ -5378,9 +5391,12 @@ const ExporterPortal: React.FC = () => {
         </GhostButton>
         <PrimaryButton brand='EXPORTER'
           onClick={handleRequestLC}
+          loading={isRequestingLC}
+          loadingLabel="Submitting…"
+          ledgerWrite
           disabled={isRequestingLC || !lcRequestForm.issuingBank?.trim() || !lcRequestForm.advisingBank || !lcRequestForm.beneficiaryName}
         >
-          {isRequestingLC ? 'Submitting...' : 'Submit LC Request'}
+          Submit LC Request
         </PrimaryButton>
       
   </>}
@@ -5641,9 +5657,12 @@ const ExporterPortal: React.FC = () => {
         </GhostButton>
         <PrimaryButton brand='EXPORTER'
           onClick={handleRequestForex}
+          loading={isRequestingForex}
+          loadingLabel="Submitting…"
+          ledgerWrite
           disabled={isRequestingForex || !forexRequestForm.contractId || !forexRequestForm.amount}
         >
-          {isRequestingForex ? 'Submitting...' : 'Submit Forex Request'}
+          Submit Forex Request
         </PrimaryButton>
       </>}
     >
@@ -6325,9 +6344,12 @@ This contract is registered with ECTA and approved by NBE.
           variant="contained"
           brandColor={brandPrimary}
           disabled={isSubmittingCustoms || customsDocuments.some((document) => document.status !== 'success')}
+          loading={isSubmittingCustoms}
+          loadingLabel="Submitting…"
+          ledgerWrite
           onClick={handleSubmitCustomsDeclaration}
         >
-          {isSubmittingCustoms ? 'Submitting...' : 'Submit to ECC'}
+          Submit to ECC
         </AnimatedButton>
       
   </>}
@@ -6574,9 +6596,12 @@ This contract is registered with ECTA and approved by NBE.
           variant="contained"
           brandColor={brandPrimary}
           disabled={isBookingShipping || !shippingForm.portOfDischarge || !shippingForm.estimatedDeparture}
+          loading={isBookingShipping}
+          loadingLabel="Booking…"
+          ledgerWrite
           onClick={handleBookShipping}
         >
-          {isBookingShipping ? 'Booking...' : 'Confirm Booking'}
+          Confirm Booking
         </AnimatedButton>
       
   </>}
@@ -6732,9 +6757,12 @@ This contract is registered with ECTA and approved by NBE.
             !paymentForm.beneficiaryBankBIC ||
             !forexStatuses.some((fx) => fx.contractId === selectedShipmentForPayment?.contractId && ['ALLOCATED', 'UTILIZED'].includes(String(fx.status).toUpperCase()) && Number(fx.exchangeRate) > 0 && Number.isFinite(Number(fx.retentionRate)))
           }
+          loading={isInitiatingPayment}
+          loadingLabel="Processing…"
+          ledgerWrite
           onClick={handleInitiatePayment}
         >
-          {isInitiatingPayment ? 'Processing...' : 'Submit to Bank'}
+          Submit to Bank
         </AnimatedButton>
       
   </>}
@@ -6940,6 +6968,7 @@ This contract is registered with ECTA and approved by NBE.
       title={notification.title}
       message={notification.message}
       details={notification.details}
+        txId={notification.txId}
     />
 
     {/* Create Shipment Dialog */}
@@ -6971,6 +7000,9 @@ This contract is registered with ECTA and approved by NBE.
         </GhostButton>
         <AnimatedButton
           variant="contained"
+          loading={isCreatingShipment}
+          loadingLabel="Creating…"
+          ledgerWrite
           onClick={handleCreateShipment}
           disabled={
             isCreatingShipment || 
@@ -6987,7 +7019,7 @@ This contract is registered with ECTA and approved by NBE.
           }
           brandColor={brandPrimary}
         >
-          {isCreatingShipment ? 'Creating...' : 'Create Shipment'}
+          Create Shipment
         </AnimatedButton>
       
   </>}

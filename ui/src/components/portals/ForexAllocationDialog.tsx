@@ -1,5 +1,6 @@
 import React from 'react';
 import { Dialog, DialogTitle, DialogContent, DialogActions, Button, Box, TextField } from '@mui/material';
+import { PrimaryButton } from '@/components/shared/portal';
 
 interface AllocationForm {
   forexId: string;
@@ -39,7 +40,7 @@ const ForexAllocationDialog: React.FC<Props> = ({ open, form, ratePolicyReady, o
       </DialogContent>
       <DialogActions>
         <Button onClick={onClose}>Cancel</Button>
-        <Button variant="contained" disabled={!ratePolicyReady || form.amount <= 0 || !form.lcId || !form.officer.trim() || !form.approvalRef.trim()} onClick={async () => await onConfirm(form)} sx={{ bgcolor: '#9b30b7', '&:hover': { bgcolor: '#7a2592' } }}>Allocate</Button>
+        <PrimaryButton brand="BANKS" disabled={!ratePolicyReady || form.amount <= 0 || !form.lcId || !form.officer.trim() || !form.approvalRef.trim()} loadingLabel="Allocating…" ledgerWrite onClick={async () => await onConfirm(form)}>Allocate</PrimaryButton>
       </DialogActions>
     </Dialog>
   );

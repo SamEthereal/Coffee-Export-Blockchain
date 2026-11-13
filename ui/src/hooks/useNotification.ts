@@ -7,6 +7,12 @@ interface NotificationState {
   title: string;
   message: string;
   details?: string;
+  /**
+   * Blockchain transaction id of the write this notification reports,
+   * when the API returned one (see utils/txId extractTxId). Rendered
+   * by NotificationDialog so the user can see the write landed.
+   */
+  txId?: string;
 }
 
 export const useNotification = () => {
@@ -18,8 +24,8 @@ export const useNotification = () => {
     details: '',
   });
 
-  const showSuccess = (title: string, message: string, details?: string) => {
-    setNotification({ open: true, type: 'success', title, message, details });
+  const showSuccess = (title: string, message: string, details?: string, txId?: string) => {
+    setNotification({ open: true, type: 'success', title, message, details, txId });
   };
 
   const showError = (title: string, message: string, details?: string) => {

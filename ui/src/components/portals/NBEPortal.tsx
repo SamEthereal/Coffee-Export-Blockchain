@@ -48,6 +48,7 @@ import api, { formatDate, formatCurrency } from '@/utils/api';
 import { couchDBService } from '@/services/couchdbService';
 import { TestBlockchainButton } from '@/components/TestBlockchainButton';
 import { PortalShell, PortalTabBar, PortalTabPanel, PortalKpiCard, PortalCard, PrimaryButton, SecondaryButton, GhostButton, PortalDialog, PortalField, PortalDataGrid, StatusChip, getPortalBrand } from '@/components/shared/portal';
+import { extractTxId, shortTxId } from '@/utils/txId';
 import { SalesContract } from '@/types';
 import { DocumentValidationDialog } from './DocumentValidationDialog';
 import { apiFetch } from '@/config/api.config';
@@ -190,6 +191,13 @@ const NBEPortal: React.FC = () => {
   const [approvalNotification, setApprovalNotification] = useState<{open: boolean, success: boolean, message: string}>({
     open: false, success: false, message: ''
   });
+  // NBE's success surface is a Snackbar with a plain message string, so
+  // the ledger txId is appended to the message text (short form; the
+  // full id is in the API response). Empty when the API returned no id.
+  const txSuffix = (res: unknown): string => {
+    const tx = extractTxId(res);
+    return tx ? ` Blockchain TX: ${shortTxId(tx)}` : '';
+  };
 
   const [forexForm, setForexForm] = useState({
     allocatedAmount: '',
@@ -293,7 +301,7 @@ const NBEPortal: React.FC = () => {
       const result = await response.json();
       if (result.success) {
         const released = result.data?.releaseAmount ?? result.data?.release_amount;
-        setApprovalNotification({ open: true, success: true, message: `Payment ${paymentId} released: ${released ?? amount} USD to exporter ${exporterId} (60% NBE release).` });
+        setApprovalNotification({ open: true, success: true, message: `Payment ${paymentId} released: ${released ?? amount} USD to exporter ${exporterId} (60% NBE release).${txSuffix(result)}` });
         loadPendingRelease();
       } else {
         setApprovalNotification({ open: true, success: false, message: result.error?.message || 'Payment release failed' });
@@ -316,7 +324,7 @@ const NBEPortal: React.FC = () => {
       });
       const result = await response.json();
       if (result.success) {
-        setApprovalNotification({ open: true, success: true, message: `Settlement confirmed for payment ${paymentId}.` });
+        setApprovalNotification({ open: true, success: true, message: `Settlement confirmed for payment ${paymentId}.${txSuffix(result)}` });
         loadPendingRelease();
       } else {
         setApprovalNotification({ open: true, success: false, message: result.error?.message || 'Settlement confirmation failed' });
@@ -376,7 +384,7 @@ const NBEPortal: React.FC = () => {
       });
       const result = await response.json();
       if (result.success) {
-        setApprovalNotification({ open: true, success: true, message: `Retention converted for ${paymentId}: ${amountBirr} Birr @ ${exchangeRate}.` });
+        setApprovalNotification({ open: true, success: true, message: `Retention converted for ${paymentId}: ${amountBirr} Birr @ ${exchangeRate}.${txSuffix(result)}` });
         setConvertDialogOpen(false);
         setConvertTarget(null);
         loadPendingRelease();
@@ -409,7 +417,7 @@ const NBEPortal: React.FC = () => {
       });
       const result = await response.json();
       if (result.success) {
-        setApprovalNotification({ open: true, success: true, message: `Forex repatriation recorded for ${repatForm.forexId}: ${amount} USD.` });
+        setApprovalNotification({ open: true, success: true, message: `Forex repatriation recorded for ${repatForm.forexId}: ${amount} USD.${txSuffix(result)}` });
         setRepatForm({ forexId: '', repatriationAmount: '', repatriationDate: new Date().toISOString().split('T')[0], bankReference: '', repatriationMethod: 'Wire Transfer' });
         loadData();
       } else {
@@ -806,7 +814,7 @@ const NBEPortal: React.FC = () => {
         setApprovalNotification({
           open: true,
           success: true,
-          message: `Exchange rate set: 1 ${currency} = ${midRate.toFixed(2)} ETB (Buy: ${buyingRate}, Sell: ${sellingRate})`
+          message: `Exchange rate set: 1 ${currency} = ${midRate.toFixed(2)} ETB (Buy: ${buyingRate}, Sell: ${sellingRate})${txSuffix(response)}`
         });
         setRateForm(prev => ({ ...prev, buyingRate: '', sellingRate: '' }));
         await loadData();
@@ -887,7 +895,7 @@ const NBEPortal: React.FC = () => {
         setApprovalNotification({
           open: true,
           success: true,
-          message: `COFFEE retention policy set to ${rate}% (policy ${result.data?.policyID || ''})`
+          message: `COFFEE retention policy set to ${rate}% (policy ${result.data?.policyID || ''})${txSuffix(result)}`
         });
         setRetentionPolicyForm({ retentionRate: '', justification: '' });
         await loadData();
@@ -959,7 +967,7 @@ const NBEPortal: React.FC = () => {
         setApprovalNotification({
           open: true,
           success: true,
-          message: `Retention recorded for ${retentionForm.forexId}: ${retentionForm.retentionPercentage}% (status ${result.data?.status || 'PENDING'})`
+          message: `Retention recorded for ${retentionForm.forexId}: ${retentionForm.retentionPercentage}% (status ${result.data?.status || 'PENDING'})${txSuffix(result)}`
         });
         setRetentionDialogOpen(false);
         await loadData();
@@ -1037,7 +1045,7 @@ const NBEPortal: React.FC = () => {
         setApprovalNotification({
           open: true,
           success: true,
-          message: `Forex allocation completed: ${formatCurrency(allocationData.amount, selectedForex.currency)}`
+          message: `Forex allocation completed: ${formatCurrency(allocationData.amount, selectedForex.currency)}${txSuffix(result)}`
         });
         await loadData();
         setForexForm({
@@ -2150,8 +2158,8 @@ const NBEPortal: React.FC = () => {
                   </FormControl>
                 </Grid>
                 <Grid item xs={12}>
-                  <PrimaryButton brand="NBE" onClick={handleRecordForexRepatriation} disabled={recordingRepat}>
-                    {recordingRepat ? 'Recording…' : 'Record Repatriation'}
+                  <PrimaryButton brand="NBE" onClick={handleRecordForexRepatriation} loading={recordingRepat} loadingLabel="Recording…" ledgerWrite disabled={recordingRepat}>
+                    Record Repatriation
                   </PrimaryButton>
                 </Grid>
               </Grid>
@@ -2209,9 +2217,12 @@ const NBEPortal: React.FC = () => {
                       <PrimaryButton
                         brand="NBE"
                         disabled={settingPolicy || retentionPolicyForm.retentionRate === ''}
+                        loading={settingPolicy}
+                        loadingLabel="Setting…"
+                        ledgerWrite
                         onClick={handleSetRetentionPolicy}
                       >
-                        {settingPolicy ? 'Setting…' : 'Set Retention Policy'}
+                        Set Retention Policy
                       </PrimaryButton>
                     </Grid>
                   </Grid>
@@ -2287,8 +2298,8 @@ const NBEPortal: React.FC = () => {
                     field: 'actions', headerName: 'Actions', width: 420, sortable: false,
                     renderCell: (params: any) => (
                       <Box sx={{ display: 'flex', gap: 1 }}>
-                        <PrimaryButton brand="NBE" size="small" onClick={() => handleReleasePayment(params.row)}>Release 60%</PrimaryButton>
-                        <SecondaryButton brand="NBE" size="small" onClick={() => handleConfirmSettlement(params.row)}>Confirm Settlement</SecondaryButton>
+                        <PrimaryButton brand="NBE" size="small" loadingLabel="Releasing…" ledgerWrite onClick={() => handleReleasePayment(params.row)}>Release 60%</PrimaryButton>
+                        <SecondaryButton brand="NBE" size="small" loadingLabel="Confirming…" ledgerWrite onClick={() => handleConfirmSettlement(params.row)}>Confirm Settlement</SecondaryButton>
                         <GhostButton brand="NBE" size="small" onClick={() => openConvertRetention(params.row)}>Convert Retention</GhostButton>
                       </Box>
                     ),
@@ -2329,8 +2340,8 @@ const NBEPortal: React.FC = () => {
         title={<>Convert Retention {convertTarget ? `— ${convertTarget.paymentId || convertTarget.PaymentID}` : ''}</>}
         actions={<>
           <GhostButton brand="NBE" onClick={() => setConvertDialogOpen(false)}>Cancel</GhostButton>
-          <PrimaryButton brand="NBE" onClick={handleConvertRetention} disabled={convertingRetention}>
-            {convertingRetention ? 'Converting…' : 'Convert Retention'}
+          <PrimaryButton brand="NBE" onClick={handleConvertRetention} loading={convertingRetention} loadingLabel="Converting…" ledgerWrite disabled={convertingRetention}>
+            Convert Retention
           </PrimaryButton>
         </>}
       >
@@ -2753,6 +2764,8 @@ const NBEPortal: React.FC = () => {
             <PrimaryButton
             brand="NBE"
             disabled={!forexForm.allocatedAmount || !forexForm.exchangeRate || !forexForm.retentionRate || !forexForm.nbeOfficer || !forexForm.nbeApprovalRef}
+            loadingLabel="Allocating…"
+            ledgerWrite
             onClick={handleAllocateForex}
             >
             Allocate Forex
@@ -2952,9 +2965,12 @@ const NBEPortal: React.FC = () => {
             <PrimaryButton
             brand="NBE"
             disabled={recordingRetention || !retentionForm.fcyAccountNumber || !retentionForm.retentionPercentage}
+            loading={recordingRetention}
+            loadingLabel="Recording…"
+            ledgerWrite
             onClick={handleRecordRetention}
             >
-            {recordingRetention ? 'Recording...' : 'Record Retention'}
+            Record Retention
             </PrimaryButton>
           </>
         }
@@ -3000,9 +3016,12 @@ const NBEPortal: React.FC = () => {
             <PrimaryButton
             brand="NBE"
             disabled={settingRate}
+            loading={settingRate}
+            loadingLabel="Setting rate…"
+            ledgerWrite
             onClick={handleSubmitExchangeRate}
             >
-            {settingRate ? 'Setting…' : 'Set Rate'}
+            Set Rate
             </PrimaryButton>
           </>
         }

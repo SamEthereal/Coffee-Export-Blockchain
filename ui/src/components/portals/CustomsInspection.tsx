@@ -594,6 +594,7 @@ export const CustomsInspection: React.FC<CustomsInspectionProps> = ({ onCreateDe
         title={notification.title}
         message={notification.message}
         details={notification.details}
+        txId={notification.txId}
       />
     </Box>
   );

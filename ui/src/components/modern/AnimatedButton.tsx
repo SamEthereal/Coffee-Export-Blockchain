@@ -10,17 +10,28 @@ import {
   alpha,
 } from '@mui/material';
 import { Check as CheckIcon } from '@mui/icons-material';
+import { useElapsedSeconds } from '@/components/shared/portal/LedgerProgress';
 
 interface AnimatedButtonProps extends Omit<ButtonProps, 'onClick'> {
   /**
    * Async onClick handler
    */
   onClick?: () => Promise<void> | void;
-  
+
   /**
    * Show loading state
    */
   loading?: boolean;
+
+  /** Label shown while pending instead of the children, e.g. "Approving…". */
+  loadingLabel?: string;
+
+  /**
+   * True when the action writes to the blockchain ledger. Adds the
+   * honest "writing to the ledger" hint to the button's title and
+   * aria-label while pending.
+   */
+  ledgerWrite?: boolean;
   
   /**
    * Show success state after completion
@@ -200,6 +211,8 @@ const LoadingContainer = styled('div')({
 export const AnimatedButton: React.FC<AnimatedButtonProps> = ({
   onClick,
   loading: externalLoading,
+  loadingLabel,
+  ledgerWrite,
   showSuccess = true,
   successDuration = 2000,
   brandColor,
@@ -208,6 +221,7 @@ export const AnimatedButton: React.FC<AnimatedButtonProps> = ({
   variant = 'contained',
   disabled,
   children,
+  title,
   ...props
 }) => {
   const [internalLoading, setInternalLoading] = useState(false);
@@ -223,6 +237,12 @@ export const AnimatedButton: React.FC<AnimatedButtonProps> = ({
 
   const loading = externalLoading ?? internalLoading;
   const isDisabled = disabled || loading || success;
+  // Honest elapsed time while pending (smoothness round): appended to
+  // the label after 3 s. No fake percentage — the API reports no
+  // intermediate state, so elapsed seconds are the only truthful
+  // progress signal.
+  const elapsed = useElapsedSeconds(loading);
+  const ledgerHint = 'Writing to the ledger — this usually takes a few seconds';
 
   const handleClick = async () => {
     if (!onClick || busyRef.current) return;
@@ -273,6 +293,9 @@ export const AnimatedButton: React.FC<AnimatedButtonProps> = ({
     <StyledButton
       onClick={handleClick}
       disabled={isDisabled}
+      aria-busy={loading || undefined}
+      aria-label={loading && ledgerWrite && typeof children === 'string' ? `${children} — ${ledgerHint.toLowerCase()}` : undefined}
+      title={loading && ledgerWrite ? ledgerHint : title}
       variant={variant}
       brandColor={brandColor}
       secondaryColor={secondaryColor}
@@ -280,21 +303,26 @@ export const AnimatedButton: React.FC<AnimatedButtonProps> = ({
       success={success}
       {...props}
     >
-      <ButtonContent visible={!loading && !success}>
-        {children}
-      </ButtonContent>
-      
-      {loading && (
-        <LoadingContainer>
+      {/* Loading keeps the label visible (spinner inline, before the
+          text) — the old render hid the label behind a centred spinner,
+          so every portal's buttons looked different while working. The
+          success check still replaces the label, but only after the
+          request has actually succeeded. */}
+      <ButtonContent visible={!success}>
+        {loading && (
           <CircularProgress
-            size={20}
+            size={18}
             sx={{
               color: variant === 'contained' ? '#ffffff' : brandColor || 'primary.main',
             }}
           />
-        </LoadingContainer>
-      )}
-      
+        )}
+        {loading && loadingLabel ? loadingLabel : children}
+        {loading && elapsed >= 3 ? (
+          <span style={{ opacity: 0.85 }}>· {elapsed}s</span>
+        ) : null}
+      </ButtonContent>
+
       {success && (
         <LoadingContainer>
           <CheckIcon

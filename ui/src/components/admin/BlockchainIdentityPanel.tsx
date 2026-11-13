@@ -25,6 +25,7 @@ import {
   ListItemIcon,
   TextField,
 } from '@mui/material';
+import { AnimatedButton } from '@/components/modern';
 import {
   VpnKey,
   CardMembership,
@@ -241,22 +242,25 @@ const BlockchainIdentityPanel: React.FC<BlockchainIdentityPanelProps> = ({
             <Typography variant="body2" color="text.secondary" mb={2}>
               No identity record is enrolled for this user.
             </Typography>
-            <Button
+            <AnimatedButton
               variant="contained"
               startIcon={<VpnKey />}
               onClick={handleEnroll}
               disabled={enrolling}
+              loading={enrolling}
+              loadingLabel="Enrolling…"
+              ledgerWrite
             >
-              {enrolling ? 'Enrolling…' : 'Enroll Fabric CA Identity'}
-            </Button>
+              Enroll Fabric CA Identity
+            </AnimatedButton>
           </Box>
         ) : (
           <>
             {!isFabricIdentity && (
               <Box mb={2} textAlign="center">
-                <Button variant="contained" startIcon={<VpnKey />} onClick={handleEnroll} disabled={enrolling}>
-                  {enrolling ? 'Enrolling…' : 'Replace with Fabric CA Identity'}
-                </Button>
+                <AnimatedButton variant="contained" startIcon={<VpnKey />} onClick={handleEnroll} disabled={enrolling} loading={enrolling} loadingLabel="Enrolling…" ledgerWrite>
+                  Replace with Fabric CA Identity
+                </AnimatedButton>
               </Box>
             )}
             <Grid container spacing={2}>
@@ -410,14 +414,17 @@ const BlockchainIdentityPanel: React.FC<BlockchainIdentityPanelProps> = ({
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setRevokeDialogOpen(false)}>Cancel</Button>
-          <Button
+          <AnimatedButton
             onClick={handleRevoke}
             color="error"
             variant="contained"
             disabled={revoking || !revokeReason.trim()}
+            loading={revoking}
+            loadingLabel="Revoking…"
+            ledgerWrite
           >
-            {revoking ? 'Revoking...' : 'Revoke Identity'}
-          </Button>
+            Revoke Identity
+          </AnimatedButton>
         </DialogActions>
       </Dialog>
 
@@ -431,14 +438,17 @@ const BlockchainIdentityPanel: React.FC<BlockchainIdentityPanelProps> = ({
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setRenewDialogOpen(false)}>Cancel</Button>
-          <Button
+          <AnimatedButton
             onClick={handleRenew}
             color="primary"
             variant="contained"
             disabled={renewing}
+            loading={renewing}
+            loadingLabel="Renewing…"
+            ledgerWrite
           >
-            {renewing ? 'Renewing...' : 'Renew Certificate'}
-          </Button>
+            Renew Certificate
+          </AnimatedButton>
         </DialogActions>
       </Dialog>
     </Card>

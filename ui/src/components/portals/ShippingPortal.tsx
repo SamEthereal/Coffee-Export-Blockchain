@@ -75,6 +75,7 @@ import {
   StatusType,
   ThemeToggle,
 } from '@/components/modern';
+import { extractTxId, shortTxId } from '@/utils/txId';
 import {
   PortalShell,
   PortalTabBar,
@@ -303,6 +304,12 @@ const ShippingPortal: React.FC = () => {
     message: '',
     severity: 'success'
   });
+  // Shipping's success surface is a Snackbar with a plain message string,
+  // so the ledger txId is appended to the message text (short form).
+  const txSuffix = (res: unknown): string => {
+    const tx = extractTxId(res);
+    return tx ? ` Blockchain TX: ${shortTxId(tx)}` : '';
+  };
 
   // Bill of Lading / Airway Bill Form State
   const [bolForm, setBolForm] = useState({
@@ -1895,7 +1902,7 @@ const ShippingPortal: React.FC = () => {
         
         setSnackbar({
           open: true,
-          message: `✅ ${docType} Recorded Successfully! ${isSea ? 'B/L' : 'AWB'}: ${docNumber} | ${isSea ? 'Vessel' : 'Flight'}: ${carrier}${isSea ? ` | Container: ${bolForm.containerNumber}` : ''} | Route: ${bolForm.departurePort} → ${bolForm.destinationPort} | ETA: ${new Date(bolForm.estimatedArrival).toLocaleDateString()} | Tracking: ${bolForm.trackingNumber}`,
+          message: `✅ ${docType} Recorded Successfully! ${isSea ? 'B/L' : 'AWB'}: ${docNumber} | ${isSea ? 'Vessel' : 'Flight'}: ${carrier}${isSea ? ` | Container: ${bolForm.containerNumber}` : ''} | Route: ${bolForm.departurePort} → ${bolForm.destinationPort} | ETA: ${new Date(bolForm.estimatedArrival).toLocaleDateString()} | Tracking: ${bolForm.trackingNumber}${txSuffix(result)}`,
           severity: 'success'
         });
         
@@ -3856,6 +3863,8 @@ const ShippingPortal: React.FC = () => {
             variant="contained"
             brandColor={brandPrimary}
             startIcon={<CheckCircle />}
+            loadingLabel="Recording…"
+            ledgerWrite
             onClick={handleSubmitBOL}
           >
             {bolForm.transportMode === 'SEA' ? 'Record Bill of Lading' : 'Record Airway Bill'}
@@ -4317,6 +4326,8 @@ const ShippingPortal: React.FC = () => {
             variant="contained"
             color="error"
             startIcon={<Cancel />}
+            loadingLabel="Rejecting…"
+            ledgerWrite
             disabled={verificationLoading || rejectionReason.trim().length < 3}
           >
             Reject
@@ -4327,6 +4338,8 @@ const ShippingPortal: React.FC = () => {
             variant="contained"
             color="success"
             startIcon={<CheckCircle />}
+            loadingLabel="Approving…"
+            ledgerWrite
             disabled={verificationLoading || (approvalMissingDocs.length > 0 && !docsConfirmed)}
           >
             Approve & Proceed

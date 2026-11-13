@@ -115,6 +115,7 @@ import BlockchainBadge from '@/components/blockchain/BlockchainBadge';
 import { BlockchainStatusIcon, BlockchainTxChip } from '@/components/blockchain';
 
 import { useNotification } from '@/hooks/useNotification';
+import { extractTxId } from '@/utils/txId';
 import { UnifiedPaymentWorkflow } from './UnifiedPaymentWorkflow';
 import { PaymentMethodTab } from './PaymentMethodTab';
 import UserManagement from '@/components/admin/UserManagement';
@@ -1554,7 +1555,8 @@ const BanksPortal: React.FC = () => {
         showSuccess(
           'Letter of Credit Approved',
           `LC ${lcId} has been approved successfully`,
-          'The LC is now approved and ready for issuance'
+          'The LC is now approved and ready for issuance',
+          extractTxId(result),
         );
         loadBankingData(); // Reload to show updated status
       } else {
@@ -1599,7 +1601,7 @@ const BanksPortal: React.FC = () => {
       });
       const result = await response.json();
       if (result.success) {
-        showSuccess('LC Rejected', `LC ${lcId} was rejected and recorded on the consortium ledger.`);
+        showSuccess('LC Rejected', `LC ${lcId} was rejected and recorded on the consortium ledger.`, undefined, extractTxId(result));
         handleCloseDialog();
         loadBankingData();
       } else {
@@ -1703,7 +1705,7 @@ const BanksPortal: React.FC = () => {
 
       const result = await response.json();
       if (result.success) {
-        showSuccess('LC Amended', `LC ${selectedLC.lcId} has been amended successfully`);
+        showSuccess('LC Amended', `LC ${selectedLC.lcId} has been amended successfully`, undefined, extractTxId(result));
         handleCloseDialog();
         loadBankingData();
       } else {
@@ -1747,7 +1749,7 @@ const BanksPortal: React.FC = () => {
 
         const result = await response.json();
         if (result.success) {
-          showSuccess('Documentary Collection Sent', `Collection ${collectionId} registered successfully`);
+          showSuccess('Documentary Collection Sent', `Collection ${collectionId} registered successfully`, undefined, extractTxId(result));
           handleCloseDialog();
           loadBankingData();
         } else {
@@ -1780,7 +1782,7 @@ const BanksPortal: React.FC = () => {
 
         const result = await response.json();
         if (result.success) {
-          showSuccess('Advance Payment Recorded', `Payment ${paymentId} recorded. Permit will be issued.`);
+          showSuccess('Advance Payment Recorded', `Payment ${paymentId} recorded. Permit will be issued.`, undefined, extractTxId(result));
           handleCloseDialog();
           loadBankingData();
         } else {
@@ -1808,7 +1810,7 @@ const BanksPortal: React.FC = () => {
 
         const result = await response.json();
         if (result.success) {
-          showSuccess('Consignment Permit Issued', `Consignment ${consignmentId} issued for ${data.commodityType}`);
+          showSuccess('Consignment Permit Issued', `Consignment ${consignmentId} issued for ${data.commodityType}`, undefined, extractTxId(result));
           handleCloseDialog();
           loadBankingData();
         } else {
@@ -1851,7 +1853,7 @@ const BanksPortal: React.FC = () => {
 
       const result = await response.json();
       if (result.success) {
-        showSuccess('Documents Verified', 'Payment documents approved. Payment can proceed to settlement.');
+        showSuccess('Documents Verified', 'Payment documents approved. Payment can proceed to settlement.', undefined, extractTxId(result));
         setVerificationDialogOpen(false);
         setSelectedPayment(null);
         loadBankingData();
@@ -1890,7 +1892,7 @@ const BanksPortal: React.FC = () => {
 
       const result = await response.json();
       if (result.success) {
-        showSuccess('Payment Settled', `Payment ${paymentId} settled successfully.`);
+        showSuccess('Payment Settled', `Payment ${paymentId} settled successfully.`, undefined, extractTxId(result));
         setSettleDialogOpen(false);
         setPaymentDetailsOpen(false);
         setSelectedPaymentForDetails(null);
@@ -1924,7 +1926,7 @@ const BanksPortal: React.FC = () => {
       const result = await response.json();
       if (result.success) {
         if (documentsCompliant) {
-          showSuccess('Documents Compliant', 'Shipping documents comply with LC terms. Payment authorized.');
+          showSuccess('Documents Compliant', 'Shipping documents comply with LC terms. Payment authorized.', undefined, extractTxId(result));
         } else {
           showWarning('Discrepancies Found', `Document discrepancies: ${discrepancies}`);
         }
@@ -1969,7 +1971,9 @@ const BanksPortal: React.FC = () => {
       if (result.success) {
         showSuccess(
           approved ? 'Document Approved ✅' : 'Document Rejected ❌',
-          approved ? 'Document verified successfully with blockchain signature' : 'Document marked as non-compliant'
+          approved ? 'Document verified successfully with blockchain signature' : 'Document marked as non-compliant',
+          undefined,
+          extractTxId(result),
         );
         
         // ✅ Refresh the document dialog to show updated status from server
@@ -2040,7 +2044,7 @@ const BanksPortal: React.FC = () => {
 
       const result = await response.json();
       if (result.success) {
-        showSuccess('Payment Released', `${currency} ${amount.toLocaleString()} released to exporter via SWIFT`);
+        showSuccess('Payment Released', `${currency} ${amount.toLocaleString()} released to exporter via SWIFT`, undefined, extractTxId(result));
         loadBankingData();
       } else {
         showError('Payment Failed', result.error?.message || 'Unknown error');
@@ -2082,7 +2086,7 @@ const BanksPortal: React.FC = () => {
 
       const result = await response.json();
       if (result.success) {
-        showSuccess('Export Permit Issued', `Permit ${result.data?.permitId || ''} issued for shipment ${shipmentId}.`);
+        showSuccess('Export Permit Issued', `Permit ${result.data?.permitId || ''} issued for shipment ${shipmentId}.`, undefined, extractTxId(result));
         loadBankingData();
       } else {
         showError('Permit Issue Failed', result.error?.message || 'Unknown error');
@@ -2131,7 +2135,8 @@ const BanksPortal: React.FC = () => {
         showSuccess(
           'Forex Request Submitted',
           `Request ${forexId} was sent to NBE for confirmation.`,
-          'Allocation becomes available after NBE confirms the request.'
+          'Allocation becomes available after NBE confirms the request.',
+          extractTxId(requestResult),
         );
         loadBankingData();
         return;
@@ -2160,7 +2165,7 @@ const BanksPortal: React.FC = () => {
       const result = await response.json();
       if (result.success) {
         const actualRetentionRate = Number(result.autoMapped?.retentionRate ?? payload.retentionRate);
-        showSuccess('Forex Allocated', `Forex allocated successfully for LC ${forex.lcId}`, `Recorded retention: ${actualRetentionRate}%`);
+        showSuccess('Forex Allocated', `Forex allocated successfully for LC ${forex.lcId}`, `Recorded retention: ${actualRetentionRate}%`, extractTxId(result));
         setAllocationDialogOpen(false);
         loadBankingData();
       } else {
@@ -3932,6 +3937,8 @@ const BanksPortal: React.FC = () => {
                               size="small"
                               disabled={!forex.isDraft && forex.status !== 'CONFIRMED'}
                               startIcon={<CheckCircle />}
+                              loadingLabel="Allocating…"
+                              ledgerWrite
                               onClick={async (event) => {
                                 event.stopPropagation();
                                 if (forex.isDraft) {
@@ -4479,14 +4486,18 @@ const BanksPortal: React.FC = () => {
               Reject (REQUESTED/CONFIRMED) and Utilise (ALLOCATED). */}
           {selectedForex && (selectedForex.status === 'REQUESTED' || selectedForex.status === 'CONFIRMED') && (
             <DangerButton brand="BANKS"
-              onClick={() => { void handleRejectForex(selectedForex); }}
+              onClick={() => handleRejectForex(selectedForex)}
+              loadingLabel="Rejecting…"
+              ledgerWrite
               color="error"
             >
               Reject
             </DangerButton>
           )}
           {selectedForex && selectedForex.status === 'ALLOCATED' && (
-            <PrimaryButton brand="BANKS" onClick={() => { void handleUtilizeForex(selectedForex); }}
+            <PrimaryButton brand="BANKS" onClick={() => handleUtilizeForex(selectedForex)}
+            loadingLabel="Utilising…"
+            ledgerWrite
             startIcon={<CheckCircle />}
             >
               Utilise
@@ -4882,9 +4893,12 @@ const BanksPortal: React.FC = () => {
           <PrimaryButton brand="BANKS"
             variant="contained"
             onClick={handleSettlePayment}
+            loading={settling}
+            loadingLabel="Settling…"
+            ledgerWrite
             disabled={settling || !(Number(settleForm.exchangeRate) > 0) || !(Number(settleForm.retentionRate) > 0) || !settleForm.payingBank || !settleForm.payingBankBIC || !settleForm.swiftReference || !settleForm.nbeApprovalRef}
           >
-            {settling ? 'Settling...' : 'Settle Payment'}
+            Settle Payment
           </PrimaryButton>
         </>}>
 
@@ -4964,6 +4978,8 @@ const BanksPortal: React.FC = () => {
           {selectedLC && selectedLC.status === 'REQUESTED' && (
             <DangerButton brand="BANKS"
               startIcon={<Cancel />}
+              loadingLabel="Rejecting…"
+              ledgerWrite
               onClick={() => handleRejectLC(selectedLC.lcId)}
             >
               Reject LC
@@ -5666,6 +5682,7 @@ const BanksPortal: React.FC = () => {
         title={notification.title}
         message={notification.message}
         details={notification.details}
+        txId={notification.txId}
       />
 
       {/* Forex Allocation Dialog */}
@@ -5941,7 +5958,9 @@ const BanksPortal: React.FC = () => {
                           {(msg.status === 'DRAFT' || msg.status === 'NBE_APPROVED') && (
                             <PrimaryButton brand="BANKS"
                               size="small"
-                              onClick={() => void handleSwiftLifecycleAction(msg, 'approve')}
+                              loadingLabel="Approving…"
+                              ledgerWrite
+                              onClick={() => handleSwiftLifecycleAction(msg, 'approve')}
                             >
                               Approve
                             </PrimaryButton>
@@ -5950,7 +5969,9 @@ const BanksPortal: React.FC = () => {
                             <PrimaryButton brand="BANKS"
                               size="small"
                               startIcon={<SendOutlined />}
-                              onClick={() => void handleSwiftLifecycleAction(msg, 'send')}
+                              loadingLabel="Sending…"
+                              ledgerWrite
+                              onClick={() => handleSwiftLifecycleAction(msg, 'send')}
                             >
                               Send
                             </PrimaryButton>
@@ -5958,7 +5979,9 @@ const BanksPortal: React.FC = () => {
                           {msg.status === 'SENT' && (
                             <PrimaryButton brand="BANKS"
                               size="small"
-                              onClick={() => void handleSwiftLifecycleAction(msg, 'receive')}
+                              loadingLabel="Receiving…"
+                              ledgerWrite
+                              onClick={() => handleSwiftLifecycleAction(msg, 'receive')}
                             >
                               Receive
                             </PrimaryButton>
@@ -5966,7 +5989,9 @@ const BanksPortal: React.FC = () => {
                           {msg.status === 'RECEIVED' && (
                             <PrimaryButton brand="BANKS"
                               size="small"
-                              onClick={() => void handleSwiftLifecycleAction(msg, 'process')}
+                              loadingLabel="Processing…"
+                              ledgerWrite
+                              onClick={() => handleSwiftLifecycleAction(msg, 'process')}
                             >
                               Process
                             </PrimaryButton>
@@ -5974,7 +5999,9 @@ const BanksPortal: React.FC = () => {
                           {msg.status === 'PROCESSING' && (
                             <PrimaryButton brand="BANKS"
                               size="small"
-                              onClick={() => void handleSwiftLifecycleAction(msg, 'settle')}
+                              loadingLabel="Settling…"
+                              ledgerWrite
+                              onClick={() => handleSwiftLifecycleAction(msg, 'settle')}
                             >
                               Settle
                             </PrimaryButton>
@@ -5983,7 +6010,9 @@ const BanksPortal: React.FC = () => {
                             <DangerButton brand="BANKS"
                               size="small"
                               color="error"
-                              onClick={() => void handleSwiftLifecycleAction(msg, 'reject')}
+                              loadingLabel="Rejecting…"
+                              ledgerWrite
+                              onClick={() => handleSwiftLifecycleAction(msg, 'reject')}
                             >
                               Reject
                             </DangerButton>
@@ -6312,7 +6341,10 @@ const BanksPortal: React.FC = () => {
             <PrimaryButton brand="BANKS"
               size="small"
               disabled={selectedLCIds.length === 0 || bulkApproving}
-              onClick={() => { void handleBulkApproveLC(); }}
+              loading={bulkApproving}
+              loadingLabel="Approving…"
+              ledgerWrite
+              onClick={() => handleBulkApproveLC()}
             >
               Bulk Approve ({selectedLCIds.length})
             </PrimaryButton>
@@ -6556,6 +6588,8 @@ const BanksPortal: React.FC = () => {
                             <PrimaryButton brand="BANKS"
                               size="small"
                               startIcon={<Payment />}
+                              loadingLabel="Releasing…"
+                              ledgerWrite
                               onClick={async () => {
                                 // Confirm before releasing payment
                                 const confirmed = window.confirm(
@@ -6687,6 +6721,8 @@ const BanksPortal: React.FC = () => {
                             <SecondaryButton brand="BANKS"
                               size="small"
                               startIcon={<Description />}
+                              loadingLabel="Issuing permit…"
+                              ledgerWrite
                               onClick={() => handleIssueExportPermit(shipment)}
                               sx={{ textTransform: 'none' }}
                             >
@@ -6738,18 +6774,19 @@ const BanksPortal: React.FC = () => {
             Close
           </GhostButton>
           {selectedLC?.documents?.every((d: any) => d.verificationStatus === 'verified' || d.status === 'verified') && (
-            <Button 
-              variant="contained" 
-              color="success"
+            <PrimaryButton
+              brand="BANKS"
               startIcon={<CheckCircle />}
-              onClick={() => {
-                handleExamineLCDocuments(selectedLC.lcId, true, '');
+              loadingLabel="Examining…"
+              ledgerWrite
+              onClick={async () => {
+                await handleExamineLCDocuments(selectedLC.lcId, true, '');
                 setDocumentExaminationOpen(false);
               }}
               sx={{ ml: 1 }}
             >
               Mark LC as Compliant & Ready for Payment
-            </Button>
+            </PrimaryButton>
           )}
         </>}>
 
@@ -6993,26 +7030,30 @@ const BanksPortal: React.FC = () => {
                                 View Document
                               </Button>
                               <Box sx={{ display: 'flex', gap: 1 }}>
-                                <Button
+                                <PrimaryButton brand="BANKS"
                                   size="small"
-                                  variant="contained"
-                                  color="success"
-                                  startIcon={verifyingDocumentId === doc.documentId ? <CircularProgress size={16} color="inherit" /> : <CheckCircle />}
+                                  startIcon={<CheckCircle />}
+                                  loading={verifyingDocumentId === doc.documentId}
+                                  loadingLabel="Approving…"
+                                  ledgerWrite
                                   onClick={() => handleVerifyDocument(doc.documentId, true)}
                                   disabled={doc.verificationStatus === 'verified' || doc.status === 'verified' || verifyingDocumentId === doc.documentId}
                                   sx={{ flex: 1 }}
                                 >
-                                  {verifyingDocumentId === doc.documentId ? 'Approving...' : 'Approve'}
-                                </Button>
+                                  Approve
+                                </PrimaryButton>
                                 <DangerButton brand="BANKS"
                                   size="small"
                                   color="error"
-                                  startIcon={verifyingDocumentId === doc.documentId ? <CircularProgress size={16} color="inherit" /> : <Cancel />}
+                                  startIcon={<Cancel />}
+                                  loading={verifyingDocumentId === doc.documentId}
+                                  loadingLabel="Rejecting…"
+                                  ledgerWrite
                                   onClick={() => handleVerifyDocument(doc.documentId, false)}
                                   disabled={doc.verificationStatus === 'rejected' || doc.status === 'rejected' || verifyingDocumentId === doc.documentId}
                                   sx={{ flex: 1 }}
                                 >
-                                  {verifyingDocumentId === doc.documentId ? 'Rejecting...' : 'Reject'}
+                                  Reject
                                 </DangerButton>
                               </Box>
                             </Box>

@@ -18,6 +18,7 @@ export type { PortalCardProps } from './PortalCard';
 export { PrimaryButton, SecondaryButton, DangerButton, GhostButton } from './PortalButton';
 export { PortalDialog, PortalDialogActions, PortalField } from './PortalDialog';
 export type { PortalDialogProps } from './PortalDialog';
+export { LedgerProgress, useElapsedSeconds, LEDGER_WRITE_MESSAGE } from './LedgerProgress';
 export { PortalDataGrid } from './PortalDataGrid';
 export type { PortalDataGridProps } from './PortalDataGrid';
 
