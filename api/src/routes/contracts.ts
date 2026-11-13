@@ -663,7 +663,11 @@ router.post('/',
       }
 
       if (blockchainWriteSuccessful) {
-        logger.info(`✅ Sales contract registered successfully: ${contractID}, paymentMethod: ${paymentMethod || 'LC (default)'}, txId: ${result.blockchainTxId}, documents: ${documentIDs.length}`);
+        // contractService returns txId (not blockchainTxId — the old
+        // name read undefined here, so the 201 response silently
+        // dropped both txId keys via JSON.stringify).
+        const createdTxId = (result as any).txId ?? (result as any).blockchainTxId ?? null;
+        logger.info(`✅ Sales contract registered successfully: ${contractID}, paymentMethod: ${paymentMethod || 'LC (default)'}, txId: ${createdTxId}, documents: ${documentIDs.length}`);
         // In-app notification (persisted feed + live WS broadcast).
         // Best-effort inside emitWorkflowEvent: never fails this request.
         await notificationService.emitWorkflowEvent({
@@ -681,9 +685,12 @@ router.post('/',
           data: { 
             contractID, 
             status: 'pending', 
-            blockchainSynced: true 
+            blockchainSynced: true,
+            // txId under data too, matching the release-endpoint
+            // pattern (top-level txId already present below).
+            txId: createdTxId
           },
-          txId: result.blockchainTxId,
+          txId: createdTxId,
           documentsLinked: documentIDs.length,
           paymentMethod: paymentMethod || 'LC',
           timestamp: new Date().toISOString(),
@@ -694,7 +701,7 @@ router.post('/',
         res.status(202).json({
           success: true,
           warning: 'Contract saved but blockchain sync pending',
-          data: { contractID, status: 'pending', blockchainSynced: false },
+          data: { contractID, status: 'pending', blockchainSynced: false, txId: null },
           txId: null,
           documentsLinked: documentIDs.length,
           paymentMethod: paymentMethod || 'LC',
@@ -1257,8 +1264,14 @@ router.get('/:contractID',
       // ✅ OPTIMIZATION: Try cache first, then blockchain, then PostgreSQL
       let blockchainData = null;
       let source = 'cache';
-      
+
       try {
+        // Label the source honestly: peek() reports a fresh cached
+        // entry before get() runs, so a cache hit is `source:"cache"`
+        // and only a real ledger fetch is `source:"blockchain"`. The
+        // old code overwrote the label with "blockchain" unconditionally,
+        // so stale cached reads claimed to be live ledger data.
+        const servedFromCache = blockchainCache.peek(CacheKeys.contract(contractID));
         blockchainData = await blockchainCache.get(
           CacheKeys.contract(contractID),
           async () => {
@@ -1270,10 +1283,8 @@ router.get('/:contractID',
           },
           5 * 60 * 1000 // 5 minute cache
         );
-        
-        // If we got here without throwing, check if it came from cache or blockchain
-        const cached = blockchainCache.getStats();
-        source = 'blockchain'; // Since get() returns data, it was either cache hit or fresh fetch
+
+        source = servedFromCache ? 'cache' : 'blockchain';
       } catch (blockchainError: any) {
         logger.warn(`Blockchain query failed for contract ${contractID}, falling back to PostgreSQL: ${blockchainError.message}`);
       }
@@ -1312,6 +1323,13 @@ router.get('/:contractID',
       }
 
       if (blockchainData) {
+        // The ledger doc carries `contractStatus` only; every other
+        // endpoint and the PG model use `status`. Map it so a client
+        // reading `.data.status` gets the value instead of null, and
+        // keep `contractStatus` for existing readers.
+        if ((blockchainData as any).status === undefined || (blockchainData as any).status === null) {
+          (blockchainData as any).status = (blockchainData as any).contractStatus || (blockchainData as any).Status || null;
+        }
         // ✅ FETCH LINKED DOCUMENTS
         try {
           const { DatabaseService } = await import('../services/databaseService');

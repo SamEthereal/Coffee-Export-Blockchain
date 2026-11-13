@@ -102,6 +102,19 @@ class BlockchainCacheService {
   }
 
   /**
+   * Whether a fresh (unexpired) entry exists for this key, without
+   * fetching or counting a hit. The shipment/contract GET handlers use
+   * it to label the source honestly: a cached read is `source:"cache"`,
+   * a fresh ledger read is `source:"blockchain"`. Previously the label
+   * was set to "blockchain" unconditionally after get(), including on
+   * cache hits, so a 5-minute-stale read claimed to be live ledger data.
+   */
+  peek(key: string): boolean {
+    const cached = this.cache.get(key);
+    return !!cached && Date.now() < cached.expiresAt;
+  }
+
+  /**
    * Invalidate specific cache entry
    */
   invalidate(key: string): void {
@@ -216,6 +229,14 @@ export const CacheKeys = {
   shipmentsByContract: (contractId: string) => `shipments:contract:${contractId}`,
   allContracts: () => `contracts:all`,
   allShipments: () => `shipments:all`,
+  // List reads that are display-only and expensive as chaincode
+  // evaluates (~1s each on a warm gateway): the full payment list
+  // behind GET /payments/pending-release, the active forex rate and
+  // the active retention policy. Cached briefly (see the call sites)
+  // and invalidated on the writes that change them.
+  paymentsAll: () => `payments:all`,
+  forexRate: (currency: string) => `forex:rate:${currency}`,
+  retentionPolicy: (commodityType: string) => `forex:retention-policy:${commodityType}`,
 };
 
 /**
@@ -240,6 +261,21 @@ export const CacheInvalidation = {
     if (contractId) {
       blockchainCache.invalidate(CacheKeys.shipmentsByContract(contractId));
     }
+  },
+
+  /** Invalidate the cached full payment list (pending-release tab source) */
+  paymentsAll: () => {
+    blockchainCache.invalidate(CacheKeys.paymentsAll());
+  },
+
+  /** Invalidate a cached active forex rate (set-rate writes it) */
+  forexRate: (currency: string) => {
+    blockchainCache.invalidate(CacheKeys.forexRate(currency));
+  },
+
+  /** Invalidate a cached active retention policy (set-policy writes it) */
+  retentionPolicy: (commodityType: string) => {
+    blockchainCache.invalidate(CacheKeys.retentionPolicy(commodityType));
   },
   
   /** Invalidate all caches for an exporter */

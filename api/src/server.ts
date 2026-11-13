@@ -493,6 +493,15 @@ class CECBSServer {
         if (address && typeof address !== 'string') {
           logger.info(`✅ Server confirmed listening on ${address.address}:${address.port}`);
         }
+
+        // Warm every org's Fabric gateway in the background (does not
+        // block startup or health): the first call as a given MSP
+        // otherwise pays a cold gateway connect (~3–21s measured).
+        // Best-effort — a failed org logs and is retried lazily on
+        // first use, exactly as before.
+        this.fabricService.warmGatewayPool().catch((err: any) =>
+          logger.warn('Gateway warm-up failed:', err?.message || err)
+        );
         
         // ⚠️ DISABLED: BlockchainSyncService conflicts with CouchDB direct writes
         // Background service tries to sync old failed blockchain writes, causing LC status conflicts

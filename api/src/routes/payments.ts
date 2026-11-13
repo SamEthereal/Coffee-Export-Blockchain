@@ -12,11 +12,23 @@ import { body, param } from 'express-validator';
 import { statusManager } from '../utils/statusManager';
 import { authMiddleware } from '../middleware/auth';
 import { requireRole } from '../middleware/rbac';
+import { blockchainCache, CacheKeys, CacheInvalidation } from '../services/blockchainCacheService';
 
 const router = express.Router();
 const fabricService = FabricService.getInstance();
 const postgresDb = DatabaseService.getInstance();
 const paymentService = PaymentService.getInstance();
+
+// txId placement (release-endpoint pattern): every payment response
+// carries the chain txId BOTH top-level and under data.txId, so a
+// caller reading either place can verify the chain write. The
+// chaincode payload is returned as data; when it is an object the
+// txId is merged into it, otherwise data is left untouched and the
+// top-level txId still carries the proof.
+function withTxId(data: any, txId: string | null | undefined): any {
+  if (data && typeof data === 'object' && !Array.isArray(data)) return { ...data, txId: txId || null };
+  return data;
+}
 
 /**
  * Best-effort PG mirror of a payment's settlement-machine status.
@@ -369,7 +381,7 @@ router.post('/initiate',
         res.status(201).json({
           success: true,
           message: 'Payment initiated successfully',
-          data: result.data,
+          data: withTxId(result.data, result.txId),
           autoMapped: {
             contractID: finalContractID,
             exporterID: finalExporterID,
@@ -602,7 +614,7 @@ router.post('/:paymentID/documents',
         res.json({
           success: true,
           message: 'Payment documents submitted successfully',
-          data: result.data,
+          data: withTxId(result.data, result.txId),
           txId: result.txId,
           timestamp: new Date().toISOString(),
         });
@@ -702,7 +714,7 @@ router.post('/:paymentID/verify',
         res.json({
           success: true,
           message: 'Payment documents verified successfully',
-          data: result.data,
+          data: withTxId(result.data, result.txId),
           txId: result.txId,
           timestamp: new Date().toISOString(),
         });
@@ -1108,10 +1120,14 @@ router.post('/:paymentID/settle',
           actionUrl: '/portals/exporter?tab=payments',
           actionUrls: { BANKS: '/portals/banks?tab=contracts', NBE: '/portals/nbe?tab=contracts' },
         });
+        // Settling moves the payment INTO the pending-release set, so
+        // drop the cached full payment list — otherwise the tab misses
+        // it for up to 30s (same invalidation as the release path).
+        CacheInvalidation.paymentsAll();
         res.json({
           success: true,
           message: 'Payment settled successfully',
-          data: result.data,
+          data: withTxId(result.data, result.txId),
           txId: result.txId,
           timestamp: new Date().toISOString(),
         });
@@ -1230,7 +1246,7 @@ router.put('/:paymentID/confirm',
         res.json({
           success: true,
           message: 'Payment settlement confirmed',
-          data: result.data,
+          data: withTxId(result.data, result.txId),
           txId: result.txId,
           ...(pgMirrorFailed ? { pgMirrorFailed: true } : {}),
           timestamp: new Date().toISOString(),
@@ -1570,16 +1586,37 @@ router.get('/pending-release', authMiddleware, async (req: Request, res: Respons
 
     logger.info('[PAYMENT] Fetching pending release payments from blockchain');
 
-    // Query all payments from blockchain
-    const result = await fabricService.queryChaincode('QueryAllPayments', []);
-
-    if (!result.success) {
-      logger.error(`[PAYMENT] Blockchain query failed: ${result.error}`);
+    // QueryAllPayments is a chaincode evaluate over every payment
+    // (~1.4–1.8s measured) for a work-queue tab that is re-read
+    // constantly. Cache the raw list 30s: the release action itself
+    // re-validates state at write time (ALREADY_RELEASED), so a stale
+    // list can never cause a double release, and the release path
+    // invalidates this entry the moment a payment leaves the set.
+    // The PG exclusion lookup below still runs fresh on every call,
+    // so a payment released in the last 30s is filtered out even
+    // before the cache entry expires. PG cannot serve the whole list
+    // instead: the tab's rows are ledger docs and PG has no release
+    // flag of its own (only the retention_status mirror, which is
+    // exactly the exclusion used here).
+    const servedFromCache = blockchainCache.peek(CacheKeys.paymentsAll());
+    let result: any;
+    try {
+      result = await blockchainCache.get(
+        CacheKeys.paymentsAll(),
+        async () => {
+          const r = await fabricService.queryChaincode('QueryAllPayments', []);
+          if (!r.success) throw new Error(r.error || 'Failed to query blockchain');
+          return r;
+        },
+        30 * 1000
+      );
+    } catch (queryErr: any) {
+      logger.error(`[PAYMENT] Blockchain query failed: ${queryErr.message}`);
       return res.status(500).json({
         success: false,
         error: {
           code: 'BLOCKCHAIN_QUERY_FAILED',
-          message: result.error || 'Failed to query blockchain'
+          message: queryErr.message || 'Failed to query blockchain'
         },
         timestamp: new Date().toISOString()
       });
@@ -1629,7 +1666,7 @@ router.get('/pending-release', authMiddleware, async (req: Request, res: Respons
       data: payments,
       count: payments.length,
       filter: 'pending-release',
-      source: 'blockchain',
+      source: servedFromCache ? 'cache' : 'blockchain',
       timestamp: new Date().toISOString()
     });
   } catch (error: any) {

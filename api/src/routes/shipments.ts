@@ -509,12 +509,17 @@ router.post('/',
           actionUrls: { ECTA: '/portals/ecta?tab=shipments', SHIPPING: '/portals/shipping?tab=shipments' },
         });
         
-        // NOTE: no quality inspection is auto-created on shipment creation.
-        // A shipment has NO inspection row until an explicit quality request
-        // runs RequestInspection on-chain (POST /quality/inspections). The old
-        // auto-create inserted a Postgres-only PENDING inspection (NULL tx id)
-        // that the quality-request guard returned as "already exists", making
-        // the explicit quality step vacuous. Removed 2026-11-12.
+        // NOTE: no Postgres inspection ROW is auto-created on shipment
+        // creation. A shipment has NO PG inspection row until an explicit
+        // quality request runs RequestInspection on-chain (POST
+        // /quality/inspections). The old auto-create inserted a
+        // Postgres-only PENDING inspection (NULL tx id) that the
+        // quality-request guard returned as "already exists", making the
+        // explicit quality step vacuous. Removed 2026-11-12. The LEDGER
+        // inspection is different: CreateShipment itself PutStates an
+        // INSPECTION_<shipmentID> PENDING doc in the same transaction
+        // (main.go), so qualityInspectionCreated reports that ledger
+        // doc — true here — not the PG row.
 
         // DON'T link shipment to LC yet - this will be done after ECTA quality approval
         // The LC status should only change to SHIPPED after quality inspection is approved
@@ -522,7 +527,7 @@ router.post('/',
         
         res.status(201).json({
           success: true,
-          data: { shipmentID, status: 'CREATED', blockchainSynced: true },
+          data: { shipmentID, status: 'CREATED', blockchainSynced: true, txId: result.txId },
           autoMapped: {
             exporterID: finalExporterID,
             buyerID: finalBuyerID,
@@ -531,7 +536,8 @@ router.post('/',
             valueUSD: finalValueUSD,
           },
           documentsLinked: documentIDs.length,
-          qualityInspectionCreated: false, // no inspection is auto-created; explicit POST /quality/inspections runs RequestInspection on-chain
+          qualityInspectionCreated: true,
+          qualityInspectionId: shipmentID,
           txId: result.txId,
           timestamp: new Date().toISOString(),
         });
@@ -541,7 +547,7 @@ router.post('/',
         res.status(202).json({
           success: true,
           warning: 'Shipment saved but blockchain sync pending',
-          data: { shipmentID, status: 'CREATED', blockchainSynced: false },
+          data: { shipmentID, status: 'CREATED', blockchainSynced: false, txId: null },
           autoMapped: {
             exporterID: finalExporterID,
             buyerID: finalBuyerID,
@@ -954,8 +960,13 @@ router.get('/:shipmentID',
       // ✅ OPTIMIZATION: Try cache first, then blockchain, then PostgreSQL
       let shipmentData = null;
       let source = 'cache';
-      
+
       try {
+        // Label the source honestly: peek() reports a fresh cached
+        // entry before get() runs, so a cache hit is `source:"cache"`
+        // and only a real ledger fetch is `source:"blockchain"` (see
+        // contracts.ts GET — same fix).
+        const servedFromCache = blockchainCache.peek(CacheKeys.shipment(shipmentID));
         shipmentData = await blockchainCache.get(
           CacheKeys.shipment(shipmentID),
           async () => {
@@ -977,8 +988,8 @@ router.get('/:shipmentID',
           },
           5 * 60 * 1000 // 5 minute cache
         );
-        
-        source = 'blockchain'; // Either cache hit or fresh fetch
+
+        source = servedFromCache ? 'cache' : 'blockchain';
       } catch (blockchainError: any) {
         logger.warn(`Blockchain query failed for shipment ${shipmentID}, falling back to PostgreSQL: ${blockchainError.message}`);
       }

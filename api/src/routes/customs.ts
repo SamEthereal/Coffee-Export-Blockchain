@@ -1383,7 +1383,7 @@ router.put('/declaration/:declarationId/amend',
       }
 
       // Check if declaration can be amended (not yet cleared)
-      if (['CLEARED', 'REJECTED'].includes(currentDeclaration.status)) {
+      if (['CLEARED', 'REJECTED', 'CANCELLED'].includes(currentDeclaration.status)) {
         return res.status(400).json({
           success: false,
           error: { 
@@ -1394,35 +1394,55 @@ router.put('/declaration/:declarationId/amend',
         });
       }
 
-      const amendmentId = `AMD-${declarationId}-${Date.now()}`;
-
-      // Record amendment
-      await postgresDb.run(`
+      // Record the amendment in the migration-068 table. The old
+      // INSERT wrote columns this table never had (amended_by,
+      // old_quantity/new_quantity, …) and omitted every NOT NULL column
+      // the table requires, so every amend failed with PG 42703. The
+      // 068 shape is: amendment_number (per-declaration sequence),
+      // original_values / amended_values JSONB, amendment_requested_by
+      // and approval_status. Amendments apply immediately (approval
+      // 'approved'), as the old route intended.
+      const changedOriginal: Record<string, any> = {};
+      const changedAmended: Record<string, any> = {};
+      const trackChange = (field: string, oldValue: any, newValue: any) => {
+        if (newValue !== undefined && newValue !== null && String(newValue) !== String(oldValue)) {
+          changedOriginal[field] = oldValue;
+          changedAmended[field] = newValue;
+        }
+      };
+      trackChange('quantity', currentDeclaration.quantity, newQuantity);
+      trackChange('customsValueUSD', currentDeclaration.customs_value_usd, newCustomsValueUSD);
+      trackChange('hsCode', currentDeclaration.hs_code, newHsCode);
+      trackChange('description', currentDeclaration.description, newDescription);
+      trackChange('destination', currentDeclaration.destination, newDestination);
+      // customs_officer_id REFERENCES users(id); req.user.userId is a
+      // string, parse it (same pattern as the clearance routes below).
+      const officerIdInt = /^\d+$/.test(String(user?.userId || '')) ? parseInt(user.userId, 10) : null;
+      // Next amendment number for this declaration (the unique
+      // (declaration_id, amendment_number) constraint backstops a
+      // concurrent amend racing this read).
+      const nextNumberRow: any = await postgresDb.get(
+        `SELECT COALESCE(MAX(amendment_number), 0) + 1 AS n FROM declaration_amendments WHERE declaration_id = $1`,
+        [currentDeclaration.declaration_id || declarationId]
+      );
+      const amendmentRow: any = await postgresDb.get(`
         INSERT INTO declaration_amendments (
-          amendment_id, declaration_id, amendment_reason, amended_by,
-          old_quantity, new_quantity, old_value, new_value,
-          old_hs_code, new_hs_code, old_description, new_description,
-          old_destination, new_destination, additional_documents,
-          status, created_at
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, CURRENT_TIMESTAMP)
+          declaration_id, amendment_number, amendment_reason,
+          original_values, amended_values, amendment_requested_by,
+          customs_officer_id, approval_status
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, 'approved')
+        RETURNING amendment_id, amendment_number
       `, [
-        amendmentId,
         currentDeclaration.declaration_id || declarationId,
+        nextNumberRow?.n || 1,
         amendmentReason,
+        JSON.stringify(changedOriginal),
+        JSON.stringify(changedAmended),
         user.username,
-        currentDeclaration.quantity,
-        newQuantity || currentDeclaration.quantity,
-        currentDeclaration.customs_value_usd,
-        newCustomsValueUSD || currentDeclaration.customs_value_usd,
-        currentDeclaration.hs_code,
-        newHsCode || currentDeclaration.hs_code,
-        currentDeclaration.description,
-        newDescription || currentDeclaration.description,
-        currentDeclaration.destination,
-        newDestination || currentDeclaration.destination,
-        additionalDocuments || '',
-        'APPROVED'
+        officerIdInt
       ]);
+      const amendmentId = amendmentRow?.amendment_id;
+      const amendmentNumber = amendmentRow?.amendment_number;
 
       // Update declaration with amendments
       const updates: string[] = [];
@@ -1466,9 +1486,10 @@ router.put('/declaration/:declarationId/amend',
         success: true,
         data: {
           amendmentId,
+          amendmentNumber,
           declarationId: currentDeclaration.declaration_id || declarationId,
           amendmentReason,
-          status: 'APPROVED',
+          status: 'approved',
           amendedFields: {
             quantity: newQuantity,
             customsValueUSD: newCustomsValueUSD,
@@ -1526,7 +1547,7 @@ router.delete('/declaration/:declarationId/cancel',
         });
       }
 
-      if (['CLEARED', 'INSPECTION_COMPLETE'].includes(declaration.status)) {
+      if (['CLEARED', 'INSPECTION_COMPLETE', 'CANCELLED'].includes(declaration.status)) {
         return res.status(400).json({
           success: false,
           error: { 
@@ -1537,18 +1558,25 @@ router.delete('/declaration/:declarationId/cancel',
         });
       }
 
-      // Update declaration status to CANCELLED
+      // The old UPDATE set cancellation_date (no such column — the
+      // table has cancelled_at, migration 068 §4) and passed the
+      // username string into cancelled_by, which is INTEGER REFERENCES
+      // users(id). Both failed with PG 42703/22P02 before the status
+      // CHECK (which also excluded CANCELLED, fixed by migration 080)
+      // was even reached. Parse the numeric user id like the other
+      // customs routes; NULL when it is not numeric.
+      const cancelledById = /^\d+$/.test(String(user?.userId || '')) ? parseInt(user.userId, 10) : null;
       await postgresDb.run(`
         UPDATE customs_declarations
         SET status = 'CANCELLED',
             cancellation_reason = $1,
             cancelled_by = $2,
-            cancellation_date = CURRENT_TIMESTAMP,
+            cancelled_at = CURRENT_TIMESTAMP,
             updated_at = CURRENT_TIMESTAMP
         WHERE declaration_id = $3 OR declaration_number = $3
       `, [
         cancellationReason,
-        cancelledBy || user.username,
+        cancelledById,
         declarationId
       ]);
 

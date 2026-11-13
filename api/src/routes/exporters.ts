@@ -159,6 +159,10 @@ router.post('/exporter-applications',
       .isString().withMessage('Bank account number must be a string')
       .matches(/^\d{1,13}$/).withMessage('Bank account number must contain no more than 13 digits'),
     body('bankBranchName').optional().isString().withMessage('Bank branch name must be a string'),
+    // The approve dialog and some clients send bankBranch instead of
+    // bankBranchName (same alias pair as the approve route) — accept
+    // both so the branch is stored, not silently dropped.
+    body('bankBranch').optional().isString().withMessage('Bank branch must be a string'),
     body('bankBranchCode').optional().isString().withMessage('Bank branch code must be a string'),
     body('comments').optional().isString().withMessage('Comments must be a string'),
     body('documents').optional().isArray().withMessage('Documents must be an array'),
@@ -286,7 +290,7 @@ router.post('/exporter-applications',
         applicationData.region || '',
         applicationData.bankName || '',
         applicationData.bankAccountNumber || '',
-        applicationData.bankBranchName || '',
+        applicationData.bankBranchName || applicationData.bankBranch || '',
         applicationData.bankBranchCode || '',
         applicationData.comments || '',
         documentsJSON,
@@ -477,6 +481,35 @@ router.post('/exporter-applications/:applicationId/approve',
       }
 
       // Step 1: Register exporter on blockchain (CRITICAL - must succeed)
+      // Bank details are required at approve time: a licence must never
+      // be issued with no bank account on file. The effective value is
+      // the approve body's, falling back to what the application
+      // itself submitted — the old code wrote `bankName || null`
+      // unconditionally, so an approve without bank fields both issued
+      // the licence AND wiped the application's stored bank details
+      // with NULLs (live: APP-1794571476081-1T4V6R approved with
+      // licence 992111 while its application bank_* are all NULL).
+      const effectiveBankName = bankName || application.bank_name || null;
+      const effectiveBankAccount = bankAccountNumber || application.bank_account_number || null;
+      const effectiveBankBranch = bankBranch || application.bank_branch || null;
+      const effectiveBankBranchCode = bankBranchCode || application.bank_branch_code || null;
+      const missingBankFields = [
+        !effectiveBankName ? 'bankName' : null,
+        !effectiveBankAccount ? 'bankAccountNumber' : null,
+        !effectiveBankBranch ? 'bankBranch' : null,
+      ].filter(Boolean);
+      if (missingBankFields.length > 0) {
+        res.status(400).json({
+          success: false,
+          error: {
+            code: 'BANK_DETAILS_REQUIRED',
+            message: `Cannot approve application without bank details: missing ${missingBankFields.join(', ')} (supply them in the approve request or in the application)`
+          },
+          timestamp: new Date().toISOString()
+        });
+        return;
+      }
+
       logger.info(`Attempting to register exporter ${exporterId} on blockchain...`);
       logger.info(`Application data for ${exporterId}:`, {
         capital_requirement: application.capital_requirement,
@@ -605,7 +638,7 @@ router.post('/exporter-applications/:applicationId/approve',
          WHERE application_id = $13`,
         ['approved', approvalDate, exporterId, ectaLicenseNumber, approvalDate, expiryDate,
          licenseResult.digitalSignature, licenseResult.verificationCode,
-         bankName || null, bankAccountNumber || null, bankBranch || null, bankBranchCode || null, applicationId]
+         effectiveBankName, effectiveBankAccount, effectiveBankBranch, effectiveBankBranchCode, applicationId]
       );
       
       logger.info(`✅ Application approved: ${applicationId} -> ${exporterId}`);
@@ -647,9 +680,8 @@ router.post('/exporter-applications/:applicationId/approve',
           [exporterId, application.company_name, ectaLicenseNumber,
            application.capital_requirement, labCertified,
            application.professional_taster, application.taster_certificate,
-           expiryDate, bankName || application.bank_name || null,
-           bankBranch || application.bank_branch || null,
-           bankBranchCode || application.bank_branch_code || null,
+           expiryDate, effectiveBankName, effectiveBankBranch,
+           effectiveBankBranchCode,
            application.contact_person, application.email, application.phone,
            application.address]
         );
@@ -705,9 +737,9 @@ router.post('/exporter-applications/:applicationId/approve',
         username: newUsername,  // ✅ Send the NEW username (exporterId)
         oldUsername: oldUsername,  // Include old username for reference
         temporaryPassword: 'Use your existing password',
-        bankName: bankName || undefined,
-        bankBranch: bankBranch || undefined,
-        bankBranchCode: bankBranchCode || undefined,
+        bankName: effectiveBankName || undefined,
+        bankBranch: effectiveBankBranch || undefined,
+        bankBranchCode: effectiveBankBranchCode || undefined,
         loginUrl: `${loginUrl}/login`,
       });
       

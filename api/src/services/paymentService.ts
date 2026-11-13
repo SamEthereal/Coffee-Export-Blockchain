@@ -5,6 +5,7 @@ import { FabricService } from './fabricService';
 import { DatabaseService } from './databaseService';
 import { AuditService } from './auditService';
 import { ExchangeRateService } from './exchangeRateService';
+import { CacheInvalidation } from './blockchainCacheService';
 import { logger } from '../utils/logger';
 
 /**
@@ -579,6 +580,11 @@ export class PaymentService {
           releaseData.paymentID
         ]
       );
+
+      // The payment just left the pending-release set: drop the cached
+      // full payment list behind GET /payments/pending-release so the
+      // tab stops listing it immediately (the 30s TTL is the backstop).
+      CacheInvalidation.paymentsAll();
 
       // The contract status is NOT advanced here: 'PAYMENT_RECEIVED'
       // was never a CONTRACT state, so PAYMENT_RECEIVED → COMPLETED

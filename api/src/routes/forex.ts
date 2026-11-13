@@ -13,6 +13,7 @@ import { logger } from '../utils/logger';
 import notificationService from '../services/notificationService';
 import { dedupeById, isValidForex } from '../utils/dataFilters';
 import { BlockchainSignatureService } from '../services/blockchainSignatureService';
+import { blockchainCache, CacheKeys, CacheInvalidation } from '../services/blockchainCacheService';
 
 const router = express.Router();
 const fabricService = FabricService.getInstance();
@@ -271,29 +272,63 @@ router.get('/rates/:currency', authMiddleware, async (req, res) => {
 });
 
 // GET /api/v1/forex/rates/:currency/current — fetch only the active ledger rate.
+// Cached 60s: a chaincode evaluate costs ~1s on a warm gateway (measured
+// 0.96–1.29s) for reference data that changes only when NBE sets a new
+// rate. There is no PG mirror of exchange rates to serve instead, so a
+// short cache is the safe speed-up; the set-rate handlers below
+// invalidate it, so a newly set rate is visible immediately. Display
+// reads only — the allocate flow takes its rate from the request body,
+// never from this endpoint.
 router.get('/rates/:currency/current', authMiddleware, async (req, res) => {
   try {
     const currency = String(req.params.currency || '').toUpperCase();
-    const result = await fabricService.queryChaincode('GetCurrentExchangeRate', [currency]);
-    if (result.success && result.data) {
-      return res.json({ success: true, data: result.data, source: 'blockchain', timestamp: new Date().toISOString() });
-    }
-    return res.status(404).json({ success: false, error: { code: 'ACTIVE_RATE_NOT_FOUND', message: result.error || `No active ${currency} rate is recorded` } });
+    const servedFromCache = blockchainCache.peek(CacheKeys.forexRate(currency));
+    const data = await blockchainCache.get(
+      CacheKeys.forexRate(currency),
+      async () => {
+        const result = await fabricService.queryChaincode('GetCurrentExchangeRate', [currency]);
+        if (result.success && result.data) return result.data;
+        // The ledger reports "no active rate" as a failed evaluate, not
+        // as an empty success — keep the old 404 for that case, and
+        // only 500 genuine transport failures (thrown below).
+        const err: any = new Error(result.error || `No active ${currency} rate is recorded`);
+        err.code = 'ACTIVE_RATE_NOT_FOUND';
+        throw err;
+      },
+      60 * 1000
+    );
+    return res.json({ success: true, data, source: servedFromCache ? 'cache' : 'blockchain', timestamp: new Date().toISOString() });
   } catch (error: any) {
+    if (error?.code === 'ACTIVE_RATE_NOT_FOUND') {
+      return res.status(404).json({ success: false, error: { code: 'ACTIVE_RATE_NOT_FOUND', message: error.message } });
+    }
     return res.status(500).json({ success: false, error: { code: 'QUERY_FAILED', message: error.message } });
   }
 });
 
 // GET /api/v1/forex/retention-policy/:commodityType — active policy from ledger.
+// Same 60s-cache reasoning as the rate read above; invalidated by the
+// set-policy handler below.
 router.get('/retention-policy/:commodityType', authMiddleware, async (req, res) => {
   try {
     const commodityType = String(req.params.commodityType || '').toUpperCase();
-    const result = await fabricService.queryChaincode('GetCurrentRetentionPolicy', [commodityType]);
-    if (result.success && result.data) {
-      return res.json({ success: true, data: result.data, source: 'blockchain', timestamp: new Date().toISOString() });
-    }
-    return res.status(404).json({ success: false, error: { code: 'ACTIVE_POLICY_NOT_FOUND', message: result.error || `No active ${commodityType} policy is recorded` } });
+    const servedFromCache = blockchainCache.peek(CacheKeys.retentionPolicy(commodityType));
+    const data = await blockchainCache.get(
+      CacheKeys.retentionPolicy(commodityType),
+      async () => {
+        const result = await fabricService.queryChaincode('GetCurrentRetentionPolicy', [commodityType]);
+        if (result.success && result.data) return result.data;
+        const err: any = new Error(result.error || `No active ${commodityType} policy is recorded`);
+        err.code = 'ACTIVE_POLICY_NOT_FOUND';
+        throw err;
+      },
+      60 * 1000
+    );
+    return res.json({ success: true, data, source: servedFromCache ? 'cache' : 'blockchain', timestamp: new Date().toISOString() });
   } catch (error: any) {
+    if (error?.code === 'ACTIVE_POLICY_NOT_FOUND') {
+      return res.status(404).json({ success: false, error: { code: 'ACTIVE_POLICY_NOT_FOUND', message: error.message } });
+    }
     return res.status(500).json({ success: false, error: { code: 'QUERY_FAILED', message: error.message } });
   }
 });
@@ -330,6 +365,9 @@ router.post('/retention-policy', authMiddleware, requireRole(['NBE', 'NBE_ADMIN'
 
     if (result.success) {
       logger.info(`✅ Retention policy set: ${policyID} - ${commodityType} @ ${retentionRate}%`);
+      // The active-policy read is cached (60s) — a newly set policy
+      // must be visible immediately.
+      CacheInvalidation.retentionPolicy(String(commodityType).toUpperCase());
       return res.status(200).json({
         success: true,
         message: 'Retention policy set successfully',
@@ -396,6 +434,9 @@ router.post('/exchange-rate', authMiddleware, requireRole(['NBE', 'NBE_ADMIN', '
 
     if (result.success) {
       logger.info(`✅ Exchange rate set: ${rateID} - ${currency} @ ${buyingRate}/${sellingRate}`);
+      // The active-rate read is cached (60s) — invalidate it so the
+      // newly set rate is visible immediately.
+      CacheInvalidation.forexRate(String(currency).toUpperCase());
       return res.status(200).json({
         success: true,
         message: 'Exchange rate set successfully',
@@ -549,6 +590,9 @@ router.post('/rates', authMiddleware, requireRole(['NBE', 'NBE_ADMIN', 'NBE OFFI
     if (result.success) {
       const midRate = (parseFloat(buyingRate) + parseFloat(sellingRate)) / 2;
       logger.info(`✅ Exchange rate set: ${currency} = ${buyingRate}/${sellingRate} ETB by ${setBy}`);
+      // The active-rate read is cached (60s) — a newly set rate must
+      // be visible immediately.
+      CacheInvalidation.forexRate(String(currency).toUpperCase());
       res.status(201).json({ 
         success: true, 
         data: { rateId, currency, buyingRate, sellingRate, midRate, setBy },
@@ -798,6 +842,33 @@ router.post('/:forexId/confirm', authMiddleware, requireRole(['NBE', 'NBE_ADMIN'
 
     logger.info(`[FOREX] Confirming forex request: ${forexId} by ${confirmedBy}`);
 
+    // PG-state pre-check: a repeat confirm is answered from the
+    // mirror in milliseconds, without a ~2.5s chain round-trip that
+    // ends in a 500. The mirror is written by this same handler on
+    // success (and by the NBE approve route), so a CONFIRMED or
+    // ALLOCATED row already tells the answer. A missing row means
+    // nothing — the ledger is still the authority then, and the chain
+    // error mapping below answers honestly.
+    try {
+      const pgRow: any = await postgresDb.get(
+        `SELECT status FROM forex_allocations WHERE allocation_id = $1 OR forex_id = $1 LIMIT 1`,
+        [forexId]
+      );
+      const pgStatus = String(pgRow?.status || '').toUpperCase();
+      if (pgStatus === 'CONFIRMED' || pgStatus === 'ALLOCATED' || pgStatus === 'UTILIZED') {
+        return res.status(400).json({
+          success: false,
+          error: {
+            code: 'ALREADY_CONFIRMED',
+            message: `Forex request ${forexId} is already ${pgStatus}; it cannot be confirmed again (must be REQUESTED)`
+          },
+          timestamp: new Date().toISOString()
+        });
+      }
+    } catch (pgErr) {
+      logger.warn(`[FOREX] Confirm pre-check PG lookup failed for ${forexId}, proceeding to chain:`, pgErr);
+    }
+
     // Connect as NBE to confirm the request
     await fabricService.connectAsOrg('NBEMSP');
 
@@ -854,6 +925,33 @@ router.post('/:forexId/confirm', authMiddleware, requireRole(['NBE', 'NBE_ADMIN'
       });
     } else {
       logger.error(`[FOREX] ❌ Failed to confirm forex: ${result.error}`);
+      // A chaincode state refusal is a client error, not a server
+      // error: ConfirmForex refuses anything that is not REQUESTED
+      // (forex.go: "cannot be confirmed, current status: %s (must be
+      // REQUESTED)"), and a missing forex id is a 404-shaped 400, not
+      // a 500. Only genuine transport/peer failures stay 500.
+      const chainErr = String(result.error || '');
+      const stateRefusal = /cannot be confirmed|must be REQUESTED|already (confirmed|allocated)|does not exist|not found/i.test(chainErr);
+      if (stateRefusal) {
+        const alreadyConfirmed = /current status:\s*CONFIRMED/i.test(chainErr);
+        // State the chaincode's own reason: the per-peer envelope
+        // repeats it six times (once per endorsing peer), so take the
+        // first peer message; otherwise strip the fabricService
+        // outcome suffix (". Fabric rejected the proposal…" /
+        // ". Transaction outcome is unknown…").
+        const firstPeer = chainErr.match(/message=([^\n]+)/);
+        const reason = (firstPeer?.[1] ||
+          chainErr.split(/\. (Fabric rejected the proposal|Transaction outcome is unknown)/)[0]
+        ).trim();
+        return res.status(400).json({
+          success: false,
+          error: {
+            code: alreadyConfirmed ? 'ALREADY_CONFIRMED' : 'INVALID_TRANSITION',
+            message: reason || 'Failed to confirm forex request'
+          },
+          timestamp: new Date().toISOString()
+        });
+      }
       return res.status(500).json({
         success: false,
         error: { code: 'BLOCKCHAIN_ERROR', message: result.error || 'Failed to confirm forex request' },

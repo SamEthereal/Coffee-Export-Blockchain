@@ -115,6 +115,26 @@ function documentAccessDenied(res: Response) {
 // documents to their own application. Shipment/contract linkage is NOT
 // enforced here: those entities are chain-first and may have no Postgres
 // row to check against (residual, reported in the RBAC audit).
+/**
+ * Confirm a document registration actually landed on the ledger after
+ * an invoke timeout. The /upload 5s race can lose while the submit
+ * still commits (AND-of-6 endorsement + ordering runs 5–9s); a single
+ * immediate read can also miss the commit, so poll briefly. Returns
+ * true as soon as ReadDocumentHash finds the doc.
+ */
+async function confirmDocumentOnLedger(documentID: string): Promise<boolean> {
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const read = await fabricService.readDocumentHash(documentID);
+      if (read.success && read.data) return true;
+    } catch {
+      // keep polling — a failed read proves nothing about the write
+    }
+    if (attempt < 3) await new Promise((r) => setTimeout(r, 2000));
+  }
+  return false;
+}
+
 function assertOwnApplication(user: any, entityType: string | undefined, entityId: string | undefined): string | null {
   if (!user || (user.role !== 'APPLICANT' && user.role !== 'EXPORTER')) return null;
   if (!entityType || !entityId) return null;
@@ -437,6 +457,15 @@ router.post('/:documentID/verify',
 // returns it without re-registering. Refuses when the stored file is
 // missing (404) or no longer matches the recorded hash (409) —
 // re-anchoring tampered bytes would launder the tamper.
+//
+// Ledger-only direction (smoothness): when the upload registered the
+// hash on-chain but the PG INSERT failed (PG_MIRROR_FAILED), there is
+// no PG row to start from. The caller then supplies the kept file's
+// location and the upload's metadata in the body
+// {filePath, entityType, entityId, documentType, fileName,
+// blockchainTxId?}; the handler verifies the file hash against the
+// ledger DOCHASH doc and INSERTs the missing PG row. The filePath must
+// resolve inside the uploads directory (traversal guard).
 router.post('/:documentId/retry-sync',
   authMiddleware,
   requireRole('ADMIN', 'ECTA', 'ECTA_ADMIN'),
@@ -448,9 +477,85 @@ router.post('/:documentId/retry-sync',
         [documentId]
       );
       if (!doc) {
-        return res.status(404).json({
-          success: false,
-          error: { code: 'NOT_FOUND', message: 'Document not found' },
+        // Ledger-only heal: no PG row, but the hash may already be
+        // anchored on-chain. Rebuild the row from the ledger doc plus
+        // the caller-supplied kept file — never from an unverified
+        // hash, and never from a file outside the uploads tree.
+        const { filePath, entityType, entityId, documentType, fileName, blockchainTxId } = (req.body || {}) as any;
+        if (!filePath || typeof filePath !== 'string') {
+          return res.status(404).json({
+            success: false,
+            error: {
+              code: 'NOT_FOUND',
+              message: 'Document not found in the database and no filePath was supplied to heal a ledger-only registration (POST the kept filePath, entityType, entityId, documentType and fileName from the PG_MIRROR_FAILED response)'
+            },
+            timestamp: new Date().toISOString(),
+          });
+        }
+        const ledger = await fabricService.readDocumentHash(documentId);
+        if (!ledger.success || !ledger.data) {
+          return res.status(404).json({
+            success: false,
+            error: { code: 'NOT_FOUND', message: `Document ${documentId} is on neither the database nor the ledger` },
+            timestamp: new Date().toISOString(),
+          });
+        }
+        const ledgerDoc: any = ledger.data;
+        const ledgerHash = String(ledgerDoc.hash || ledgerDoc.Hash || '');
+        const uploadsRoot = path.resolve(path.join(__dirname, '../../uploads'));
+        const resolved = path.resolve(filePath);
+        if (!resolved.startsWith(uploadsRoot + path.sep) || !fs.existsSync(resolved) || !fs.statSync(resolved).isFile()) {
+          return res.status(404).json({
+            success: false,
+            error: { code: 'FILE_NOT_FOUND', message: 'The supplied filePath does not resolve to a file inside the uploads directory' },
+            timestamp: new Date().toISOString(),
+          });
+        }
+        const fileHash = crypto.createHash('sha256').update(fs.readFileSync(resolved)).digest('hex');
+        if (ledgerHash && ledgerHash.toLowerCase() !== fileHash.toLowerCase()) {
+          return res.status(409).json({
+            success: false,
+            error: { code: 'HASH_MISMATCH', message: 'Kept file no longer matches the ledger hash; refusing to mirror it' },
+            timestamp: new Date().toISOString(),
+          });
+        }
+        const finalEntityType = String(entityType || ledgerDoc.entityType || ledgerDoc.EntityType || 'CONTRACT').toUpperCase();
+        const finalEntityId = entityId || ledgerDoc.entityId || ledgerDoc.EntityID || documentId;
+        const finalDocType = documentType || ledgerDoc.category || ledgerDoc.Category || 'OTHER';
+        const finalFileName = fileName || ledgerDoc.filename || ledgerDoc.Filename || path.basename(resolved);
+        const stat = fs.statSync(resolved);
+        const ext = path.extname(resolved).toLowerCase();
+        const mimeByExt: Record<string, string> = { '.pdf': 'application/pdf', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.doc': 'application/msword', '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', '.xls': 'application/vnd.ms-excel', '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' };
+        const user = (req as any).user;
+        const uploadedById = /^\d+$/.test(String(user?.userId || '')) ? parseInt(user.userId, 10) : null;
+        await postgresDb.run(
+          `INSERT INTO documents (
+            document_id, entity_type, entity_id, shipment_id, contract_id, exporter_id, document_type, file_name,
+            file_hash, mime_type, file_size, file_path, uploaded_by, status, blockchain_tx_id, verification_status
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, 'pending')
+          ON CONFLICT (document_id) DO NOTHING`,
+          [
+            documentId,
+            finalEntityType,
+            finalEntityId,
+            finalEntityType === 'SHIPMENT' ? finalEntityId : null,
+            finalEntityType === 'CONTRACT' ? finalEntityId : null,
+            user?.exporterId || user?.username || null,
+            finalDocType,
+            finalFileName,
+            fileHash,
+            mimeByExt[ext] || 'application/octet-stream',
+            stat.size,
+            resolved,
+            uploadedById,
+            'active',
+            blockchainTxId || null
+          ]
+        );
+        logger.info(`✅ Document ${documentId} healed ledger-only → PG (hash ${fileHash.slice(0, 12)}…)`);
+        return res.json({
+          success: true,
+          data: { documentId, healedFrom: 'ledger-only', blockchainTxId: blockchainTxId || null, hash: fileHash, filePath: resolved },
           timestamp: new Date().toISOString(),
         });
       }
@@ -618,6 +723,10 @@ router.post('/upload',
   requireRole('EXPORTER', 'ECTA', 'ECTA_ADMIN', 'ECX', 'ECX_ADMIN', 'BANKS', 'BANK_ADMIN', 'NBE', 'NBE_ADMIN', 'CUSTOMS', 'CUSTOMS_ADMIN', 'SHIPPING', 'SHIPPING_ADMIN', 'APPLICANT'),
   upload.single('file'),
   async (req: Request, res: Response) => {
+    // Hoisted for the catch below: the uploaded file must be KEPT when
+    // the ledger write succeeded (retry-sync needs the exact bytes)
+    // and deleted only when nothing was registered on-chain.
+    let blockchainWriteSuccessful = false;
     try {
       const file = req.file;
       const user = (req as any).user;
@@ -666,6 +775,30 @@ router.post('/upload',
       
       const finalFileName = fileName || file.originalname;
 
+      // Pre-validate the PG length limits BEFORE the chain call: a
+      // 300-char fileName used to pass the ledger write and then 500
+      // on the PG INSERT (file_name VARCHAR(255)), leaving a valid
+      // ledger hash with no PG row and the file deleted. Fail fast
+      // with 400 while nothing is on-chain yet (file deleted below).
+      const pgLengthError =
+        finalFileName.length > 255 ? { field: 'fileName', limit: 255 } :
+        String(finalEntityId).length > 100 ? { field: 'entityId', limit: 100 } :
+        String(finalDocType).length > 100 ? { field: 'documentType', limit: 100 } :
+        null;
+      if (pgLengthError) {
+        if (file) fs.unlinkSync(file.path);
+        return res.status(400).json({
+          success: false,
+          error: {
+            code: 'FIELD_TOO_LONG',
+            message: `${pgLengthError.field} exceeds the ${pgLengthError.limit}-character database limit`,
+            field: pgLengthError.field,
+            limit: pgLengthError.limit
+          },
+          timestamp: new Date().toISOString()
+        });
+      }
+
       logger.info('Uploading authenticated document:', { 
         documentID, 
         finalEntityType, 
@@ -684,10 +817,12 @@ router.post('/upload',
         logger.warn(`Failed to sync approval requirements:`, syncErr);
       }
 
-      // ✅ BLOCKCHAIN FIRST: Register document hash on blockchain (with 10s timeout)
+      // ✅ BLOCKCHAIN FIRST: Register document hash on blockchain (5s
+      // race — see the read-back below: a timeout does not mean the
+      // submit failed, it only means the caller stopped waiting)
       logger.info(`Registering document ${documentID} on blockchain...`);
       let blockchainResult;
-      let blockchainWriteSuccessful = false;
+      blockchainWriteSuccessful = false;
       
       try {
         // Race the blockchain call against a 10-second timeout
@@ -714,6 +849,23 @@ router.post('/upload',
           error: blockchainError.message,
           txId: null
         };
+        // The 5s race above can lose while the submit still lands:
+        // RegisterDocumentHash is an AND-of-6 endorsement + commit,
+        // measured at 5–9s, and one upload timed out at 5s while its
+        // tx (a3ecaa1a…) committed ~3s later — the old code then
+        // reported blockchainSynced:false for a document that IS on
+        // the ledger. Before reporting "sync pending", read the ledger
+        // back (a few short polls to cover the commit lag): if the
+        // doc is there, the write succeeded and the response must say
+        // so. The txId itself is unrecoverable from the doc, so it
+        // stays null with ledgerConfirmedByReadback set.
+        if (/timed out/i.test(blockchainError.message || '')) {
+          if (await confirmDocumentOnLedger(documentID)) {
+            logger.info(`✅ Document ${documentID} confirmed on ledger by read-back after invoke timeout`);
+            blockchainResult = { success: true, error: null, txId: null, confirmedByReadback: true } as any;
+            blockchainWriteSuccessful = true;
+          }
+        }
       }
 
       if (blockchainWriteSuccessful) {
@@ -746,33 +898,65 @@ router.post('/upload',
       // the hash recorded by Fabric is still the hash of the stored file.
       const visualSignatureAdded = false;
 
-      // ✅ Cache in PostgreSQL
-      await postgresDb.run(
-        `INSERT INTO documents (
+      // ✅ Cache in PostgreSQL. The INSERT is wrapped separately from
+      // the ledger write above: if it fails AFTER a successful ledger
+      // registration, the caller must still learn the documentId and
+      // txId (the ledger state is real) and the file must be KEPT so
+      // POST /documents/:id/retry-sync can complete the mirror. The
+      // old bare INSERT fell through to the outer catch, which deleted
+      // the file and returned a bare 500 with neither id — the ledger
+      // hash was orphaned and unhealable.
+      try {
+        await postgresDb.run(
+          `INSERT INTO documents (
           document_id, entity_type, entity_id, shipment_id, contract_id, exporter_id, document_type, file_name,
           file_hash, mime_type, file_size, file_path, uploaded_by, status, description, 
           blockchain_tx_id, verification_status
         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`,
-        [
-          documentID,
-          finalEntityType,
-          finalEntityId,
-          finalEntityType === 'SHIPMENT' ? finalEntityId : null,
-          finalEntityType === 'CONTRACT' ? finalEntityId : null,
-          exporterID, 
-          finalDocType, 
-          finalFileName,
-          fileHash,
-          file.mimetype,
-          file.size,
-          file.path,
-          user.userId || user.sub || user.username,
-          'active',
-          description || null,
-          blockchainResult.success ? blockchainResult.txId : null,
-          visualSignatureAdded ? 'signed' : 'pending'
-        ]
-      );
+          [
+            documentID,
+            finalEntityType,
+            finalEntityId,
+            finalEntityType === 'SHIPMENT' ? finalEntityId : null,
+            finalEntityType === 'CONTRACT' ? finalEntityId : null,
+            exporterID,
+            finalDocType,
+            finalFileName,
+            fileHash,
+            file.mimetype,
+            file.size,
+            file.path,
+            user.userId || user.sub || user.username,
+            'active',
+            description || null,
+            blockchainResult.success ? blockchainResult.txId : null,
+            visualSignatureAdded ? 'signed' : 'pending'
+          ]
+        );
+      } catch (pgErr: any) {
+        if (!blockchainWriteSuccessful) throw pgErr;
+        logger.error(`[DOCUMENTS] PG mirror failed for ${documentID} after ledger registration ${blockchainResult.txId}; file kept at ${file.path} for retry-sync:`, pgErr.message);
+        return res.status(500).json({
+          success: false,
+          error: {
+            code: 'PG_MIRROR_FAILED',
+            message: `Document registered on blockchain but could not be saved to the database (${pgErr.message}). The file was kept — complete the mirror with POST /documents/${documentID}/retry-sync.`,
+            documentId: documentID,
+            blockchainTxId: blockchainResult.txId || null
+          },
+          data: {
+            documentId: documentID,
+            fileName: finalFileName,
+            hash: fileHash,
+            status: 'ledger-only',
+            blockchainTxId: blockchainResult.txId || null,
+            blockchainSynced: true,
+            filePath: file.path,
+            retrySync: `/api/v1/documents/${documentID}/retry-sync`
+          },
+          timestamp: new Date().toISOString()
+        });
+      }
 
       // ✅ Record in document_signatures if visual signature was added
       if (visualSignatureAdded) {
@@ -811,7 +995,8 @@ router.post('/upload',
           ipfsCID: null,
           status: 'uploaded',
           blockchainTxId: blockchainResult?.txId || null,
-          blockchainSynced: blockchainWriteSuccessful
+          blockchainSynced: blockchainWriteSuccessful,
+          ...(blockchainResult?.confirmedByReadback ? { ledgerConfirmedByReadback: true } : {})
         },
         warning: blockchainWriteSuccessful ? null : 'Document saved but blockchain sync pending',
         timestamp: new Date().toISOString()
@@ -819,8 +1004,13 @@ router.post('/upload',
     } catch (error: any) {
       logger.error('Upload authenticated document error:', error);
       
-      // Clean up uploaded file on error
-      if (req.file) {
+      // Clean up uploaded file on error — but NOT when the ledger
+      // write succeeded: the file is the only copy of the bytes the
+      // ledger hash covers, and retry-sync needs it to complete the
+      // PG mirror. Deleting it orphaned the ledger hash (a 300-char
+      // fileName used to 500 after a valid ledger registration with
+      // the file gone).
+      if (req.file && !blockchainWriteSuccessful) {
         try {
           fs.unlinkSync(req.file.path);
         } catch (unlinkError) {
@@ -861,6 +1051,9 @@ router.post('/upload-registration',
   uploadRegistrationLimiter,
   upload.single('file'),
   async (req: Request, res: Response) => {
+    // Hoisted for the catch below (same rule as the authenticated
+    // upload): keep the file when the ledger write succeeded.
+    let registrationLedgerOk = false;
     try {
       const file = req.file;
       
@@ -883,6 +1076,27 @@ router.post('/upload-registration',
       const finalEntityId = entityId || documentID;
       const finalDocType = documentType || 'OTHER';
       const finalFileName = fileName || file.originalname;
+
+      // Pre-validate the PG length limits BEFORE the chain call (same
+      // 255-char file_name trap as the authenticated upload above).
+      const pgLengthError =
+        finalFileName.length > 255 ? { field: 'fileName', limit: 255 } :
+        String(finalEntityId).length > 100 ? { field: 'entityId', limit: 100 } :
+        String(finalDocType).length > 100 ? { field: 'documentType', limit: 100 } :
+        null;
+      if (pgLengthError) {
+        if (file) fs.unlinkSync(file.path);
+        return res.status(400).json({
+          success: false,
+          error: {
+            code: 'FIELD_TOO_LONG',
+            message: `${pgLengthError.field} exceeds the ${pgLengthError.limit}-character database limit`,
+            field: pgLengthError.field,
+            limit: pgLengthError.limit
+          },
+          timestamp: new Date().toISOString()
+        });
+      }
 
       logger.info('Uploading registration document:', { 
         documentID, 
@@ -921,6 +1135,7 @@ router.post('/upload-registration',
       }
 
       logger.info(`✅ Registration document ${documentID} registered on blockchain (TX: ${blockchainResult.txId})`);
+      registrationLedgerOk = true;
 
       // ✅ Record blockchain signature
       try {
@@ -942,36 +1157,58 @@ router.post('/upload-registration',
         logger.warn('Failed to record signature:', sigErr);
       }
 
-      // ✅ Cache in PostgreSQL
-      // LEG3 F2: uploaded_by is INTEGER (users.id). This route is
-      // public (applicants have no token yet), so there is usually no
-      // req.user at all — the old literal 'applicant' string 500'd with
-      // 22P02 AFTER the chain write already succeeded, leaving an
-      // orphan on-chain hash with no PG row. Same class as the M-9 fix
-      // in the authenticated register route: parse the numeric user id,
-      // null when there is none.
+      // ✅ Cache in PostgreSQL — wrapped separately from the ledger
+      // write (same PG_MIRROR_FAILED rule as the authenticated
+      // upload): a PG failure after a successful ledger registration
+      // returns the documentId + txId and KEEPS the file so
+      // retry-sync can complete the mirror, instead of a bare 500
+      // with the file deleted and the ledger hash orphaned.
       const reqUserId = (req as any).user?.userId;
       const uploadedById = /^\d+$/.test(String(reqUserId || '')) ? parseInt(String(reqUserId), 10) : null;
-      await postgresDb.run(
-        `INSERT INTO documents (
+      try {
+        await postgresDb.run(
+          `INSERT INTO documents (
           document_id, entity_type, entity_id, document_type, file_name,
           file_hash, mime_type, file_size, file_path, uploaded_by, status, blockchain_tx_id
         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
-        [
-          documentID,
-          finalEntityType,
-          finalEntityId,
-          finalDocType,
-          finalFileName,
-          fileHash,
-          file.mimetype,
-          file.size,
-          file.path,
-          uploadedById,
-          'active',
-          blockchainResult.txId
-        ]
-      );
+          [
+            documentID,
+            finalEntityType,
+            finalEntityId,
+            finalDocType,
+            finalFileName,
+            fileHash,
+            file.mimetype,
+            file.size,
+            file.path,
+            uploadedById,
+            'active',
+            blockchainResult.txId
+          ]
+        );
+      } catch (pgErr: any) {
+        logger.error(`[DOCUMENTS] PG mirror failed for registration document ${documentID} after ledger registration ${blockchainResult.txId}; file kept at ${file.path} for retry-sync:`, pgErr.message);
+        return res.status(500).json({
+          success: false,
+          error: {
+            code: 'PG_MIRROR_FAILED',
+            message: `Document registered on blockchain but could not be saved to the database (${pgErr.message}). The file was kept — complete the mirror with POST /documents/${documentID}/retry-sync.`,
+            documentId: documentID,
+            blockchainTxId: blockchainResult.txId || null
+          },
+          data: {
+            documentId: documentID,
+            fileName: finalFileName,
+            hash: fileHash,
+            status: 'ledger-only',
+            blockchainTxId: blockchainResult.txId || null,
+            blockchainSynced: true,
+            filePath: file.path,
+            retrySync: `/api/v1/documents/${documentID}/retry-sync`
+          },
+          timestamp: new Date().toISOString()
+        });
+      }
 
       logger.info('Registration document cached in database:', documentID);
 
@@ -990,8 +1227,9 @@ router.post('/upload-registration',
     } catch (error: any) {
       logger.error('Upload registration document error:', error);
       
-      // Clean up uploaded file on error
-      if (req.file) {
+      // Clean up uploaded file on error — but NOT when the ledger
+      // write succeeded (retry-sync needs the exact bytes).
+      if (req.file && !registrationLedgerOk) {
         try {
           fs.unlinkSync(req.file.path);
         } catch (unlinkError) {

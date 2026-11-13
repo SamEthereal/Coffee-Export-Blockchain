@@ -39,6 +39,13 @@ export const errorHandler = (
       statusCode = 400;
       errorCode = 'INVALID_UPLOAD';
     }
+  } else if ((error as any).code === 'ENAMETOOLONG' || /ENAMETOOLONG|name too long/i.test(error.message || '')) {
+    // Multer's disk storage builds the stored name from the uploaded
+    // originalname; a >255-byte name fails at the filesystem open with
+    // a bare Error (not a MulterError), which previously surfaced as
+    // HTTP 500. The file is the client's fault, not the server's.
+    statusCode = 400;
+    errorCode = 'FILENAME_TOO_LONG';
   } else if (/Only (PDF|JPG|PNG|DOC|DOCX|XLS|XLSX)/.test(error.message || '')) {
     statusCode = 400;
     errorCode = 'INVALID_FILE_TYPE';
