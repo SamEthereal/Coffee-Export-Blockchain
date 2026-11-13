@@ -2216,11 +2216,11 @@ router.post('/:paymentID/release',
 
       logger.info(`[PAYMENTS] NBE releasing payment ${paymentID} to exporter ${exporterID}`);
 
-      // Get payment details to validate
-      const payment = await postgresDb.get(
-        'SELECT * FROM payments WHERE payment_id = $1',
-        [paymentID]
-      );
+      // Get payment details to validate — ledger-first resolution (see
+      // PaymentService.resolvePayment): a payment with no PG row but a
+      // ledger record resolves from the ledger instead of 404'ing. A
+      // payment with a PG row resolves from PG exactly as before.
+      const payment = await paymentService.resolvePayment(paymentID);
 
       if (!payment) {
         return res.status(404).json({
