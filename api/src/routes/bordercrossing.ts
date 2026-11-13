@@ -179,8 +179,11 @@ router.post('/initiate', authMiddleware,
     body('vehicleNumber').notEmpty().withMessage('Vehicle number is required'),
     body('driverName').notEmpty().withMessage('Driver name is required'),
     body('sealNumber').notEmpty().withMessage('Seal number is required'),
-    body('cargoWeight').isNumeric().withMessage('Cargo weight must be a number'),
-    body('numberOfBags').isNumeric().withMessage('Number of bags must be a number'),
+    // isNumeric used to admit a negative cargo weight and negative bag
+    // counts, which InitiateBorderCrossing stores without a range check.
+    // The initiation dialog already requires weight > 0 and bags >= 0.
+    body('cargoWeight').isFloat({ gt: 0 }).withMessage('Cargo weight must be a number greater than 0'),
+    body('numberOfBags').isInt({ min: 0 }).withMessage('Number of bags must be a whole number of 0 or more'),
   ],
   validateRequest,
   async (req, res) => {
@@ -310,7 +313,15 @@ router.post('/:id/clear', authMiddleware,
 
 // POST /api/v1/bordercrossing/:id/detain — Detain shipment
 router.post('/:id/detain', authMiddleware,
-  requireRole('CUSTOMS', 'CUSTOMS_ADMIN'), async (req, res) => {
+  requireRole('CUSTOMS', 'CUSTOMS_ADMIN'),
+  [
+    // The decision dialog marks the detention reason required, but the
+    // route used to default an empty reason to 'Inspection required' —
+    // a detention with no recorded reason. Require it here, as the form
+    // already claims.
+    body('detentionReason').trim().notEmpty().withMessage('Detention reason is required'),
+  ],
+  validateRequest, async (req, res) => {
   try {
     const { id } = req.params;
     const { clearanceOfficer, detentionReason, nextSteps } = req.body;
@@ -611,6 +622,12 @@ router.post('/:id/arrival', authMiddleware,
 router.post('/:id/inspect',
   authMiddleware,
   requireRole('CUSTOMS', 'CUSTOMS_ADMIN'),
+  [
+    // The inspection dialog requires the inspector's name, but the route
+    // used to pass an undefined inspector straight into the ledger note.
+    body('inspectorName').trim().notEmpty().withMessage('Inspector name is required'),
+  ],
+  validateRequest,
   async (req, res) => {
     try {
       const { id } = req.params;

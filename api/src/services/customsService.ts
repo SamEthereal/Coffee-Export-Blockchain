@@ -304,6 +304,13 @@ export class CustomsService {
     duties?: number;
     taxes?: number;
     clearanceNotes?: string;
+    // Clearance details from the officer's form (migration 081 columns).
+    // clearanceDate is the date the officer recorded, not the server
+    // time — the old code overwrote it with NOW().
+    clearanceDate?: string;
+    clearanceType?: string;
+    exitPoint?: string;
+    validityPeriod?: string;
     userId: string;
     userOrg: string;
   }) {
@@ -372,8 +379,9 @@ export class CustomsService {
          SET status = $1, cleared_by = $2, clearance_number = $3, 
              duties = $4, taxes = $5, clearance_notes = $6, 
              clearance_date = $7, blockchain_tx_id = $8,
+             clearance_type = $9, exit_point = $10, validity_period = $11,
              updated_at = CURRENT_TIMESTAMP
-         WHERE declaration_id = $9`,
+         WHERE declaration_id = $12`,
         [
           'CLEARED',
           clearanceData.clearedBy,
@@ -381,8 +389,11 @@ export class CustomsService {
           clearanceData.duties,
           clearanceData.taxes,
           clearanceData.clearanceNotes,
-          new Date().toISOString(),
+          clearanceData.clearanceDate || new Date().toISOString(),
           blockchainTxId,
+          clearanceData.clearanceType || null,
+          clearanceData.exitPoint || null,
+          clearanceData.validityPeriod || null,
           clearanceData.declarationID
         ]
       );

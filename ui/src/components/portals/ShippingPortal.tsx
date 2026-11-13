@@ -1491,10 +1491,12 @@ const ShippingPortal: React.FC = () => {
   
   // Handle rejection
   const handleReject = async () => {
-    if (!rejectionReason.trim()) {
+    // The API requires a reason of 3–1000 characters; a 1–2 character
+    // reason used to pass this form and 400 on the API.
+    if (rejectionReason.trim().length < 3) {
       setSnackbar({
         open: true,
-        message: '⚠️ Please provide a reason for rejection',
+        message: '⚠️ Please provide a rejection reason of at least 3 characters',
         severity: 'warning'
       });
       return;
@@ -1822,7 +1824,12 @@ const ShippingPortal: React.FC = () => {
     if (!bolForm.departurePort) validationErrors.push('• Departure Point is required');
     if (!bolForm.destinationPort) validationErrors.push('• Destination Point is required');
     if (!bolForm.estimatedArrival) validationErrors.push('• Estimated Arrival is required');
-    if (!bolForm.weight || parseFloat(bolForm.weight) <= 0) validationErrors.push('• Weight must be greater than 0');
+    // No weight check: the weight field is auto-filled from the shipment
+    // quantity for display on the document — the ledger B/L records the
+    // document number, carrier, vessel/flight, route and ETA, and takes
+    // no weight. The old `parseFloat(weight) <= 0` check both blocked
+    // submission on a display-only field and let "abc" through (NaN
+    // <= 0 is false).
 
     // Transport mode specific validation
     if (bolForm.transportMode === 'SEA') {

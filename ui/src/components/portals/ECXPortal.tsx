@@ -277,12 +277,27 @@ const ECXPortal: React.FC = () => {
 
   // STEP 1: Register intake (warehouse receipt)
   const handleIntake = async () => {
+    // The API now 400s a non-positive quantity and a bag count below 1;
+    // guard here too so the officer gets the message in the form instead
+    // of a server error. parseFloat('') is NaN and parseInt('') is NaN —
+    // both used to slip through (bags defaulted server-side, quantity
+    // -5 was stored on the ledger).
+    const qty = parseFloat(intakeForm.quantity);
+    if (!Number.isFinite(qty) || qty <= 0) {
+      showError('Quantity Required', 'Enter a quantity greater than 0 kg.');
+      return;
+    }
+    const bagsNum = intakeForm.bags === '' ? NaN : parseInt(intakeForm.bags);
+    if (intakeForm.bags !== '' && (!Number.isFinite(bagsNum) || bagsNum < 1)) {
+      showError('Bags Invalid', 'Number of bags must be a whole number of at least 1 (leave blank to auto-compute from the quantity).');
+      return;
+    }
     try {
       const ecxLotNumber = genLotNumber(intakeForm.origin);
       const payload = {
         ecxLotNumber, ...intakeForm,
-        quantity: parseFloat(intakeForm.quantity),
-        bags: parseInt(intakeForm.bags) || Math.ceil(parseFloat(intakeForm.quantity) / 60),
+        quantity: qty,
+        bags: Number.isFinite(bagsNum) ? bagsNum : Math.ceil(qty / 60),
         // Leg2 #13: the old payload also sent status + warehouseReceiptDate,
         // which POST /ecx/lots never reads — dropped instead of silently
         // discarded. Status is set server-side (WAREHOUSED) and the
@@ -320,12 +335,30 @@ const ECXPortal: React.FC = () => {
       return;
     }
     const moisture = parseFloat(gradeForm.moistureContent);
+    // Range guards — the API now enforces the same ranges, so a direct
+    // call and the form agree. Moisture above 12 is NOT blocked here: it
+    // is a rejection, and the API lets GradeECXLot set REJECTED. Only
+    // physically impossible values (below 0, above 100) are input errors,
+    // as are scores outside the 0–100 SCA scale and negative defects —
+    // all three used to be stored verbatim on a GRADED lot.
+    if (score < 0 || score > 100) {
+      showError('Cupping Score Out of Range', 'Enter the SCA cupping score (0–100) before recording the grade.');
+      return;
+    }
+    if (!Number.isFinite(moisture) || moisture < 0 || moisture > 100) {
+      showError('Moisture Out of Range', 'Enter the moisture content (0–100%). Above 12% rejects the lot.');
+      return;
+    }
     // Leg2 #13: defectCount needs the same client-side guard as
     // qualityScore — parseInt('') is NaN, which JSON turns into null
     // and the API 400s. Require a value instead of sending null.
     const defects = parseInt(gradeForm.defectCount);
     if (gradeForm.defectCount === '' || !Number.isFinite(defects)) {
       showError('Defect Count Required', 'Enter the defect count (0–100) before recording the grade.');
+      return;
+    }
+    if (defects < 0) {
+      showError('Defect Count Invalid', 'Enter a defect count of 0 or more before recording the grade.');
       return;
     }
     // No client-side moisture block: recording >12% is a rejection, not
@@ -730,7 +763,7 @@ const ECXPortal: React.FC = () => {
           <>
             <GhostButton brand="ECX" onClick={() => setIntakeOpen(false)}>Cancel</GhostButton>
             <AnimatedButton variant="contained" brandColor={BRAND_COLOR} onClick={handleIntake} loadingLabel="Issuing receipt…" ledgerWrite
-              disabled={!intakeForm.exporterId || !intakeForm.origin || !intakeForm.quantity || !intakeForm.processingMethod}>
+              disabled={!intakeForm.exporterId || !intakeForm.origin || !intakeForm.quantity || !(parseFloat(intakeForm.quantity) > 0) || !intakeForm.processingMethod || (intakeForm.bags !== '' && !(parseInt(intakeForm.bags) >= 1))}>
               Issue Warehouse Receipt
             </AnimatedButton>
           </>
@@ -815,7 +848,7 @@ const ECXPortal: React.FC = () => {
           <>
             <GhostButton brand="ECX" onClick={() => setGradeOpen(false)}>Cancel</GhostButton>
             <AnimatedButton variant="contained" brandColor="#ff9800" onClick={handleGrade} loadingLabel="Recording grade…" ledgerWrite
-              disabled={!gradeForm.grade || !gradeForm.qualityScore || !gradeForm.moistureContent || !gradeForm.defectCount || !gradeForm.gradingOfficer}>
+              disabled={!gradeForm.grade || !gradeForm.qualityScore || !gradeForm.moistureContent || !gradeForm.defectCount || !gradeForm.gradingOfficer || parseFloat(gradeForm.qualityScore) < 0 || parseFloat(gradeForm.qualityScore) > 100 || parseFloat(gradeForm.moistureContent) < 0 || parseFloat(gradeForm.moistureContent) > 100 || parseInt(gradeForm.defectCount) < 0}>
               Record Grade
             </AnimatedButton>
           </>

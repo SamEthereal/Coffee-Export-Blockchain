@@ -116,6 +116,15 @@ const BorderCrossingInitiationDialog: React.FC<BorderCrossingInitiationDialogPro
     if (!form.vehicleNumber) e.vehicleNumber = 'Vehicle number required';
     if (!form.driverName) e.driverName = 'Driver name required';
     if (!form.borderPost) e.borderPost = 'Border post required';
+    // POST /bordercrossing/initiate also requires these (400 otherwise),
+    // but the old validate() never checked them — the form could be
+    // submitted with the fields the API demands left blank.
+    if (!form.contractId) e.contractId = 'Contract ID required';
+    if (!form.exporterId) e.exporterId = 'Exporter ID required';
+    if (!form.finalDestination) e.finalDestination = 'Final destination required';
+    if (!form.exitPermitNumber) e.exitPermitNumber = 'Exit permit number required';
+    if (!form.customsDeclaration) e.customsDeclaration = 'Customs declaration number required';
+    if (!form.sealNumber) e.sealNumber = 'Seal number required';
     // Chaincode parseFloat/parseInt on these two — "undefined" or "" fails.
     const weight = parseFloat(form.cargoWeight);
     if (!Number.isFinite(weight) || weight <= 0) e.cargoWeight = 'Cargo weight must be a number > 0 (kg)';
@@ -176,8 +185,8 @@ const BorderCrossingInitiationDialog: React.FC<BorderCrossingInitiationDialogPro
         <Grid container spacing={2}>
           <Grid item xs={12} sm={6}><TextField fullWidth label="Crossing ID *" value={form.crossingId} onChange={(e) => setForm({...form, crossingId: e.target.value})} error={!!errors.crossingId} helperText={errors.crossingId || 'Ledger key for this crossing'} /></Grid>
           <Grid item xs={12} sm={6}><TextField fullWidth label="Shipment ID *" value={form.shipmentId} onChange={(e) => setForm({...form, shipmentId: e.target.value})} error={!!errors.shipmentId} helperText={errors.shipmentId} /></Grid>
-          <Grid item xs={12} sm={6}><TextField fullWidth label="Contract ID" value={form.contractId} onChange={(e) => setForm({...form, contractId: e.target.value})} /></Grid>
-          <Grid item xs={12} sm={6}><TextField fullWidth label="Exporter ID" value={form.exporterId} onChange={(e) => setForm({...form, exporterId: e.target.value})} /></Grid>
+          <Grid item xs={12} sm={6}><TextField fullWidth label="Contract ID *" value={form.contractId} onChange={(e) => setForm({...form, contractId: e.target.value})} error={!!errors.contractId} helperText={errors.contractId} /></Grid>
+          <Grid item xs={12} sm={6}><TextField fullWidth label="Exporter ID *" value={form.exporterId} onChange={(e) => setForm({...form, exporterId: e.target.value})} error={!!errors.exporterId} helperText={errors.exporterId} /></Grid>
           <Grid item xs={12} sm={6}><TextField fullWidth select label="Border Post *" value={form.borderPost} onChange={(e) => setForm({...form, borderPost: e.target.value})} error={!!errors.borderPost}>
             <MenuItem value="Galafi">Galafi (Djibouti)</MenuItem>
             <MenuItem value="Moyale">Moyale (Kenya)</MenuItem>
@@ -199,12 +208,12 @@ const BorderCrossingInitiationDialog: React.FC<BorderCrossingInitiationDialogPro
             <MenuItem value="RAIL">RAIL</MenuItem>
           </TextField></Grid>
           <Grid item xs={12} sm={6}><TextField fullWidth label="Transit Country" value={form.transitCountry} onChange={(e) => setForm({...form, transitCountry: e.target.value})} placeholder="If transiting through another country" /></Grid>
-          <Grid item xs={12} sm={6}><TextField fullWidth label="Final Destination" value={form.finalDestination} onChange={(e) => setForm({...form, finalDestination: e.target.value})} placeholder="Ultimate destination country" /></Grid>
-          <Grid item xs={12} sm={6}><TextField fullWidth label="Exit Permit Number" value={form.exitPermitNumber} onChange={(e) => setForm({...form, exitPermitNumber: e.target.value})} /></Grid>
-          <Grid item xs={12} sm={6}><TextField fullWidth label="Customs Declaration (SAD) No." value={form.customsDeclaration} onChange={(e) => setForm({...form, customsDeclaration: e.target.value})} /></Grid>
+          <Grid item xs={12} sm={6}><TextField fullWidth label="Final Destination *" value={form.finalDestination} onChange={(e) => setForm({...form, finalDestination: e.target.value})} placeholder="Ultimate destination country" error={!!errors.finalDestination} helperText={errors.finalDestination} /></Grid>
+          <Grid item xs={12} sm={6}><TextField fullWidth label="Exit Permit Number *" value={form.exitPermitNumber} onChange={(e) => setForm({...form, exitPermitNumber: e.target.value})} error={!!errors.exitPermitNumber} helperText={errors.exitPermitNumber} /></Grid>
+          <Grid item xs={12} sm={6}><TextField fullWidth label="Customs Declaration (SAD) No. *" value={form.customsDeclaration} onChange={(e) => setForm({...form, customsDeclaration: e.target.value})} error={!!errors.customsDeclaration} helperText={errors.customsDeclaration} /></Grid>
           <Grid item xs={12} sm={6}><TextField fullWidth label="Vehicle Number *" value={form.vehicleNumber} onChange={(e) => setForm({...form, vehicleNumber: e.target.value})} error={!!errors.vehicleNumber} helperText={errors.vehicleNumber} placeholder="e.g., ET-3-12345" /></Grid>
           <Grid item xs={12} sm={6}><TextField fullWidth label="Driver Name *" value={form.driverName} onChange={(e) => setForm({...form, driverName: e.target.value})} error={!!errors.driverName} helperText={errors.driverName} /></Grid>
-          <Grid item xs={12} sm={6}><TextField fullWidth label="Seal Number" value={form.sealNumber} onChange={(e) => setForm({...form, sealNumber: e.target.value})} /></Grid>
+          <Grid item xs={12} sm={6}><TextField fullWidth label="Seal Number *" value={form.sealNumber} onChange={(e) => setForm({...form, sealNumber: e.target.value})} error={!!errors.sealNumber} helperText={errors.sealNumber} /></Grid>
           <Grid item xs={12} sm={6}><TextField fullWidth type="number" label="Cargo Weight (kg) *" value={form.cargoWeight} onChange={(e) => setForm({...form, cargoWeight: e.target.value})} error={!!errors.cargoWeight} helperText={errors.cargoWeight} inputProps={{ min: 0, step: 'any' }} /></Grid>
           <Grid item xs={12} sm={6}><TextField fullWidth type="number" label="Number of Bags *" value={form.numberOfBags} onChange={(e) => setForm({...form, numberOfBags: e.target.value})} error={!!errors.numberOfBags} helperText={errors.numberOfBags} inputProps={{ min: 0, step: 1 }} /></Grid>
         </Grid>

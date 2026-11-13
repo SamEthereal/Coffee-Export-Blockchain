@@ -2380,7 +2380,8 @@ router.post('/:shipmentID/container/stuff',
   [
     param('shipmentID').notEmpty().withMessage('Shipment ID is required'),
     body('containerNumber').notEmpty().withMessage('Container number is required'),
-    body('containerType').notEmpty().withMessage('Container type is required'),
+    // The stuffing dialog offers exactly these three types as a select.
+    body('containerType').isIn(['DRY', 'REEFER', 'OPEN_TOP']).withMessage('Container type must be DRY, REEFER or OPEN_TOP'),
   ],
   validateRequest,
   async (req, res) => {
@@ -2447,15 +2448,25 @@ router.post('/:shipmentID/vessel/load',
   async (req, res) => {
     try {
       const { shipmentID } = req.params;
-      const { notes } = req.body;
+      const { vesselName, voyageNumber, notes } = req.body;
 
       logger.info(`[SHIPPING] Recording vessel loading for shipment: ${shipmentID}`);
 
       await fabricService.connectAsOrg('ShippingMSP');
 
+      // LoadOnVessel takes only (shipmentID, notes), so the vessel name
+      // and voyage the dialog collects used to be dropped on the floor —
+      // the officer entered them and the ledger kept only the fixed
+      // 'Container loaded on vessel' note. Fold them into the note so
+      // the record carries what the form collected.
+      const vesselNote = [
+        vesselName ? `Vessel ${String(vesselName).trim()}` : '',
+        voyageNumber ? `voyage ${String(voyageNumber).trim()}` : '',
+        notes || 'Container loaded on vessel',
+      ].filter(Boolean).join(' — ');
       const result = await fabricService.invokeChaincode('LoadOnVessel', [
         shipmentID,
-        notes || 'Container loaded on vessel'
+        vesselNote
       ]);
 
       if (result.success) {
@@ -2504,15 +2515,23 @@ router.post('/:shipmentID/vessel/depart',
   async (req, res) => {
     try {
       const { shipmentID } = req.params;
-      const { notes } = req.body;
+      const { vesselName, voyageNumber, notes } = req.body;
 
       logger.info(`[SHIPPING] Recording vessel departure for shipment: ${shipmentID}`);
 
       await fabricService.connectAsOrg('ShippingMSP');
 
+      // Same as vessel loading above: DepartFromPort takes only
+      // (shipmentID, notes), so fold the dialog's vessel / voyage into
+      // the note instead of dropping them.
+      const vesselNote = [
+        vesselName ? `Vessel ${String(vesselName).trim()}` : '',
+        voyageNumber ? `voyage ${String(voyageNumber).trim()}` : '',
+        notes || 'Vessel departed from Djibouti',
+      ].filter(Boolean).join(' — ');
       const result = await fabricService.invokeChaincode('DepartFromPort', [
         shipmentID,
-        notes || 'Vessel departed from Djibouti'
+        vesselNote
       ]);
 
       if (result.success) {

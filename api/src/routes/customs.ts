@@ -788,6 +788,12 @@ router.post('/declaration/submit',
     body('declarationID').notEmpty(),
     body('shipmentID').notEmpty(),
     body('exporterID').notEmpty(),
+    // Quantity is optional here (the permit-issuance auto-declaration
+    // path and the suite submit without one), but when supplied it must
+    // be a positive number: the old code coerced "abc" to 0 and stored
+    // -5 kg on the ledger (SubmitCustomsDeclaration has no range check).
+    body('quantity').optional().isFloat({ gt: 0 }).withMessage('Quantity must be a number greater than 0'),
+    body('declarationType').optional().isIn(['STANDARD', 'SIMPLIFIED', 'EUDR_ENHANCED']).withMessage('Declaration type must be STANDARD, SIMPLIFIED or EUDR_ENHANCED'),
   ],
   validateRequest,
   async (req: Request, res: Response) => {
@@ -1350,6 +1356,11 @@ router.put('/declaration/:declarationId/amend',
   [
     param('declarationId').notEmpty().withMessage('Declaration ID is required'),
     body('amendmentReason').notEmpty().withMessage('Amendment reason is required'),
+    // The amended values used to be written unchecked: newQuantity "abc"
+    // threw a Postgres 22P02 (500) and -5 was stored. There is no amend
+    // form in the portals — this is the API backstop for direct callers.
+    body('newQuantity').optional().isFloat({ gt: 0 }).withMessage('New quantity must be a number greater than 0'),
+    body('newCustomsValueUSD').optional().isFloat({ gt: 0 }).withMessage('New customs value must be a number greater than 0'),
   ],
   validateRequest,
   async (req: Request, res: Response) => {
@@ -1830,7 +1841,10 @@ router.post('/declaration/:declarationId/valuation',
   [
     param('declarationId').notEmpty().withMessage('Declaration ID is required'),
     body('valuationMethod').isIn(['TRANSACTION', 'IDENTICAL', 'SIMILAR', 'DEDUCTIVE', 'COMPUTED', 'FALLBACK']).withMessage('Invalid valuation method'),
-    body('adjustedValue').isNumeric().withMessage('Adjusted value must be numeric'),
+    // isNumeric used to admit 0 and negatives, so a valuation could set
+    // the declaration's customs value to -500. The dialog already guards
+    // this client-side; the API is the backstop for direct callers.
+    body('adjustedValue').isFloat({ gt: 0 }).withMessage('Adjusted value must be a number greater than 0'),
   ],
   validateRequest,
   async (req: Request, res: Response) => {
@@ -1969,7 +1983,16 @@ export default router;
 router.post('/declaration/:declarationId/review',
   authMiddleware,
   requireRole('CUSTOMS', 'CUSTOMS_ADMIN'),
-  param('declarationId').notEmpty(),
+  [
+    param('declarationId').notEmpty(),
+    // The inspection dialog offers exactly these types, and sends the
+    // scheduled date as an ISO timestamp. The route used to accept any
+    // string for both (and the chaincode records neither), so a typo'd
+    // type or a garbage date passed silently.
+    body('inspectionType').optional().isIn(['DOCUMENTARY', 'STANDARD', 'EUDR_ENHANCED', 'RISK_BASED', 'XRAY', 'FULL']).withMessage('Inspection type must be DOCUMENTARY, STANDARD, EUDR_ENHANCED, RISK_BASED, XRAY or FULL'),
+    body('scheduledDate').optional().isISO8601().withMessage('Scheduled date must be a valid date'),
+  ],
+  validateRequest,
   async (req: Request, res: Response) => {
     try {
       const { declarationId } = req.params;
@@ -2192,7 +2215,16 @@ router.post('/declaration/:declarationId/inspect', authMiddleware,
 router.post('/declaration/:declarationId/complete-inspection',
   authMiddleware,
   requireRole('CUSTOMS', 'CUSTOMS_ADMIN'),
-  param('declarationId').notEmpty(),
+  [
+    param('declarationId').notEmpty(),
+    // A FAILED result must never complete an inspection: the route moves
+    // UNDER_INSPECTION → UNDER_REVIEW unconditionally, so a FAILED sent
+    // here would wrongly advance a failed inspection. The dialog routes
+    // FAILED to the rejection dialog; the API enforces the same rule for
+    // direct callers.
+    body('inspectionResult').optional().isIn(['PASSED']).withMessage('Only a PASSED inspection completes here — record a FAILED inspection through the rejection dialog'),
+  ],
+  validateRequest,
   async (req: Request, res: Response) => {
     try {
       const { declarationId } = req.params;
@@ -2409,7 +2441,24 @@ router.post('/declaration/:declarationId/reject',
 router.post('/declaration/:declarationId/clear',
   authMiddleware,
   requireRole('CUSTOMS', 'CUSTOMS_ADMIN'),
-  param('declarationId').notEmpty(),
+  [
+    param('declarationId').notEmpty(),
+    // VAT used to be stored unchecked: a negative vatAmount landed in
+    // the PG taxes column (the chaincode takes no VAT parameter). The
+    // duty itself is enforced below (DUTY_MISMATCH / DUTY_REQUIRED).
+    body('vatAmount').optional().isFloat({ min: 0 }).withMessage('VAT amount must be a number of 0 or more'),
+    // The clearance dialog marks these required, but the route used to
+    // destructure and drop them — clearance_date was overwritten with
+    // NOW() and type / exit point / validity were stored nowhere
+    // (migration 081 adds the columns). Validate against the dialog's
+    // own option lists; 'CUSTOM' validity has no days field in the
+    // dialog, so it is not an acceptable value.
+    body('clearanceType').optional().isIn(['FULL', 'CONDITIONAL', 'PARTIAL', 'EXPEDITED']).withMessage('Clearance type must be FULL, CONDITIONAL, PARTIAL or EXPEDITED'),
+    body('exitPoint').optional().isIn(['DJIBOUTI', 'MOYALE', 'GALAFI', 'BOLE_AIRPORT']).withMessage('Exit point must be DJIBOUTI, MOYALE, GALAFI or BOLE_AIRPORT'),
+    body('validityPeriod').optional().isIn(['7', '14', '30']).withMessage('Clearance validity must be 7, 14 or 30 days'),
+    body('clearanceDate').optional().isISO8601().withMessage('Clearance date must be a valid date'),
+  ],
+  validateRequest,
   async (req: Request, res: Response) => {
     try {
       const { declarationId } = req.params;
@@ -2545,6 +2594,12 @@ router.post('/declaration/:declarationId/clear',
         duties: exportDuty || 0,
         taxes: vatAmount || 0,
         clearanceNotes: clearanceRemarks,
+        // The form's clearance details used to be dropped here; they are
+        // now stored by the service (migration 081 columns) instead.
+        clearanceDate: clearanceDate || undefined,
+        clearanceType: clearanceType || undefined,
+        exitPoint: exitPoint || undefined,
+        validityPeriod: validityPeriod || undefined,
         userId: user.username,
         userOrg: user.org || 'CustomsMSP'
       });

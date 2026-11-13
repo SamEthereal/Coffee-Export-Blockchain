@@ -2032,6 +2032,11 @@ const ExporterPortal: React.FC = () => {
       // moves the real shipment row to FREIGHT_BOOKED (aa0947f fix). The
       // old PUT /shipments/:id/status {status:'SHIPPED'} wrote a status no
       // machine produces, so the PG CHECK silently dropped the mirror.
+      const departureDate = new Date(shippingForm.estimatedDeparture);
+      if (!Number.isFinite(departureDate.getTime())) {
+        showError('Invalid Departure Date', 'Enter a valid estimated departure date before booking.');
+        return;
+      }
       const response = await apiFetch('/shipping/bookings', {
         method: 'POST',
         headers: {
@@ -2047,7 +2052,10 @@ const ExporterPortal: React.FC = () => {
           portOfLoading: shippingForm.portOfLoading,
           portOfDischarge: shippingForm.portOfDischarge,
           estimatedDepartureDate: shippingForm.estimatedDeparture,
-          estimatedArrivalDate: new Date(new Date(shippingForm.estimatedDeparture).getTime() + 15 * 24 * 60 * 60 * 1000).toISOString(),
+          estimatedArrivalDate: new Date(departureDate.getTime() + 15 * 24 * 60 * 60 * 1000).toISOString(),
+          // The dialog's Special Instructions used to be dropped here —
+          // the API now stores them (migration 081).
+          specialInstructions: shippingForm.specialInstructions || undefined,
         })
       });
 
@@ -6610,7 +6618,7 @@ This contract is registered with ECTA and approved by NBE.
               <Typography variant="body2">
                 Shipment: <strong>{selectedShipmentForShipping.shipmentId}</strong> • Quantity: <strong>{selectedShipmentForShipping.quantity ? Number(selectedShipmentForShipping.quantity).toLocaleString() : '0'} kg</strong>
                 <br />
-                Delivered — post-delivery freight booking. Booking sets the shipment to FREIGHT_BOOKED, from which land transport can start.
+                Delivered — post-delivery freight booking. The shipment stays DELIVERED; the FREIGHT_BOOKED move applies only to shipments still in CREATED or CUSTOMS_CLEARED.
               </Typography>
             </Alert>
 
@@ -6714,7 +6722,7 @@ This contract is registered with ECTA and approved by NBE.
                 <br />
                 2. Bill of Lading (B/L) issued by the shipping line after customs clearance
                 <br />
-                3. Shipment status becomes FREIGHT_BOOKED — land transport can start from here
+                3. This post-delivery booking leaves the shipment DELIVERED; a booking made while the shipment is CREATED or CUSTOMS_CLEARED moves it to FREIGHT_BOOKED, from which land transport can start
                 <br />
                 4. Proceed to Payment Settlement
               </Typography>

@@ -1385,6 +1385,25 @@ ${solution}`);
   const handleScheduleInspection = async (declarationId: string) => {
     const token = localStorage.getItem('authToken');
     if (!token) return;
+
+    // The dialog marks date, time and exporter contact required, but
+    // nothing validated them: an empty or past date was sent as
+    // "T09:00:00.000Z" and the API ignored it entirely, so the scheduled
+    // inspection carried no usable date and no contact. Fail in the form
+    // with the same rules the fields claim.
+    const today = new Date().toISOString().split('T')[0];
+    if (!inspectionForm.scheduledDate || inspectionForm.scheduledDate < today) {
+      setSnackbar({ open: true, message: 'Inspection date is required and cannot be in the past', severity: 'error' });
+      return;
+    }
+    if (!inspectionForm.scheduledTime) {
+      setSnackbar({ open: true, message: 'Inspection time is required', severity: 'error' });
+      return;
+    }
+    if (!inspectionForm.contactPerson.trim() || !inspectionForm.contactPhone.trim()) {
+      setSnackbar({ open: true, message: 'Exporter contact person and phone are required', severity: 'error' });
+      return;
+    }
     
     try {
       console.log('[CUSTOMS] Scheduling inspection for:', declarationId);
@@ -1739,12 +1758,12 @@ ${rejectionForm.officerNotes ? '\n[INTERNAL NOTES - NOT VISIBLE TO EXPORTER]:\n'
       validationErrors.push('• Exporter ID is required');
     }
     
-    if (!newDeclarationForm.quantity || parseFloat(newDeclarationForm.quantity) <= 0) {
-      validationErrors.push('• Quantity must be greater than 0');
+    if (!newDeclarationForm.quantity || !Number.isFinite(parseFloat(newDeclarationForm.quantity)) || parseFloat(newDeclarationForm.quantity) <= 0) {
+      validationErrors.push('• Quantity must be a number greater than 0');
     }
     
-    if (!newDeclarationForm.value || parseFloat(newDeclarationForm.value) <= 0) {
-      validationErrors.push('• Value must be greater than 0');
+    if (!newDeclarationForm.value || !Number.isFinite(parseFloat(newDeclarationForm.value)) || parseFloat(newDeclarationForm.value) <= 0) {
+      validationErrors.push('• Value must be a number greater than 0');
     }
     
     if (!newDeclarationForm.destination || newDeclarationForm.destination.trim() === '') {
@@ -3541,7 +3560,9 @@ ${rejectionForm.officerNotes ? '\n[INTERNAL NOTES - NOT VISIBLE TO EXPORTER]:\n'
                     <MenuItem value="7">7 Days (Expedited)</MenuItem>
                     <MenuItem value="14">14 Days (Air Freight / EUDR)</MenuItem>
                     <MenuItem value="30">30 Days (Standard Sea Freight)</MenuItem>
-                    <MenuItem value="CUSTOM">Custom Period</MenuItem>
+                    {/* No CUSTOM option: the form collects no custom number
+                        of days, so a CUSTOM validity could never be stored
+                        — the API now rejects it with a 400. */}
                   </PortalField>
                 </Grid>
 
@@ -3912,8 +3933,10 @@ ${rejectionForm.officerNotes ? '\n[INTERNAL NOTES - NOT VISIBLE TO EXPORTER]:\n'
                 !newDeclarationForm.shipmentId ||
                 !newDeclarationForm.exporterId ||
                 !newDeclarationForm.quantity ||
+                !Number.isFinite(parseFloat(newDeclarationForm.quantity)) ||
                 parseFloat(newDeclarationForm.quantity) <= 0 ||
                 !newDeclarationForm.value ||
+                !Number.isFinite(parseFloat(newDeclarationForm.value)) ||
                 parseFloat(newDeclarationForm.value) <= 0 ||
                 !newDeclarationForm.destination ||
                 !newDeclarationForm.portOfExit ||
