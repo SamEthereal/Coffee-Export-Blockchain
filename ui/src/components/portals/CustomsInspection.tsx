@@ -338,7 +338,7 @@ export const CustomsInspection: React.FC<CustomsInspectionProps> = ({ onCreateDe
                         >
                           View
                         </AnimatedButton>
-                        {getStatus(inspection) === 'APPROVED' && getExportPermitNo(inspection) !== 'Not Issued' && (
+                        {['APPROVED', 'QUALITY_APPROVED', 'PERMIT_ISSUED'].includes(getStatus(inspection)) && getExportPermitNo(inspection) !== 'Not Issued' && (
                           <AnimatedButton
                             size="small"
                             variant="contained"
@@ -541,7 +541,7 @@ export const CustomsInspection: React.FC<CustomsInspectionProps> = ({ onCreateDe
                       ECTA has completed testing. Awaiting final approval and certificate issuance.
                     </Typography>
                   </Alert>
-                ) : getStatus(selectedInspection) === 'APPROVED' ? (
+                ) : ['APPROVED', 'QUALITY_APPROVED', 'PERMIT_ISSUED'].includes(getStatus(selectedInspection)) ? (
                   <Alert severity="success">
                     <Typography variant="body2" fontWeight={600}>
                       ✅ Inspection Approved - Ready for Customs
@@ -566,7 +566,7 @@ export const CustomsInspection: React.FC<CustomsInspectionProps> = ({ onCreateDe
         </DialogContent>
         <DialogActions sx={{ px: 3, pb: 2 }}>
           <Button onClick={() => setDetailsDialogOpen(false)}>Close</Button>
-          {selectedInspection && getStatus(selectedInspection) === 'APPROVED' && getExportPermitNo(selectedInspection) !== 'Not Issued' && (
+          {selectedInspection && ['APPROVED', 'QUALITY_APPROVED', 'PERMIT_ISSUED'].includes(getStatus(selectedInspection)) && getExportPermitNo(selectedInspection) !== 'Not Issued' && (
             <AnimatedButton
               variant="contained"
               brandColor="#4caf50"

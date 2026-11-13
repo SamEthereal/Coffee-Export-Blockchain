@@ -428,6 +428,14 @@ router.post('/bookings', authMiddleware,
     // bookingID is OPTIONAL (generated as BOOK-<Date.now()> when absent),
     // but a provided value must not be empty.
     body('bookingID').optional().isString().withMessage('bookingID must be a string').trim().notEmpty().withMessage('bookingID must not be empty'),
+    // numberOfContainers and the dates used to be written unchecked:
+    // "abc" containers threw a Postgres 22P02 (500) and a garbage date a
+    // 22008. The booking dialog sends none of these today, but the API
+    // is the backstop for direct callers.
+    body('numberOfContainers').optional().isInt({ min: 1 }).withMessage('Number of containers must be a whole number of at least 1'),
+    body('containerType').optional().isIn(['DRY', 'REEFER', 'OPEN_TOP']).withMessage('Container type must be DRY, REEFER or OPEN_TOP'),
+    body('estimatedDepartureDate').optional().isISO8601().withMessage('Estimated departure date must be a valid date'),
+    body('estimatedArrivalDate').optional().isISO8601().withMessage('Estimated arrival date must be a valid date'),
   ],
   validateRequest,
   async (req: Request, res: Response) => {
@@ -446,6 +454,9 @@ router.post('/bookings', authMiddleware,
       estimatedDepartureDate,
       estimatedArrivalDate
     } = req.body;
+    // The booking dialog's Special Instructions field used to be dropped
+    // here (no column existed); migration 081 adds it and it is stored.
+    const { specialInstructions } = req.body as any;
 
     // Use provided bookingID or generate one
     const bookingID = providedBookingID || `BOOK-${Date.now()}`;
@@ -461,8 +472,8 @@ router.post('/bookings', authMiddleware,
         booking_id, shipment_id, exporter_id, carrier, vessel_name,
         voyage_number, container_type, number_of_containers, origin,
         destination, estimated_departure, estimated_arrival, status,
-        created_at, updated_at
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NOW(), NOW())
+        special_instructions, created_at, updated_at
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, NOW(), NOW())
     `, [
       bookingID,
       // shipmentID is validated non-empty above (400 VALIDATION_ERROR),
@@ -478,7 +489,8 @@ router.post('/bookings', authMiddleware,
       portOfDischarge || 'New York',
       estimatedDepartureDate || null,
       estimatedArrivalDate || null,
-      'BOOKED'
+      'BOOKED',
+      specialInstructions || null
     ]);
 
     logger.info(`[SHIPPING] ✅ Booking created: ${bookingID}`);
@@ -1149,6 +1161,13 @@ router.put('/bookings/:bookingId/amend',
   [
     param('bookingId').notEmpty().withMessage('Booking ID is required'),
     body('amendmentReason').notEmpty().withMessage('Amendment reason is required'),
+    // Same unchecked-write holes as the create route: a non-numeric
+    // container count or a garbage date used to surface as a Postgres
+    // 500. There is no booking-amend form in the portals — API backstop.
+    body('newNumberOfContainers').optional().isInt({ min: 1 }).withMessage('New number of containers must be a whole number of at least 1'),
+    body('newContainerType').optional().isIn(['DRY', 'REEFER', 'OPEN_TOP']).withMessage('Container type must be DRY, REEFER or OPEN_TOP'),
+    body('newEstimatedDeparture').optional().isISO8601().withMessage('New estimated departure must be a valid date'),
+    body('newEstimatedArrival').optional().isISO8601().withMessage('New estimated arrival must be a valid date'),
   ],
   validateRequest,
   async (req: Request, res: Response) => {

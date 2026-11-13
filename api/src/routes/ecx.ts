@@ -277,7 +277,19 @@ const isPendingDeploy = (error?: string) =>
 
 // POST /api/v1/ecx/lots — warehouse intake (issue warehouse receipt)
 router.post('/lots', authMiddleware, requireRole('ECX', 'ECX_ADMIN'),
-  [body('exporterId').notEmpty(), body('origin').notEmpty(), body('quantity').isNumeric(), body('processingMethod').notEmpty()],
+  [
+    body('exporterId').notEmpty(),
+    // The intake dialog offers exactly these origins / methods /
+    // warehouses as selects; anything else is a typo that used to be
+    // stored verbatim on the ledger.
+    body('origin').notEmpty().isIn(['Yirgacheffe', 'Sidama', 'Guji', 'Gedeo', 'Limu', 'Jimma', 'Kaffa', 'Illubabor', 'Harar', 'West Hararghe', 'Bench Sheko']).withMessage('Origin must be an ECX coffee region'),
+    // isNumeric used to admit 0 and negative quantities, which
+    // RegisterECXLot stores without a range check (a -5 kg lot).
+    body('quantity').isFloat({ gt: 0 }).withMessage('Quantity must be a number greater than 0'),
+    body('bags').optional().isInt({ min: 1 }).withMessage('Number of bags must be a whole number of at least 1'),
+    body('processingMethod').notEmpty().isIn(['Washed', 'Natural', 'Honey']).withMessage('Processing method must be Washed, Natural or Honey'),
+    body('warehouseId').optional().isIn(['WH-ADDIS-01', 'WH-ADDIS-02', 'WH-DIRE-01', 'WH-AWA-01', 'WH-JIM-01']).withMessage('Warehouse must be an ECX-certified warehouse'),
+  ],
   validateRequest,
   async (req: Request, res: Response) => {
     try {
@@ -345,7 +357,21 @@ router.post('/lots', authMiddleware, requireRole('ECX', 'ECX_ADMIN'),
 
 // POST /api/v1/ecx/lots/:lotId/grade
 router.post('/lots/:lotId/grade', authMiddleware, requireRole('ECX', 'ECX_ADMIN'),
-  [param('lotId').notEmpty(), body('grade').notEmpty(), body('moistureContent').isNumeric(), body('defectCount').isInt(), body('gradingOfficer').notEmpty()],
+  [
+    param('lotId').notEmpty(),
+    body('grade').isIn(['Grade 1', 'Grade 2', 'Grade 3', 'Grade 4', 'Grade 5', 'UG']).withMessage('Grade must be Grade 1–5 or UG'),
+    // qualityScore used to be unvalidated: a missing score was coerced
+    // to 0 and a 150 stored as a GRADED lot. The grading dialog
+    // requires it, and the SCA scale is 0–100.
+    body('qualityScore').isFloat({ min: 0, max: 100 }).withMessage('Cupping score must be between 0 and 100'),
+    // Moisture above 12 is a rejection, not an input error — the range
+    // here is the physical 0–100, so 13.5% still reaches GradeECXLot
+    // and comes back REJECTED. Negative or >100% moisture used to be
+    // stored verbatim (GradeECXLot only branches on > 12).
+    body('moistureContent').isFloat({ min: 0, max: 100 }).withMessage('Moisture content must be between 0 and 100'),
+    body('defectCount').isInt({ min: 0 }).withMessage('Defect count must be a whole number of 0 or more'),
+    body('gradingOfficer').notEmpty(),
+  ],
   validateRequest,
   async (req: Request, res: Response) => {
     try {

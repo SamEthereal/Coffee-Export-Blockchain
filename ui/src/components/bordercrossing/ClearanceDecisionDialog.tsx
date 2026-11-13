@@ -15,8 +15,17 @@ const ClearanceDecisionDialog: React.FC<ClearanceDecisionDialogProps> = ({ open,
   const [submitting, setSubmitting] = useState(false);
   const [decision, setDecision] = useState<'CLEAR' | 'DETAIN'>('CLEAR');
   const [form, setForm] = useState({ clearanceOfficer: '', certificateNumber: '', detentionReason: '', nextSteps: '' });
+  const [error, setError] = useState('');
 
   const handleSubmit = async () => {
+    // The detention reason is marked * in the form and required by the
+    // API — but the dialog used to submit it empty, and the API silently
+    // replaced it with 'Inspection required'. Block it in the form.
+    if (decision === 'DETAIN' && !form.detentionReason.trim()) {
+      setError('Detention reason is required');
+      return;
+    }
+    setError('');
     try {
       setSubmitting(true);
       const endpoint = decision === 'CLEAR' ? 'clear' : 'detain';
@@ -55,7 +64,7 @@ const ClearanceDecisionDialog: React.FC<ClearanceDecisionDialogProps> = ({ open,
           </Grid>
         ) : (
           <Grid container spacing={2}>
-            <Grid item xs={12}><TextField fullWidth multiline rows={3} label="Detention Reason *" value={form.detentionReason} onChange={(e) => setForm({...form, detentionReason: e.target.value})} placeholder="Explain reason for detention..." /></Grid>
+            <Grid item xs={12}><TextField fullWidth multiline rows={3} label="Detention Reason *" value={form.detentionReason} onChange={(e) => setForm({...form, detentionReason: e.target.value})} placeholder="Explain reason for detention..." error={!!error} helperText={error} /></Grid>
             <Grid item xs={12}><TextField fullWidth multiline rows={2} label="Next Steps" value={form.nextSteps} onChange={(e) => setForm({...form, nextSteps: e.target.value})} placeholder="What actions are required..." /></Grid>
             <Grid item xs={12}><Alert severity="error" icon={<Cancel />}>Shipment will be detained for further investigation</Alert></Grid>
           </Grid>
