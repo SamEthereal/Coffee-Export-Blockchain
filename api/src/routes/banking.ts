@@ -774,7 +774,8 @@ router.post('/forex/:forexID/reject',
   requireRole(['BANKS', 'BANK_ADMIN']),
   [
     param('forexID').notEmpty().withMessage('Forex ID is required'),
-    body('rejectionReason').notEmpty().withMessage('Rejection reason is required'),
+    body('rejectionReason').isString().trim().isLength({ min: 10, max: 500 })
+      .withMessage('Rejection reason must be between 10 and 500 characters'),
   ],
   validateRequest,
   async (req, res) => {
@@ -3519,7 +3520,7 @@ router.post('/consignment/register',
     body('buyerName').notEmpty().withMessage('Buyer name is required'),
     body('buyerAddress').notEmpty().withMessage('Buyer address is required'),
     body('buyerCountry').notEmpty().withMessage('Buyer country is required'),
-    body('permitAmount').isFloat({ min: 0 }).withMessage('Permit amount must be positive'),
+    body('permitAmount').isFloat({ gt: 0 }).withMessage('Permit amount must be positive'),
   ],
   validateRequest,
   async (req, res) => {
@@ -3528,11 +3529,22 @@ router.post('/consignment/register',
         consignmentID, exporterID, commodityType, description, buyerName,
         buyerAddress, buyerCountry, permitAmount, currency, permitNumber
       } = req.body;
+      const user = (req as any).user;
 
-      const result = await fabricService.invokeChaincode('RegisterConsignment', [
-        consignmentID, exporterID, commodityType, description, buyerName,
-        buyerAddress, buyerCountry, permitAmount.toString(),
-        currency || 'USD', permitNumber || `CNS-${Date.now()}`
+      // The chaincode function is IssueConsignmentPermit (consignment.go),
+      // NOT 'RegisterConsignment' (no such function — every registration
+      // 400'd 'function not found'). Its 12 args are
+      // consignmentID, permitID, permitNumber, exporterID, commodityType,
+      // description, destination, buyerName, buyerAddress, permitAmount,
+      // currency, bankBranch. destination is the buyer country; the permit
+      // ID is derived from the consignment ID so one consignment maps to
+      // exactly one PERMIT_ row.
+      const permitID = `PERMIT-${consignmentID}`;
+      const result = await fabricService.invokeChaincode('IssueConsignmentPermit', [
+        consignmentID, permitID, permitNumber || `CP-${Date.now()}`,
+        exporterID, commodityType, description, buyerCountry,
+        buyerName, buyerAddress, permitAmount.toString(),
+        currency || 'USD', user?.org || 'BANK'
       ]);
 
       if (result.success) {

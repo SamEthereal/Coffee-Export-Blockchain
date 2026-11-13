@@ -33,6 +33,10 @@ const DiscrepancyResolutionDialog: React.FC<DiscrepancyResolutionDialogProps> = 
           showError('Validation', 'Provide the waiver approval reference or at least 10 characters of resolution notes');
           return;
         }
+        if (waiverReason.length > 500) {
+          showError('Validation', 'The waiver reason must be at most 500 characters');
+          return;
+        }
         endpoint = `/banking/lc/${encodeURIComponent(lcId)}/discrepancy/${encodeURIComponent(discrepancyId)}/waive`;
         payload = { waiverReason };
       } else if (resolutionMethod === 'reject') {
@@ -41,12 +45,20 @@ const DiscrepancyResolutionDialog: React.FC<DiscrepancyResolutionDialogProps> = 
           showError('Validation', 'Provide at least 10 characters explaining why the documents are being rejected');
           return;
         }
+        if (rejectionReason.length > 500) {
+          showError('Validation', 'The rejection reason must be at most 500 characters');
+          return;
+        }
         endpoint = `/banking/lc/${encodeURIComponent(lcId)}/documents/reject`;
         payload = { rejectionReason };
       } else {
         const resolution = form.correctionRequired.trim() || form.resolutionNotes.trim();
         if (resolution.length < 10) {
           showError('Validation', 'Describe how the corrected documents were reviewed in at least 10 characters');
+          return;
+        }
+        if (resolution.length > 500) {
+          showError('Validation', 'The resolution must be at most 500 characters');
           return;
         }
         endpoint = `/banking/lc/${encodeURIComponent(lcId)}/discrepancy/${encodeURIComponent(discrepancyId)}/resolve`;
@@ -83,14 +95,14 @@ const DiscrepancyResolutionDialog: React.FC<DiscrepancyResolutionDialogProps> = 
 
         {resolutionMethod === 'waiver' && (
           <Grid container spacing={2}>
-            <Grid item xs={12}><TextField fullWidth label="Waiver Approval Reference" value={form.waiverApproval} onChange={(e) => setForm({...form, waiverApproval: e.target.value})} placeholder="Authorized waiver approval reference" /></Grid>
+            <Grid item xs={12}><TextField fullWidth label="Waiver Approval Reference" value={form.waiverApproval} onChange={(e) => setForm({...form, waiverApproval: e.target.value})} placeholder="Authorized waiver approval reference" inputProps={{ maxLength: 500 }} /></Grid>
             <Grid item xs={12}><Alert severity="success">Discrepancy will be waived and payment will proceed</Alert></Grid>
           </Grid>
         )}
 
         {resolutionMethod === 'correction' && (
           <Grid container spacing={2}>
-            <Grid item xs={12}><TextField fullWidth multiline rows={3} label="Correction Verification Details" value={form.correctionRequired} onChange={(e) => setForm({...form, correctionRequired: e.target.value})} placeholder="Record what was corrected and how it was checked..." /></Grid>
+            <Grid item xs={12}><TextField fullWidth multiline rows={3} label="Correction Verification Details" value={form.correctionRequired} onChange={(e) => setForm({...form, correctionRequired: e.target.value})} placeholder="Record what was corrected and how it was checked..." inputProps={{ maxLength: 500 }} /></Grid>
             <Grid item xs={12}><Alert severity="info">Only record resolution after corrected documents have been received and reviewed.</Alert></Grid>
           </Grid>
         )}
@@ -102,7 +114,7 @@ const DiscrepancyResolutionDialog: React.FC<DiscrepancyResolutionDialogProps> = 
         )}
 
         {resolutionMethod !== 'correction' && (
-          <TextField fullWidth multiline rows={3} label={resolutionMethod === 'reject' ? 'Document Rejection Reason *' : 'Resolution Notes'} value={form.resolutionNotes} onChange={(e) => setForm({...form, resolutionNotes: e.target.value})} placeholder={resolutionMethod === 'reject' ? 'Explain the unresolved discrepancy and why payment must stop...' : 'Add the waiver decision and supporting notes...'} sx={{ mt: 3 }} />
+          <TextField fullWidth multiline rows={3} label={resolutionMethod === 'reject' ? 'Document Rejection Reason *' : 'Resolution Notes'} value={form.resolutionNotes} onChange={(e) => setForm({...form, resolutionNotes: e.target.value})} placeholder={resolutionMethod === 'reject' ? 'Explain the unresolved discrepancy and why payment must stop...' : 'Add the waiver decision and supporting notes...'} sx={{ mt: 3 }} inputProps={{ maxLength: 500 }} />
         )}
       </DialogContent>
       <Divider />

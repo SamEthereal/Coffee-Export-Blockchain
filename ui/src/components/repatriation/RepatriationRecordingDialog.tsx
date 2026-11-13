@@ -119,6 +119,14 @@ const RepatriationRecordingDialog: React.FC<Props> = ({ open, onClose, onSuccess
 
   const handleSubmit = async () => {
     if (!selected || exchangeRate === null || !swiftReference.trim() || !bankCertificate.trim()) return;
+    // The ledger rejects amounts above the remaining required retention /
+    // conversion (RecordRepatriation: "recorded amounts exceed the active
+    // policy requirements") — the dialog used to let them through to a
+    // 400. Stop them here, with the exact remaining bound.
+    if (Number(repatriatedAmount) > remainingRetention || Number(convertedAmount) > remainingConversion) {
+      showError('Error', `Recorded amounts must not exceed the remaining requirements (${remainingRetention.toLocaleString()} retained, ${remainingConversion.toLocaleString()} converted).`);
+      return;
+    }
     setSubmitting(true);
     try {
       const response = await apiFetch(`/repatriation/${encodeURIComponent(selected.repatriationId)}/record`, {
@@ -182,10 +190,10 @@ const RepatriationRecordingDialog: React.FC<Props> = ({ open, onClose, onSuccess
               </Typography>
               <Grid container spacing={2}>
                 <Grid item xs={12} sm={6}>
-                  <TextField fullWidth label="FCY retained amount" type="number" inputProps={{ min: 0, step: '0.01', max: remainingRetention }} value={repatriatedAmount} onChange={(event) => setRepatriatedAmount(event.target.value)} />
+                  <TextField fullWidth label="FCY retained amount" type="number" inputProps={{ min: 0, step: '0.01', max: remainingRetention }} value={repatriatedAmount} onChange={(event) => setRepatriatedAmount(event.target.value)} error={repatriatedAmount !== '' && Number(repatriatedAmount) > remainingRetention} helperText={repatriatedAmount !== '' && Number(repatriatedAmount) > remainingRetention ? `Must not exceed the remaining ${remainingRetention.toLocaleString()}.` : `Remaining: ${remainingRetention.toLocaleString()}`} />
                 </Grid>
                 <Grid item xs={12} sm={6}>
-                  <TextField fullWidth label="Amount converted" type="number" inputProps={{ min: 0, step: '0.01', max: remainingConversion }} value={convertedAmount} onChange={(event) => setConvertedAmount(event.target.value)} />
+                  <TextField fullWidth label="Amount converted" type="number" inputProps={{ min: 0, step: '0.01', max: remainingConversion }} value={convertedAmount} onChange={(event) => setConvertedAmount(event.target.value)} error={convertedAmount !== '' && Number(convertedAmount) > remainingConversion} helperText={convertedAmount !== '' && Number(convertedAmount) > remainingConversion ? `Must not exceed the remaining ${remainingConversion.toLocaleString()}.` : `Remaining: ${remainingConversion.toLocaleString()}`} />
                 </Grid>
                 <Grid item xs={12} sm={6}>
                   <TextField fullWidth label="Active NBE mid-rate" value={exchangeRate ?? ''} InputProps={{ readOnly: true }} helperText={exchangeRate === null ? 'No active ledger rate is available' : `ETB per ${selected.currency}`} />
@@ -206,7 +214,7 @@ const RepatriationRecordingDialog: React.FC<Props> = ({ open, onClose, onSuccess
         <Button
           variant="contained"
           onClick={handleSubmit}
-          disabled={submitting || !selected || exchangeRate === null || (!Number(repatriatedAmount) && !Number(convertedAmount)) || !swiftReference.trim() || !bankCertificate.trim()}
+          disabled={submitting || !selected || exchangeRate === null || (!Number(repatriatedAmount) && !Number(convertedAmount)) || Number(repatriatedAmount) > remainingRetention || Number(convertedAmount) > remainingConversion || !swiftReference.trim() || !bankCertificate.trim()}
           startIcon={submitting ? <CircularProgress size={16} /> : undefined}
         >
           {submitting ? 'Recording…' : 'Record on ledger'}

@@ -12,6 +12,19 @@ import { body, param, query } from 'express-validator';
 const router = express.Router();
 const fabricService = FabricService.getInstance();
 
+// BIC format (ISO 9362): 6 letters (bank + country) + 2 alphanumerics
+// (location) + optional 3 alphanumerics (branch). The chaincode's
+// ValidateBIC is only called by some paths, and CreateSWIFTMessage /
+// CreateMT103_Payment store whatever BIC they are given — a 3-letter
+// receiver BIC sailed through POST /swift/messages with 201. The compose
+// dialog already enforces this shape; enforce it here on every create
+// route so a bad BIC 400s at the API, never reaching the ledger.
+const BIC_RE = /^[A-Z]{6}[A-Z0-9]{2}([A-Z0-9]{3})?$/;
+const bicValidator = (field: string, label: string) =>
+  body(field)
+    .notEmpty().withMessage(`${label} is required`)
+    .matches(BIC_RE).withMessage(`${label} must be a valid BIC (8 or 11 characters, e.g. CBETETAA)`);
+
 /**
  * @swagger
  * /api/v1/swift/messages:
@@ -66,8 +79,12 @@ router.post('/messages',
     body('messageType').notEmpty().isIn(['MT103', 'MT700', 'MT707', 'MT750', 'MT752', 'MT710', 'MT730', 'MT910'])
       .withMessage('Valid message type is required'),
     body('swiftReference').notEmpty().withMessage('SWIFT reference is required'),
-    body('senderBIC').notEmpty().withMessage('Sender BIC is required'),
-    body('receiverBIC').notEmpty().withMessage('Receiver BIC is required'),
+    bicValidator('senderBIC', 'Sender BIC'),
+    bicValidator('receiverBIC', 'Receiver BIC'),
+    // The ledger rejects non-positive amounts (CreateSWIFTMessage /
+    // ValidateAmount); a negative or zero amount must 400 here, not
+    // reach the chaincode. Optional: MT750 carries no amount.
+    body('amount').optional().isFloat({ gt: 0 }).withMessage('Amount must be greater than 0'),
   ],
   validateRequest,
   async (req: Request, res: Response) => {
@@ -103,6 +120,18 @@ router.post('/messages',
       } = req.body;
 
       logger.info('[SWIFT] Creating message:', { messageID, messageType, senderBIC, receiverBIC });
+
+      // MT750 through this generic route used to accept an empty
+      // discrepancyDetails and store a content-free discrepancy message —
+      // the dedicated /messages/mt750 route requires it, and the compose
+      // dialog now collects it. Reject it here too, before the chaincode.
+      if (messageType === 'MT750' && !String(discrepancyDetails || '').trim()) {
+        return res.status(400).json({
+          success: false,
+          error: { code: 'VALIDATION_ERROR', message: 'Discrepancy details are required for MT750' },
+          timestamp: new Date().toISOString(),
+        });
+      }
 
       // Route to specialized chaincode function based on message type
       let result;
@@ -283,11 +312,11 @@ router.post('/messages/mt700',
     body('messageID').notEmpty(),
     body('lcID').notEmpty(),
     body('swiftReference').notEmpty(),
-    body('senderBIC').notEmpty(),
-    body('receiverBIC').notEmpty(),
+    bicValidator('senderBIC', 'Sender BIC'),
+    bicValidator('receiverBIC', 'Receiver BIC'),
     body('applicant').notEmpty(),
     body('beneficiary').notEmpty(),
-    body('amount').notEmpty(),
+    body('amount').isFloat({ gt: 0 }).withMessage('Amount must be greater than 0'),
     body('currency').notEmpty(),
     body('expiryDate').notEmpty(),
   ],
@@ -409,7 +438,9 @@ router.post('/messages/mt103',
   [
     body('messageID').notEmpty(),
     body('swiftReference').notEmpty(),
-    body('amount').notEmpty(),
+    bicValidator('senderBIC', 'Sender BIC'),
+    bicValidator('receiverBIC', 'Receiver BIC'),
+    body('amount').isFloat({ gt: 0 }).withMessage('Amount must be greater than 0'),
   ],
   validateRequest,
   async (req: Request, res: Response) => {
@@ -513,7 +544,9 @@ router.post('/messages/mt752',
   [
     body('messageID').notEmpty(),
     body('lcID').notEmpty(),
-    body('amount').notEmpty(),
+    bicValidator('senderBIC', 'Sender BIC'),
+    bicValidator('receiverBIC', 'Receiver BIC'),
+    body('amount').isFloat({ gt: 0 }).withMessage('Amount must be greater than 0'),
   ],
   validateRequest,
   async (req: Request, res: Response) => {

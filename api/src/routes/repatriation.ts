@@ -338,10 +338,40 @@ router.post('/initiate', authMiddleware, requireRole(['BANKS', 'BANK', 'BANK_ADM
 // POST /api/v1/repatriation/:id/record — Record actual repatriation
 // LEG3 M-11 (same class as /initiate): no validation — an empty body
 // failed at the Fabric layer as a 500.
+// Map a RecordRepatriation / penalty / waiver-approve chain failure to
+// its client-error HTTP status. submitTransactionAs throws on chain
+// failure (fabricService.ts:2881-2889), so the classification must live in
+// the catch as well as the !success branch — the earlier fix only changed
+// the !success branch, and the throw path still returned 500 for a
+// missing record or an over-remaining amount. A chaincode refusal is a
+// client/state error, not a server error; anything unrecognised stays 500.
+function repatFailureStatus(error: string): number | null {
+  const e = (error || '').toLowerCase();
+  if (e.includes('does not exist')) return 400;
+  if (e.includes('exceed')) return 400;
+  if (e.includes('required') || e.includes('must be') || e.includes('invalid') || e.includes('cannot be')) return 400;
+  if (e.includes('already')) return 409;
+  if (e.includes('not in') || e.includes('not ready') || e.includes('no pending waiver')) return 409;
+  if (e.includes('only nbe') || e.includes('only banks') || e.includes('only exporter')) return 403;
+  return null;
+}
+
 router.post('/:id/record', authMiddleware, requireRole(['BANKS', 'BANK', 'BANK_ADMIN', 'BANK OFFICER']), [
   param('id').notEmpty().withMessage('Repatriation ID is required'),
-  body('repatriatedAmount').isFloat({ gt: 0 }).withMessage('Repatriated amount must be greater than 0'),
-  body('convertedAmount').isFloat({ gt: 0 }).withMessage('Converted amount must be greater than 0'),
+  body('repatriatedAmount').isFloat({ min: 0 }).withMessage('Repatriated amount must be 0 or greater'),
+  body('convertedAmount').isFloat({ min: 0 }).withMessage('Converted amount must be 0 or greater'),
+  // Chaincode RecordRepatriation accepts a partial entry (amounts
+  // non-negative, at least one positive) — the old pair of gt:0
+  // validators rejected a retention-only or conversion-only entry the
+  // ledger accepts. Each amount must be >= 0 and at least one > 0.
+  body('convertedAmount').custom((_, { req }) => {
+    const rep = Number((req.body as any)?.repatriatedAmount);
+    const conv = Number((req.body as any)?.convertedAmount);
+    if (!(rep > 0 || conv > 0)) {
+      throw new Error('At least one of repatriatedAmount or convertedAmount must be greater than 0');
+    }
+    return true;
+  }),
   body('exchangeRate').isFloat({ gt: 0 }).withMessage('Exchange rate must be greater than 0'),
   body('swiftReference').optional().isString(),
   body('bankCertificate').optional().isString(),
@@ -369,7 +399,7 @@ router.post('/:id/record', authMiddleware, requireRole(['BANKS', 'BANK', 'BANK_A
 
     if (!result.success) {
       logger.error(`[REPATRIATION] ❌ Failed to record: ${result.error}`);
-      return res.status(500).json({ 
+      return res.status(repatFailureStatus(result.error || '') ?? 500).json({ 
         success: false, 
         error: result.error 
       });
@@ -384,7 +414,7 @@ router.post('/:id/record', authMiddleware, requireRole(['BANKS', 'BANK', 'BANK_A
     });
   } catch (error: any) {
     logger.error('[REPATRIATION] ❌ Error recording:', error);
-    res.status(500).json({ 
+    res.status(repatFailureStatus(error.message || '') ?? 500).json({ 
       success: false, 
       error: error.message 
     });
@@ -503,9 +533,11 @@ router.post('/:id/penalty', authMiddleware, requireRole(['NBE', 'NBE_ADMIN', 'NB
 
     if (!result.success) {
       logger.error(`[REPATRIATION] ❌ Failed to apply penalty: ${result.error}`);
-      return res.status(500).json({ 
-        success: false, 
-        error: result.error 
+      // A chaincode refusal (bad amount, wrong state, missing record) is
+      // a client/state error, not a server error — report 400, never 500.
+      return res.status(repatFailureStatus(result.error || '') ?? 400).json({
+        success: false,
+        error: result.error
       });
     }
 
@@ -518,7 +550,9 @@ router.post('/:id/penalty', authMiddleware, requireRole(['NBE', 'NBE_ADMIN', 'NB
     });
   } catch (error: any) {
     logger.error('[REPATRIATION] ❌ Error applying penalty:', error);
-    res.status(500).json({ 
+    // submitTransactionAs throws on chain failure, so the same
+    // classification must apply here (see repatFailureStatus above).
+    res.status(repatFailureStatus(error.message || '') ?? 500).json({ 
       success: false, 
       error: error.message 
     });
@@ -590,9 +624,11 @@ router.post('/:id/waiver/approve', authMiddleware, requireRole(['NBE', 'NBE_ADMI
 
     if (!result.success) {
       logger.error(`[REPATRIATION] ❌ Failed to approve waiver: ${result.error}`);
-      return res.status(500).json({ 
-        success: false, 
-        error: result.error 
+      // A chaincode refusal (no pending waiver, empty reason) is a
+      // client/state error, not a server error — report 400, never 500.
+      return res.status(repatFailureStatus(result.error || '') ?? 400).json({
+        success: false,
+        error: result.error
       });
     }
 
@@ -605,7 +641,9 @@ router.post('/:id/waiver/approve', authMiddleware, requireRole(['NBE', 'NBE_ADMI
     });
   } catch (error: any) {
     logger.error('[REPATRIATION] ❌ Error approving waiver:', error);
-    res.status(500).json({ 
+    // submitTransactionAs throws on chain failure, so the same
+    // classification must apply here (see repatFailureStatus above).
+    res.status(repatFailureStatus(error.message || '') ?? 500).json({ 
       success: false, 
       error: error.message 
     });

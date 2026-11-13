@@ -329,6 +329,7 @@ const BanksPortal: React.FC = () => {
     linkedPaymentId: '',
     applicant: '',
     lcExpiryDate: '',
+    discrepancyDetails: '',
     documents: [],
   });
   const [documentExaminationFilter, setDocumentExaminationFilter] = useState<'PENDING_EXAMINATION' | 'VERIFIED'>('PENDING_EXAMINATION');
@@ -1590,6 +1591,10 @@ const BanksPortal: React.FC = () => {
       showError('Rejection Reason Too Short', 'The chaincode requires a rejection reason of 10–500 characters.');
       return;
     }
+    if (reason.trim().length > 500) {
+      showError('Rejection Reason Too Long', 'The chaincode requires a rejection reason of 10–500 characters.');
+      return;
+    }
     try {
       const response = await apiFetch(`/banking/lc/${encodeURIComponent(lcId)}/reject`, {
         method: 'POST',
@@ -1758,7 +1763,11 @@ const BanksPortal: React.FC = () => {
       } else if (type === 'advance') {
         const paymentId = `ADV${Date.now()}`;
         const advancePercentage = data.advancePercentage || '30';
-        
+
+        // The form's Amount Received is the amount recorded — it used to
+        // be silently discarded in favour of the contract total, so an
+        // edited amount never reached the ledger.
+        const advanceAmount = data.amount ? String(data.amount) : selectedContract.totalValue.toString();
         const response = await apiFetch('/banking/payment/initiate', {
           method: 'POST',
           headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
@@ -1768,7 +1777,7 @@ const BanksPortal: React.FC = () => {
             exporterID: selectedContract.exporterId,
             lcID: '', // May not have LC for advance payment
             paymentMethod: 'ADVANCE',
-            amount: selectedContract.totalValue.toString(),
+            amount: advanceAmount,
             currency: selectedContract.currency,
             swiftReference: data.swiftReference || '',
             payingBank: data.payingBank || '',
@@ -2194,6 +2203,10 @@ const BanksPortal: React.FC = () => {
       showError('Rejection Reason Too Short', 'The chaincode requires a rejection reason of 10–500 characters.');
       return;
     }
+    if (reason.trim().length > 500) {
+      showError('Rejection Reason Too Long', 'The chaincode requires a rejection reason of 10–500 characters.');
+      return;
+    }
     try {
       const response = await apiFetch(`/banking/forex/${encodeURIComponent(forex.forexId)}/reject`, {
         method: 'POST',
@@ -2290,6 +2303,10 @@ const BanksPortal: React.FC = () => {
         expiryDate: msg.lcExpiryDate || '',
         valueDate: msg.valueDate || '',
         remittanceInfo: msg.remittanceInfo || '',
+        // MT750 discrepancy details (required by /swift/messages/mt750;
+        // the dialog now collects them — previously every MT750 was
+        // created with empty details).
+        discrepancyDetails: msg.discrepancyDetails || '',
         // LEG3 M-2: forward attached documents so the generic create
         // route calls AddSWIFTDocuments with them.
         documents: msg.documents && msg.documents.length > 0 ? msg.documents : undefined,
@@ -4896,7 +4913,7 @@ const BanksPortal: React.FC = () => {
             loading={settling}
             loadingLabel="Settling…"
             ledgerWrite
-            disabled={settling || !(Number(settleForm.exchangeRate) > 0) || !(Number(settleForm.retentionRate) > 0) || !settleForm.payingBank || !settleForm.payingBankBIC || !settleForm.swiftReference || !settleForm.nbeApprovalRef}
+            disabled={settling || !(Number(settleForm.exchangeRate) > 0) || !(Number(settleForm.retentionRate) > 0) || !(Number(settleForm.retentionRate) <= 100) || !settleForm.payingBank || !settleForm.payingBankBIC || !settleForm.swiftReference || !settleForm.nbeApprovalRef}
           >
             Settle Payment
           </PrimaryButton>
@@ -5405,7 +5422,7 @@ const BanksPortal: React.FC = () => {
           <AnimatedButton
             variant="contained"
             onClick={handleAmendLC}
-            disabled={!amendmentForm.amendmentReason}
+            disabled={!amendmentForm.amendmentReason.trim() || amendmentForm.amendmentReason.trim().length > 500 || (amendmentForm.newAmount !== '' && !(Number(amendmentForm.newAmount) > 0))}
           >
             Submit Amendment
           </AnimatedButton>
@@ -5441,7 +5458,9 @@ const BanksPortal: React.FC = () => {
                     onChange={(e) => setAmendmentForm({...amendmentForm, amendmentReason: e.target.value})}
                     multiline
                     rows={2}
-                    helperText="Explain why the LC needs to be amended"
+                    helperText={amendmentForm.amendmentReason.trim().length > 500 ? 'Reason must be at most 500 characters — the ledger rejects longer reasons.' : 'Explain why the LC needs to be amended (max 500 characters)'}
+                    inputProps={{ maxLength: 500 }}
+                    error={amendmentForm.amendmentReason.trim().length > 500}
                     required
                   />
                 </Grid>
@@ -5453,7 +5472,8 @@ const BanksPortal: React.FC = () => {
                     type="number"
                     value={amendmentForm.newAmount}
                     onChange={(e) => setAmendmentForm({...amendmentForm, newAmount: e.target.value})}
-                    helperText="Leave empty to keep current amount"
+                    helperText={amendmentForm.newAmount !== '' && !(Number(amendmentForm.newAmount) > 0) ? 'New amount must be greater than 0 — the ledger rejects 0 or negative amounts.' : 'Leave empty to keep current amount'}
+                    error={amendmentForm.newAmount !== '' && !(Number(amendmentForm.newAmount) > 0)}
                   />
                 </Grid>
 

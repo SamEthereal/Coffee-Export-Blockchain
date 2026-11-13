@@ -318,6 +318,13 @@ const RepatriationManagementTab: React.FC = () => {
   // Approve / reject a requested waiver — POST /repatriation/:id/waiver/approve (NBE).
   const handleApproveWaiver = async () => {
     if (!waiverForm.repatriationId) return;
+    // The chaincode (ApproveWaiver) requires a non-empty decision reason
+    // — the field used to say "(optional)" and an empty reason 400'd
+    // after submit (and the route reported it as 500).
+    if (!waiverForm.reason.trim()) {
+      showError('Error', 'A reason is required for the waiver decision');
+      return;
+    }
     try {
       setActionBusy(true);
       const response = await apiFetch(`/repatriation/${waiverForm.repatriationId}/waiver/approve`, {
@@ -765,13 +772,16 @@ const RepatriationManagementTab: React.FC = () => {
               </Grid>
               <Grid item xs={12}>
                 <TextField
-                  label="Reason"
+                  label="Reason *"
                   value={waiverForm.reason}
                   onChange={(e) => setWaiverForm({ ...waiverForm, reason: e.target.value })}
                   fullWidth
                   multiline
                   rows={2}
-                  placeholder="Reason for the decision (optional)"
+                  required
+                  placeholder="Reason for the decision (required — the ledger rejects a waiver decision without one)"
+                  error={!waiverForm.reason.trim()}
+                  helperText={!waiverForm.reason.trim() ? 'A reason is required for the waiver decision.' : undefined}
                 />
               </Grid>
             </Grid>
@@ -781,7 +791,7 @@ const RepatriationManagementTab: React.FC = () => {
           <Button onClick={() => setWaiverDialogOpen(false)} variant="outlined">Cancel</Button>
           <Button
             variant="contained"
-            disabled={actionBusy}
+            disabled={actionBusy || !waiverForm.reason.trim()}
             sx={{ backgroundColor: NBE_COLORS.bronze, '&:hover': { backgroundColor: NBE_COLORS.lightBronze } }}
             onClick={handleApproveWaiver}
           >

@@ -141,8 +141,15 @@ export const DocumentValidationDialog: React.FC<DocumentValidationDialogProps> =
   };
 
   const handleReject = () => {
-    if (!rejectionReason.trim()) {
-      alert('Please provide a reason for rejection.');
+    // LC/forex rejection reasons are 10–500 chars on the ledger
+    // (chaincode RejectLC/RejectForex, API validateRequest) — a shorter
+    // or longer reason 400s after the dialog closes, so enforce it here.
+    if (rejectionReason.trim().length < 10) {
+      alert('Please provide a rejection reason of at least 10 characters.');
+      return;
+    }
+    if (rejectionReason.trim().length > 500) {
+      alert('The rejection reason must be at most 500 characters.');
       return;
     }
     if (onReject) {
@@ -634,6 +641,9 @@ export const DocumentValidationDialog: React.FC<DocumentValidationDialogProps> =
                   value={rejectionReason}
                   onChange={(e) => setRejectionReason(e.target.value)}
                   placeholder="Specify the reason for rejection (e.g., missing documents, incorrect information, compliance issues)..."
+                  inputProps={{ maxLength: 500 }}
+                  helperText="10–500 characters — the ledger rejects shorter or longer reasons."
+                  error={rejectionReason.trim().length > 0 && rejectionReason.trim().length < 10}
                 />
               </Box>
             )}
