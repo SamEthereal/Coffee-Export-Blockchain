@@ -1471,6 +1471,15 @@ export class FabricService {
     return this.queryChaincode('ReadLC', [lcId]);
   }
 
+  // Standby LC (SBLC) operations — chaincode v2.3 seq 12.
+  public async getStandbyLC(standbyLCId: string): Promise<ChaincodeResponse> {
+    return this.queryChaincode('GetStandbyLC', [standbyLCId]);
+  }
+
+  public async queryAllStandbyLCs(): Promise<ChaincodeResponse> {
+    return this.queryChaincode('QueryAllStandbyLCs', []);
+  }
+
   // Forex operations
   public async queryAllForex(): Promise<ChaincodeResponse> {
     // Query all forex allocations from blockchain

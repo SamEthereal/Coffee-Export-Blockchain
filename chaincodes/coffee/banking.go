@@ -671,6 +671,270 @@ func (c *CoffeeContract) IssueLC(ctx contractapi.TransactionContextInterface,
 	return nil
 }
 
+// ==================== STANDBY LETTER OF CREDIT (SBLC) ====================
+
+// StandbyLetterOfCredit is a bank guarantee issued under UCP 600 /
+// ISP98 (performance guarantee, advance-payment guarantee, bid bond,
+// financial standby). Unlike a documentary LC it is created and issued
+// in a single bank step against an already-approved contract, and it
+// lives under its own STANDBYLC_ key so it can never collide with a
+// documentary LC (LC_<id>) or be read back as one.
+type StandbyLetterOfCredit struct {
+	StandbyLCID     string    `json:"standbyLcId"`
+	StandbyLCNumber string    `json:"standbyLcNumber"`
+	ContractID      string    `json:"contractId"`
+	ExporterID      string    `json:"exporterId"` // Derived from the contract
+	IssuingBank     string    `json:"issuingBank"`
+	AdvisingBank    string    `json:"advisingBank"`
+	Beneficiary     string    `json:"beneficiary"`
+	Applicant       string    `json:"applicant"`
+	Amount          float64   `json:"amount"`
+	Currency        string    `json:"currency"`
+	Type            string    `json:"type"` // PERFORMANCE, ADVANCE_PAYMENT, BID_BOND, FINANCIAL
+	Purpose         string    `json:"purpose"`
+	Terms           string    `json:"terms"`
+	Status          string    `json:"status"` // ISSUED (created issued; claim/expiry handled by later functions)
+	ExpiryDate      string    `json:"expiryDate"`
+	IssueDate       string    `json:"issueDate"`
+	IssuedBy        string    `json:"issuedBy"`    // X.509 certificate of issuer
+	IssuedByMSP     string    `json:"issuedByMsp"` // MSP ID of issuer
+	CreatedAt       time.Time `json:"createdAt"`
+	UpdatedAt       time.Time `json:"updatedAt"`
+}
+
+var validStandbyLCTypes = map[string]bool{
+	"PERFORMANCE": true, "ADVANCE_PAYMENT": true, "BID_BOND": true, "FINANCIAL": true,
+}
+
+// IssueStandbyLC - Bank issues a Standby Letter of Credit in one step.
+// SEQ 12 (smoothness round): this function did not exist before — the
+// API's POST /banking/lc/standby/issue called it, the call failed on
+// every peer ("LC standby does not exist" was the regular IssueLC path
+// failing on the shadowed route; the standby call itself had no
+// chaincode target at all), and the API swallowed the failure and
+// returned a PG-only 201. A standby LC is now a real ledger document,
+// created only by a bank MSP, only against a contract that exists and
+// is APPROVED or COMPLETED (a guarantee under a contract that was
+// never approved, or was rejected, is meaningless), with the exporter
+// and banks derived from that contract when the caller does not supply
+// them. Args: standbyLCID, standbyLCNumber, contractID, amount,
+// currency, expiryDate, type, purpose, beneficiary, applicant, terms,
+// issuingBank, advisingBank. The last three are optional (empty means
+// the API default terms / the contract's banks).
+func (c *CoffeeContract) IssueStandbyLC(ctx contractapi.TransactionContextInterface,
+	standbyLCID, standbyLCNumber, contractID, amountStr, currency, expiryDate,
+	standbyType, purpose, beneficiary, applicant, terms, issuingBankArg, advisingBankArg string) error {
+
+	// ✅ CAPTURE MSP IDENTITY of issuer — only a bank may issue a guarantee
+	issuerMSP, err := ctx.GetClientIdentity().GetMSPID()
+	if err != nil {
+		return fmt.Errorf("IssueStandbyLC: failed to get issuer MSP ID: %w", err)
+	}
+	if !isBankMSP(issuerMSP) {
+		return fmt.Errorf("IssueStandbyLC: unauthorized - only bank members can issue standby LCs, got: %s", issuerMSP)
+	}
+
+	issuerID, err := ctx.GetClientIdentity().GetID()
+	if err != nil {
+		issuerID = issuerMSP // Fallback to MSP if cert not available
+	}
+
+	fmt.Printf("IssueStandbyLC: standby LC %s (%s) being issued by %s (MSP: %s)\n", standbyLCID, standbyLCNumber, issuerID, issuerMSP)
+
+	if err := ValidateID(standbyLCID, "standbyLCID"); err != nil {
+		return fmt.Errorf("IssueStandbyLC: %w", err)
+	}
+	if err := ValidateID(standbyLCNumber, "standbyLCNumber"); err != nil {
+		return fmt.Errorf("IssueStandbyLC: %w", err)
+	}
+	if err := ValidateID(contractID, "contractID"); err != nil {
+		return fmt.Errorf("IssueStandbyLC: %w", err)
+	}
+	amount, err := strconv.ParseFloat(amountStr, 64)
+	if err != nil {
+		return fmt.Errorf("IssueStandbyLC: invalid amount: %w", err)
+	}
+	if err := ValidateAmount(amount, "amount"); err != nil {
+		return fmt.Errorf("IssueStandbyLC: %w", err)
+	}
+	if err := ValidateCurrency(currency); err != nil {
+		return fmt.Errorf("IssueStandbyLC: %w", err)
+	}
+	if err := ValidateDate(expiryDate); err != nil {
+		return fmt.Errorf("IssueStandbyLC: %w", err)
+	}
+	standbyType = strings.ToUpper(strings.TrimSpace(standbyType))
+	if !validStandbyLCTypes[standbyType] {
+		return fmt.Errorf("IssueStandbyLC: invalid standby LC type %q (must be PERFORMANCE, ADVANCE_PAYMENT, BID_BOND or FINANCIAL)", standbyType)
+	}
+	if err := ValidateNonEmptyString(purpose, "purpose", MaxStringLen); err != nil {
+		return fmt.Errorf("IssueStandbyLC: %w", err)
+	}
+	if err := ValidateNonEmptyString(beneficiary, "beneficiary", MaxStringLen); err != nil {
+		return fmt.Errorf("IssueStandbyLC: %w", err)
+	}
+	if err := ValidateNonEmptyString(applicant, "applicant", MaxStringLen); err != nil {
+		return fmt.Errorf("IssueStandbyLC: %w", err)
+	}
+	if err := ValidateString(terms, "terms", MaxStringLen); err != nil {
+		return fmt.Errorf("IssueStandbyLC: %w", err)
+	}
+
+	// No duplicate standby LC under this ID.
+	existingJSON, err := ctx.GetStub().GetState("STANDBYLC_" + standbyLCID)
+	if err != nil {
+		return fmt.Errorf("IssueStandbyLC: failed to read standby LC: %v", err)
+	}
+	if existingJSON != nil {
+		return fmt.Errorf("IssueStandbyLC: standby LC %s already exists", standbyLCID)
+	}
+
+	// The contract must exist and be APPROVED or COMPLETED. A standby
+	// LC guarantees performance under a live contract; REGISTERED (not
+	// yet approved) and REJECTED contracts cannot carry one.
+	contractJSON, err := ctx.GetStub().GetState("CONTRACT_" + contractID)
+	if err != nil {
+		return fmt.Errorf("IssueStandbyLC: failed to read contract %s: %w", contractID, err)
+	}
+	if contractJSON == nil {
+		return fmt.Errorf("IssueStandbyLC: contract %s does not exist", contractID)
+	}
+	var contract SalesContract
+	if err := json.Unmarshal(contractJSON, &contract); err != nil {
+		return fmt.Errorf("IssueStandbyLC: failed to unmarshal contract: %v", err)
+	}
+	if contract.ContractStatus != "APPROVED" && contract.ContractStatus != "COMPLETED" {
+		return fmt.Errorf("IssueStandbyLC: contract %s must be APPROVED or COMPLETED before a standby LC can be issued (current status: %s)", contractID, contract.ContractStatus)
+	}
+
+	issuingBank := strings.TrimSpace(issuingBankArg)
+	if issuingBank == "" {
+		issuingBank = contract.BuyerBank
+	}
+	advisingBank := strings.TrimSpace(advisingBankArg)
+	if advisingBank == "" {
+		advisingBank = contract.ExporterBank
+	}
+	if terms == "" {
+		terms = "Payable on first written demand with beneficiary statement"
+	}
+
+	txTime, err := ledgerTransactionTime(ctx)
+	if err != nil {
+		return fmt.Errorf("IssueStandbyLC: failed to read Fabric transaction timestamp: %w", err)
+	}
+
+	standbyLC := StandbyLetterOfCredit{
+		StandbyLCID:     standbyLCID,
+		StandbyLCNumber: standbyLCNumber,
+		ContractID:      contractID,
+		ExporterID:      contract.ExporterID,
+		IssuingBank:     issuingBank,
+		AdvisingBank:    advisingBank,
+		Beneficiary:     beneficiary,
+		Applicant:       applicant,
+		Amount:          amount,
+		Currency:        currency,
+		Type:            standbyType,
+		Purpose:         purpose,
+		Terms:           terms,
+		Status:          "ISSUED",
+		ExpiryDate:      expiryDate,
+		IssueDate:       txTime.Format(time.RFC3339),
+		IssuedBy:        issuerID,
+		IssuedByMSP:     issuerMSP,
+		CreatedAt:       txTime,
+		UpdatedAt:       txTime,
+	}
+
+	standbyJSON, err := json.Marshal(standbyLC)
+	if err != nil {
+		return fmt.Errorf("IssueStandbyLC: failed to marshal standby LC: %w", err)
+	}
+	if err := ctx.GetStub().PutState("STANDBYLC_"+standbyLCID, standbyJSON); err != nil {
+		return fmt.Errorf("IssueStandbyLC: failed to save standby LC: %w", err)
+	}
+
+	changes := []FieldChange{
+		{FieldName: "standbyLcId", OldValue: "", NewValue: standbyLCID, DataType: "string"},
+		{FieldName: "standbyLcNumber", OldValue: "", NewValue: standbyLCNumber, DataType: "string"},
+		{FieldName: "contractId", OldValue: "", NewValue: contractID, DataType: "string"},
+		{FieldName: "amount", OldValue: "", NewValue: fmt.Sprintf("%.2f", amount), DataType: "number"},
+		{FieldName: "type", OldValue: "", NewValue: standbyType, DataType: "string"},
+		{FieldName: "status", OldValue: "", NewValue: "ISSUED", DataType: "string"},
+	}
+	compliance := ComplianceMetadata{
+		ECTACompliance: true,
+		NBECompliance:  true,
+		UCP600Check:    true, // Standby LC follows UCP 600 / ISP98
+		EUDRCompliance: true,
+		ICOCompliance:  true,
+		ComplianceNote: "Standby Letter of Credit issued by bank as performance guarantee",
+	}
+	if err := c.CreateAuditLog(ctx, "ISSUE", "STANDBY_LC", standbyLCID, "", "ISSUED", changes,
+		"Standby Letter of Credit issued by bank", compliance); err != nil {
+		return fmt.Errorf("IssueStandbyLC: failed to create audit log: %w", err)
+	}
+
+	fmt.Printf("=== IssueStandbyLC completed: standby LC %s (%s) issued with status ISSUED ===\n", standbyLCID, standbyLCNumber)
+	return nil
+}
+
+// GetStandbyLC - Read a Standby Letter of Credit by its standby LC ID.
+func (c *CoffeeContract) GetStandbyLC(ctx contractapi.TransactionContextInterface,
+	standbyLCID string) (*StandbyLetterOfCredit, error) {
+
+	standbyJSON, err := ctx.GetStub().GetState("STANDBYLC_" + standbyLCID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read standby LC: %v", err)
+	}
+	if standbyJSON == nil {
+		return nil, fmt.Errorf("standby LC %s does not exist", standbyLCID)
+	}
+
+	var standbyLC StandbyLetterOfCredit
+	if err := json.Unmarshal(standbyJSON, &standbyLC); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal standby LC: %v", err)
+	}
+	return &standbyLC, nil
+}
+
+// QueryAllStandbyLCs - List all Standby Letters of Credit on the ledger.
+func (c *CoffeeContract) QueryAllStandbyLCs(ctx contractapi.TransactionContextInterface) ([]*StandbyLetterOfCredit, error) {
+	queryString := `{
+		"selector": {
+			"$and": [
+				{"standbyLcId": {"$exists": true}},
+				{"_id": {"$regex": "^STANDBYLC_"}}
+			]
+		},
+		"limit": 1000
+	}`
+
+	resultsIterator, err := ctx.GetStub().GetQueryResult(queryString)
+	if err != nil {
+		return nil, fmt.Errorf("QueryAllStandbyLCs: failed to query standby LCs: %w", err)
+	}
+	defer resultsIterator.Close()
+
+	var standbyLCs []*StandbyLetterOfCredit
+	for resultsIterator.HasNext() {
+		queryResponse, err := resultsIterator.Next()
+		if err != nil {
+			return nil, fmt.Errorf("QueryAllStandbyLCs: failed to iterate: %v", err)
+		}
+		var standbyLC StandbyLetterOfCredit
+		if err := json.Unmarshal(queryResponse.Value, &standbyLC); err != nil {
+			continue // Skip invalid documents
+		}
+		standbyLCs = append(standbyLCs, &standbyLC)
+	}
+	if standbyLCs == nil {
+		standbyLCs = []*StandbyLetterOfCredit{}
+	}
+	return standbyLCs, nil
+}
+
 // CreateAndIssueLC - Bank creates and issues LC in one step (bypasses request/approve workflow)
 // This is used when the bank receives an LC from an issuing bank and needs to register it directly
 func (c *CoffeeContract) CreateAndIssueLC(ctx contractapi.TransactionContextInterface,
