@@ -238,13 +238,15 @@ export const PhytosanitaryCertificates: React.FC = () => {
 
     try {
       const reason = prompt('Please enter revocation reason:');
-      if (!reason) return;
+      // Validation fix (2026-11-13): the API requires a non-empty reason —
+      // whitespace alone passed the truthy check and 400d there.
+      if (!reason?.trim()) return;
 
       // The revoke route requires { reason, revokedBy } (both notEmpty) —
       // the old { revocationReason } body failed validation with 400.
       const revokedBy = JSON.parse(localStorage.getItem('user') || '{}').username || 'ECTA Officer';
       const response = await api.post(`/phytosanitary/${certificateId}/revoke`, {
-        reason,
+        reason: reason.trim(),
         revokedBy
       });
 

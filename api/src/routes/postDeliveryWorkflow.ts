@@ -130,7 +130,10 @@ router.post('/:shipmentId/payment',
   requireRole('BANKS', 'BANK_ADMIN'),
   [
     param('shipmentId').notEmpty().withMessage('Shipment ID is required'),
-    body('paymentAmount').isNumeric().withMessage('Payment amount must be a number'),
+    // Validation fix (2026-11-13): an amount of 0 (or negative) used to
+    // pass isNumeric and was stored with payment_received=true — a zero
+    // payment recorded as received. Amounts must be positive.
+    body('paymentAmount').isFloat({ gt: 0 }).withMessage('Payment amount must be greater than 0'),
     body('paymentCurrency').isLength({ min: 3, max: 3 }).withMessage('Currency must be 3 characters'),
     body('swiftReference').notEmpty().withMessage('SWIFT reference is required')
   ],
@@ -192,8 +195,11 @@ router.post('/:shipmentId/forex',
   requireRole('BANKS', 'BANK_ADMIN', 'NBE', 'NBE_ADMIN'),
   [
     param('shipmentId').notEmpty().withMessage('Shipment ID is required'),
-    body('forexAmount').isNumeric().withMessage('Forex amount must be a number'),
-    body('forexRate').isNumeric().withMessage('Forex rate must be a number')
+    // Validation fix (2026-11-13): a forex amount of 0 / rate of 0 used
+    // to pass isNumeric and was stored with forex_repatriated=true — a
+    // zero-rate repatriation recorded as complete. Both must be positive.
+    body('forexAmount').isFloat({ gt: 0 }).withMessage('Forex amount must be greater than 0'),
+    body('forexRate').isFloat({ gt: 0 }).withMessage('Forex rate must be greater than 0')
   ],
   validateRequest,
   async (req: Request, res: Response) => {

@@ -1231,13 +1231,27 @@ router.post('/inspections/:inspectionID/reject',
   requireRole('ECTA', 'ECTA_ADMIN'),
   [
     param('inspectionID').notEmpty(),
-    body('reason').notEmpty().withMessage('Rejection reason is required'),
+    // Validation fix (2026-11-13): the ECTA portal sends `rejectionReason`
+    // (the same name the PUT reject route uses); `reason` is kept as a
+    // legacy alias. Before this fix the portal's reject always 400d with
+    // 'Rejection reason is required' because `reason` was absent. At least
+    // one must be non-blank after trimming — checked in the handler.
+    body('reason').optional().isString(),
+    body('rejectionReason').optional().isString(),
   ],
   validateRequest,
   async (req: Request, res: Response) => {
     try {
       const { inspectionID } = req.params;
-      const { reason, rejectedBy } = req.body;
+      const { rejectedBy } = req.body;
+      const reason = String((req.body as any).rejectionReason ?? (req.body as any).reason ?? '').trim();
+      if (!reason) {
+        return res.status(400).json({
+          success: false,
+          error: { code: 'VALIDATION_ERROR', message: 'Rejection reason is required' },
+          timestamp: new Date().toISOString()
+        });
+      }
 
       // Shared reject core (TEST-STATUS-MATRIX §17 #14): guard +
       // ledger write first + PG mirror, same as the PUT reject route.
@@ -2344,7 +2358,9 @@ router.put('/inspections/:inspectionID/reject',
   requireRole('ECTA', 'ECTA_ADMIN'),
   [
     param('inspectionID').notEmpty(),
-    body('rejectionReason').notEmpty().withMessage('Rejection reason is required'),
+    // Validation fix (2026-11-13): trim — a whitespace-only reason passed
+    // notEmpty and was stored as the rejection reason.
+    body('rejectionReason').trim().notEmpty().withMessage('Rejection reason is required'),
   ],
   validateRequest,
   async (req: Request, res: Response) => {

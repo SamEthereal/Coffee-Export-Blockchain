@@ -255,6 +255,12 @@ export interface ExporterFormData {
   exporterId: string;
   companyName: string;
   ectaLicenseNumber: string;
+  // Validation fix (2026-11-13): the direct-registration dialog now
+  // collects the exporter type, so the per-type capital minimum can be
+  // enforced in the form (the API/chaincode default is 'private'). The
+  // union matches the yup schema's oneOf — a plain string would break
+  // the useForm resolver typing.
+  exporterType: 'private' | 'company' | 'individual';
   capitalRequirement: number;
   professionalTaster: string;
   tasterCertificate: string;

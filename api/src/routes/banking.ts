@@ -92,7 +92,13 @@ router.post('/lc/request',
     body('lcID').notEmpty().withMessage('LC ID is required'),
     body('contractID').notEmpty().withMessage('Contract ID is required'),
     body('exporterID').notEmpty().withMessage('Exporter ID is required'),
-    body('bankName').notEmpty().withMessage('Bank name is required'),
+    // Validation fix (2026-11-13): bankName is a legacy fallback for the
+    // advising bank only — the Exporter portal sends advisingBank (and
+    // issuingBank) and no bankName, so requiring it 400d every portal LC
+    // request with 'Bank name is required'. The handler resolves the
+    // advising bank from advisingBank / the contract / bankName, so an
+    // omitted bankName is fine.
+    body('bankName').optional().isString().withMessage('Bank name must be a string'),
     body('amount').notEmpty().withMessage('Amount is required'),
     body('currency').notEmpty().withMessage('Currency is required'),
     body('expiryDate').notEmpty().withMessage('Expiry date is required'),
@@ -246,7 +252,10 @@ router.post('/lc/request',
         lcID,
         contractID,
         finalExporterID,
-        bankName,
+        // Validation fix (2026-11-13): bankName is optional now (see the
+        // validator above) — never pass undefined into the chaincode args;
+        // the resolved advising bank is the fallback.
+        bankName || finalAdvisingBank,
         finalAmount,
         finalCurrency,
         expiryDate,

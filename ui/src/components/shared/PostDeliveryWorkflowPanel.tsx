@@ -156,6 +156,17 @@ const PostDeliveryWorkflowPanel: React.FC<Props> = ({ shipmentId, userRole, onRe
   };
 
   const handleRecordPayment = async () => {
+    // Validation fix (2026-11-13): the API used to accept a 0 payment
+    // with 200 and mark it received — guard here too (the API now 400s
+    // non-positive amounts as well).
+    if (!(parseFloat(paymentForm.paymentAmount) > 0)) {
+      alert('Payment amount must be greater than 0');
+      return;
+    }
+    if (!paymentForm.swiftReference.trim()) {
+      alert('SWIFT reference is required');
+      return;
+    }
     try {
       const response = await apiFetch(`/post-delivery/${shipmentId}/payment`, {
         method: 'POST',
@@ -182,6 +193,17 @@ const PostDeliveryWorkflowPanel: React.FC<Props> = ({ shipmentId, userRole, onRe
   };
 
   const handleRecordForex = async () => {
+    // Validation fix (2026-11-13): a 0 amount / 0 rate used to be stored
+    // with forex_repatriated=true — guard here too (the API now 400s
+    // non-positive values as well).
+    if (!(parseFloat(forexForm.forexAmount) > 0)) {
+      alert('Forex amount must be greater than 0');
+      return;
+    }
+    if (!(parseFloat(forexForm.forexRate) > 0)) {
+      alert('Exchange rate must be greater than 0');
+      return;
+    }
     try {
       const response = await apiFetch(`/post-delivery/${shipmentId}/forex`, {
         method: 'POST',
@@ -207,6 +229,12 @@ const PostDeliveryWorkflowPanel: React.FC<Props> = ({ shipmentId, userRole, onRe
   };
 
   const handleRecordLC = async () => {
+    // Validation fix (2026-11-13): a blank reference 400d at the API
+    // after the round-trip — stop it here with a clear message.
+    if (!lcForm.lcReference.trim()) {
+      alert('LC reference number is required');
+      return;
+    }
     try {
       const response = await apiFetch(`/post-delivery/${shipmentId}/lc-settlement`, {
         method: 'POST',

@@ -869,7 +869,9 @@ router.post('/exporter-applications/:applicationId/reject',
   requireRole('ECTA', 'ECTA_ADMIN'),
   [
     param('applicationId').notEmpty(),
-    body('reason').notEmpty(),
+    // Validation fix (2026-11-13): trim — a whitespace-only reason passed
+    // notEmpty and was stored as the rejection reason.
+    body('reason').trim().notEmpty().withMessage('Rejection reason is required'),
   ],
   validateRequest,
   async (req, res) => {
@@ -1628,6 +1630,23 @@ router.post('/',
         laboratoryCertificateNumber,
         licenseExpiryDate,
       } = req.body;
+
+      // Validation fix (2026-11-13): enforce the per-type capital minimum
+      // here, like the application route — the chaincode already rejects a
+      // below-minimum capital, but only as a 400 carrying a six-peer error
+      // dump (REGISTRATION_FAILED). Fail fast with the same clear
+      // CAPITAL_BELOW_MINIMUM the application route returns. The effective
+      // type matches the chaincode default ('private', 15M ETB).
+      const effectiveExporterType = exporterType || 'private';
+      const capitalError = capitalMinimumError(effectiveExporterType, capitalRequirement);
+      if (capitalError) {
+        res.status(400).json({
+          success: false,
+          error: { code: 'CAPITAL_BELOW_MINIMUM', message: capitalError },
+          timestamp: new Date().toISOString(),
+        });
+        return;
+      }
 
       const result = await fabricService.registerExporter(
         exporterID,

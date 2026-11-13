@@ -168,7 +168,12 @@ class CECBSApi {
   }
 
   async createExporter(data: ExporterFormData): Promise<ApiResponse<Exporter>> {
-    const response = await this.client.post('/exporters', data);
+    // Validation fix (2026-11-13): POST /exporters validates `exporterID`
+    // (capital D); the form type carries `exporterId`. Map it here so the
+    // ECTA direct-registration form can ever succeed (it 400d on every
+    // submit with 'Exporter ID is required').
+    const { exporterId, ...rest } = data;
+    const response = await this.client.post('/exporters', { ...rest, exporterID: exporterId });
     return response.data;
   }
 
