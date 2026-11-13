@@ -41,6 +41,7 @@ const DiscrepancyReportingDialog: React.FC<DiscrepancyReportingDialogProps> = ({
     if (!form.lcId) e.lcId = 'Select an LC';
     if (!form.discrepancyType) e.discrepancyType = 'Type required';
     if (form.description.trim().length < 10) e.description = 'Describe the discrepancy in at least 10 characters';
+    if (form.description.trim().length > 500) e.description = 'Description must be at most 500 characters';
     if (!form.affectedDocument.trim()) e.affectedDocument = 'Affected document required';
     setErrors(e);
     return Object.keys(e).length === 0;
@@ -92,7 +93,7 @@ const DiscrepancyReportingDialog: React.FC<DiscrepancyReportingDialogProps> = ({
             <MenuItem value="MAJOR">Major - Requires correction</MenuItem>
             <MenuItem value="CRITICAL">Critical - Payment blocking</MenuItem>
           </TextField></Grid>
-          <Grid item xs={12}><TextField fullWidth multiline rows={3} label="Description *" value={form.description} onChange={(e) => setForm({...form, description: e.target.value})} error={!!errors.description} helperText={errors.description} placeholder="Describe the mismatch or missing information..." /></Grid>
+          <Grid item xs={12}><TextField fullWidth multiline rows={3} label="Description *" value={form.description} onChange={(e) => setForm({...form, description: e.target.value})} error={!!errors.description} helperText={errors.description} placeholder="Describe the mismatch or missing information..." inputProps={{ maxLength: 500 }} /></Grid>
           <Grid item xs={12}><TextField fullWidth label="Affected Document *" value={form.affectedDocument} onChange={(e) => setForm({...form, affectedDocument: e.target.value})} error={!!errors.affectedDocument} helperText={errors.affectedDocument} placeholder="e.g., Bill of Lading, Commercial Invoice" /></Grid>
           <Grid item xs={12}><TextField fullWidth label="Affected LC Clauses" value={form.affectedClauses} onChange={(e) => setForm({...form, affectedClauses: e.target.value})} placeholder="e.g., Clause 5.2, Article 14" /></Grid>
           <Grid item xs={12}><TextField fullWidth select label="Recommended Action" value={form.recommendedAction} onChange={(e) => setForm({...form, recommendedAction: e.target.value})}>

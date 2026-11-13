@@ -952,6 +952,13 @@ const NBEPortal: React.FC = () => {
   // The route reads the allocation on-chain first (ReadForex), so without
   // a Fabric peer it returns 404 and the error is shown honestly.
   const handleRecordRetention = async () => {
+    // The API validates retentionPercentage isFloat 0–100 — the dialog
+    // used to let 150 or -5 through to an honest 400. Stop it here.
+    const pct = Number(retentionForm.retentionPercentage);
+    if (!Number.isFinite(pct) || pct < 0 || pct > 100) {
+      setApprovalNotification({ open: true, success: false, message: 'Retention percentage must be between 0 and 100.' });
+      return;
+    }
     try {
       setRecordingRetention(true);
       const response = await apiFetch(`/retention/${retentionForm.forexId}/retention`, {
@@ -1018,6 +1025,23 @@ const NBEPortal: React.FC = () => {
           success: false,
           message: 'No Letter of Credit found for this contract. Banks must issue LC and allocate forex before monitoring.'
         });
+        setLoading(false);
+        return;
+      }
+
+      // The ledger rejects an allocation of 0/negative or more than the
+      // requested amount (AllocateForex: ValidateAmount + amount <=
+      // RequestedAmount) — the dialog used to submit either and the API
+      // 503'd. Stop it here with the exact bound.
+      const requested = Number(selectedForex.requestedAmount) || 0;
+      const allocAmount = parseFloat(forexForm.allocatedAmount);
+      if (!Number.isFinite(allocAmount) || allocAmount <= 0) {
+        setApprovalNotification({ open: true, success: false, message: 'Allocated amount must be greater than 0.' });
+        setLoading(false);
+        return;
+      }
+      if (allocAmount > requested) {
+        setApprovalNotification({ open: true, success: false, message: `Allocated amount must not exceed the requested amount (${formatCurrency(requested, selectedForex.currency)}).` });
         setLoading(false);
         return;
       }
@@ -2763,7 +2787,7 @@ const NBEPortal: React.FC = () => {
             </SecondaryButton>
             <PrimaryButton
             brand="NBE"
-            disabled={!forexForm.allocatedAmount || !forexForm.exchangeRate || !forexForm.retentionRate || !forexForm.nbeOfficer || !forexForm.nbeApprovalRef}
+            disabled={!forexForm.allocatedAmount || !forexForm.exchangeRate || !forexForm.retentionRate || !forexForm.nbeOfficer || !forexForm.nbeApprovalRef || !(Number(forexForm.allocatedAmount) > 0) || (selectedForex != null && Number(forexForm.allocatedAmount) > Number(selectedForex.requestedAmount))}
             loadingLabel="Allocating…"
             ledgerWrite
             onClick={handleAllocateForex}
@@ -2812,8 +2836,9 @@ const NBEPortal: React.FC = () => {
                     value={forexForm.allocatedAmount}
                     onChange={(e) => setForexForm(prev => ({ ...prev, allocatedAmount: e.target.value }))}
                     placeholder="Enter allocated amount"
-                    helperText={`Max: ${formatCurrency(selectedForex.requestedAmount, selectedForex.currency)}`}
-                    inputProps={{ 
+                    helperText={forexForm.allocatedAmount !== '' && !(Number(forexForm.allocatedAmount) > 0) ? 'Allocated amount must be greater than 0.' : forexForm.allocatedAmount !== '' && selectedForex && Number(forexForm.allocatedAmount) > Number(selectedForex.requestedAmount) ? 'Allocated amount must not exceed the requested amount.' : `Max: ${formatCurrency(selectedForex.requestedAmount, selectedForex.currency)}`}
+                    error={forexForm.allocatedAmount !== '' && (!(Number(forexForm.allocatedAmount) > 0) || (selectedForex != null && Number(forexForm.allocatedAmount) > Number(selectedForex.requestedAmount)))}
+                    inputProps={{
                       step: "0.01",
                       max: selectedForex.requestedAmount
                     }}
@@ -2964,7 +2989,7 @@ const NBEPortal: React.FC = () => {
             </SecondaryButton>
             <PrimaryButton
             brand="NBE"
-            disabled={recordingRetention || !retentionForm.fcyAccountNumber || !retentionForm.retentionPercentage}
+            disabled={recordingRetention || !retentionForm.fcyAccountNumber || !retentionForm.retentionPercentage || !(Number(retentionForm.retentionPercentage) >= 0 && Number(retentionForm.retentionPercentage) <= 100)}
             loading={recordingRetention}
             loadingLabel="Recording…"
             ledgerWrite
@@ -2995,7 +3020,8 @@ const NBEPortal: React.FC = () => {
                   fullWidth
                   required
                   inputProps={{ min: 0, max: 100, step: '0.1' }}
-                  helperText={coffeeRetentionPolicy ? `Active NBE policy rate: ${coffeeRetentionPolicy.retentionRate}%` : 'NBE retention policy rate'}
+                  error={retentionForm.retentionPercentage !== '' && !(Number(retentionForm.retentionPercentage) >= 0 && Number(retentionForm.retentionPercentage) <= 100)}
+                  helperText={retentionForm.retentionPercentage !== '' && !(Number(retentionForm.retentionPercentage) >= 0 && Number(retentionForm.retentionPercentage) <= 100) ? 'Retention percentage must be between 0 and 100.' : (coffeeRetentionPolicy ? `Active NBE policy rate: ${coffeeRetentionPolicy.retentionRate}%` : 'NBE retention policy rate')}
                 />
               </Grid>
             </Grid>

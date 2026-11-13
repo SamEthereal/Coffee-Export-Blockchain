@@ -124,6 +124,9 @@ export const PaymentMethodForms: React.FC<PaymentMethodFormsProps> = ({
                   label="Drawer (Exporter)"
                   value={cadForm.drawerName}
                   onChange={(e) => setCadForm({ ...cadForm, drawerName: e.target.value })}
+                  required
+                  error={!cadForm.drawerName.trim()}
+                  helperText={!cadForm.drawerName.trim() ? 'Drawer name is required — the API rejects a collection without it.' : undefined}
                 />
               </Grid>
               <Grid item xs={12} md={6}>
@@ -132,6 +135,9 @@ export const PaymentMethodForms: React.FC<PaymentMethodFormsProps> = ({
                   label="Drawee (Importer)"
                   value={cadForm.draweeName}
                   onChange={(e) => setCadForm({ ...cadForm, draweeName: e.target.value })}
+                  required
+                  error={!cadForm.draweeName.trim()}
+                  helperText={!cadForm.draweeName.trim() ? 'Drawee name is required — the API rejects a collection without it.' : undefined}
                 />
               </Grid>
               <Grid item xs={12}>
@@ -142,6 +148,9 @@ export const PaymentMethodForms: React.FC<PaymentMethodFormsProps> = ({
                   onChange={(e) => setCadForm({ ...cadForm, draweeAddress: e.target.value })}
                   multiline
                   rows={2}
+                  required
+                  error={!cadForm.draweeAddress.trim()}
+                  helperText={!cadForm.draweeAddress.trim() ? 'Drawee address is required — the API rejects a collection without it.' : undefined}
                 />
               </Grid>
               <Grid item xs={12} md={6}>
@@ -164,7 +173,8 @@ export const PaymentMethodForms: React.FC<PaymentMethodFormsProps> = ({
                   value={cadForm.acceptanceDays}
                   onChange={(e) => setCadForm({ ...cadForm, acceptanceDays: e.target.value })}
                   disabled={cadForm.paymentTerm === 'SIGHT'}
-                  helperText="Days for acceptance (e.g., 60, 90)"
+                  helperText={cadForm.paymentTerm === 'ACCEPTANCE' ? 'Required for ACCEPTANCE — the ledger rejects an acceptance collection with 0 days' : 'Days for acceptance (e.g., 60, 90)'}
+                  error={cadForm.paymentTerm === 'ACCEPTANCE' && !(Number(cadForm.acceptanceDays) > 0)}
                 />
               </Grid>
               <Grid item xs={12} md={6}>
@@ -224,7 +234,7 @@ export const PaymentMethodForms: React.FC<PaymentMethodFormsProps> = ({
             <Button 
               variant="contained" 
               onClick={handleSubmit}
-              disabled={!cadForm.collectingBank || !cadForm.collectingBankBIC || !cadForm.remittingBankBIC}
+              disabled={!cadForm.drawerName.trim() || !cadForm.draweeName.trim() || !cadForm.draweeAddress.trim() || !cadForm.collectingBank || !cadForm.collectingBankBIC || !cadForm.remittingBankBIC || (cadForm.paymentTerm === 'ACCEPTANCE' && !(Number(cadForm.acceptanceDays) > 0))}
             >
               Send Collection
             </Button>
@@ -249,7 +259,8 @@ export const PaymentMethodForms: React.FC<PaymentMethodFormsProps> = ({
                   type="number"
                   value={advanceForm.amount}
                   onChange={(e) => setAdvanceForm({ ...advanceForm, amount: e.target.value })}
-                  helperText="Amount received in USD"
+                  helperText={advanceForm.amount !== '' && !(Number(advanceForm.amount) > 0) ? 'Amount received must be greater than 0.' : 'Amount received in USD — this is the amount recorded, not the contract total.'}
+                  error={advanceForm.amount !== '' && !(Number(advanceForm.amount) > 0)}
                 />
               </Grid>
               <Grid item xs={12} md={6}>
@@ -304,7 +315,7 @@ export const PaymentMethodForms: React.FC<PaymentMethodFormsProps> = ({
             <Button
               variant="contained"
               onClick={handleSubmit}
-              disabled={!advanceForm.beneficiaryAccount || !advanceForm.payingBank || !advanceForm.payingBankBIC || !advanceForm.swiftReference}
+              disabled={!advanceForm.beneficiaryAccount || !advanceForm.payingBank || !advanceForm.payingBankBIC || !advanceForm.swiftReference || !(Number(advanceForm.amount || selectedContract?.totalValue) > 0)}
             >
               Record Payment & Issue Permit
             </Button>
@@ -342,6 +353,8 @@ export const PaymentMethodForms: React.FC<PaymentMethodFormsProps> = ({
                   type="number"
                   value={consignmentForm.permitAmount}
                   onChange={(e) => setConsignmentForm({ ...consignmentForm, permitAmount: e.target.value })}
+                  helperText={consignmentForm.permitAmount !== '' && !(Number(consignmentForm.permitAmount) > 0) ? 'Permit amount must be greater than 0 — the ledger rejects 0 or negative amounts.' : undefined}
+                  error={consignmentForm.permitAmount !== '' && !(Number(consignmentForm.permitAmount) > 0)}
                 />
               </Grid>
               <Grid item xs={12}>
@@ -352,7 +365,9 @@ export const PaymentMethodForms: React.FC<PaymentMethodFormsProps> = ({
                   onChange={(e) => setConsignmentForm({ ...consignmentForm, description: e.target.value })}
                   multiline
                   rows={2}
-                  helperText="Detailed description of goods"
+                  required
+                  error={!consignmentForm.description.trim()}
+                  helperText={!consignmentForm.description.trim() ? 'Description is required — the API rejects a consignment without it.' : 'Detailed description of goods'}
                 />
               </Grid>
               <Grid item xs={12} md={6}>
@@ -361,6 +376,9 @@ export const PaymentMethodForms: React.FC<PaymentMethodFormsProps> = ({
                   label="Buyer/Agent Name"
                   value={consignmentForm.buyerName}
                   onChange={(e) => setConsignmentForm({ ...consignmentForm, buyerName: e.target.value })}
+                  required
+                  error={!consignmentForm.buyerName.trim()}
+                  helperText={!consignmentForm.buyerName.trim() ? 'Buyer name is required — the API rejects a consignment without it.' : undefined}
                 />
               </Grid>
               <Grid item xs={12} md={6}>
@@ -370,13 +388,16 @@ export const PaymentMethodForms: React.FC<PaymentMethodFormsProps> = ({
                   value={consignmentForm.buyerAddress}
                   onChange={(e) => setConsignmentForm({ ...consignmentForm, buyerAddress: e.target.value })}
                   multiline
+                  required
+                  error={!consignmentForm.buyerAddress.trim()}
+                  helperText={!consignmentForm.buyerAddress.trim() ? 'Buyer address is required — the API rejects a consignment without it.' : undefined}
                 />
               </Grid>
             </Grid>
           </DialogContent>
           <DialogActions>
             <Button onClick={onClose}>Cancel</Button>
-            <Button variant="contained" onClick={handleSubmit}>
+            <Button variant="contained" onClick={handleSubmit} disabled={!consignmentForm.description.trim() || !consignmentForm.buyerName.trim() || !consignmentForm.buyerAddress.trim() || !(Number(consignmentForm.permitAmount || selectedContract?.totalValue) > 0)}>
               Issue Consignment Permit
             </Button>
           </DialogActions>
