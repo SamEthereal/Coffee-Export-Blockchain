@@ -4,6 +4,7 @@
 import { FabricService } from './fabricService';
 import { DatabaseService } from './databaseService';
 import { AuditService } from './auditService';
+import { CacheInvalidation } from './blockchainCacheService';
 import { statusManager } from '../utils/statusManager';
 import { logger } from '../utils/logger';
 
@@ -375,6 +376,22 @@ export class ShipmentService {
     } catch (err) {
       logger.warn(`[ShipmentService] Could not mirror shipment ${shipmentID} status ${status} to Postgres:`, err);
     }
+    // Smoothness: this mirror runs after every ledger shipment-status
+    // move (customs clear/reject, quality approve/perform, permit
+    // issue, lifecycle handlers, test-update). The cached GET
+    // /shipments/:id entry is the pre-move ledger snapshot — invalidate
+    // it here, at the one choke point every writer already calls,
+    // instead of trusting the 5-minute TTL. Best-effort like the
+    // mirror itself: invalidation never fails the request.
+    try {
+      const row: any = await this.dbService.get(
+        `SELECT contract_id FROM shipments WHERE shipment_id = $1`,
+        [shipmentID]
+      );
+      CacheInvalidation.shipment(shipmentID, row?.contract_id || undefined);
+    } catch (err) {
+      CacheInvalidation.shipment(shipmentID);
+    }
   }
 
   /**
@@ -403,6 +420,22 @@ export class ShipmentService {
       }
     } catch (err) {
       logger.warn(`[ShipmentService] Could not mirror contract ${contractID} shipments to ${status} in Postgres:`, err);
+    }
+    // Same cache rule as mirrorShipmentStatus: the permit cascade moves
+    // every shipment under the contract on-chain, so invalidate each of
+    // their cached entries (not just the by-contract list).
+    try {
+      const rows: any[] = await this.dbService.all(
+        `SELECT shipment_id FROM shipments WHERE contract_id = $1`,
+        [contractID]
+      );
+      for (const r of rows || []) {
+        if (r?.shipment_id) CacheInvalidation.shipment(r.shipment_id, contractID);
+      }
+      // (Each per-shipment invalidation above also clears the
+      // shipments-by-contract list and the all-shipments list.)
+    } catch (err) {
+      logger.warn(`[ShipmentService] Could not invalidate shipment cache for contract ${contractID}:`, err);
     }
   }
 

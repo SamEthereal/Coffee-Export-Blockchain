@@ -569,6 +569,38 @@ export class FabricService {
     await this.connect(orgId);
   }
 
+  /**
+   * Warm the pooled gateway for every consortium org's admin identity.
+   *
+   * Measured: the first call as a given MSP pays a cold gateway connect
+   * on top of the call itself (first NBE query after a restart 4.79s
+   * vs 1.60s warm; the main API's first ECTAMSP connect took ~21s at
+   * 2026-11-11 boot). Startup only connects the default MSP, so the
+   * first bank/NBE/customs call of the day billed the user for it —
+   * the 15–18s outliers (approve, allocate, repatriation initiate)
+   * are consistent with a cold connect and/or one failed endorsement
+   * attempt plus retry backoff. Warming moves the connect cost to
+   * boot. Best-effort and sequential through the gateway lock: a
+   * failed org logs and continues, and the caller runs it in the
+   * background after listen so it never delays health/startup.
+   */
+  public async warmGatewayPool(): Promise<void> {
+    const started = Date.now();
+    for (const mspId of CONSORTIUM_PEER_MSPS) {
+      try {
+        const entry = await this.getOrCreateEntry(mspId, `admin-${mspId}`);
+        if (entry) {
+          logger.info(`[FABRIC] Gateway warmed for ${mspId} (${Date.now() - started}ms elapsed)`);
+        } else {
+          logger.warn(`[FABRIC] Gateway warm-up skipped for ${mspId} (Fabric unavailable)`);
+        }
+      } catch (err: any) {
+        logger.warn(`[FABRIC] Gateway warm-up failed for ${mspId}: ${err?.message || err}`);
+      }
+    }
+    logger.info(`[FABRIC] Gateway warm-up complete in ${Date.now() - started}ms`);
+  }
+
   private async importAdminIdentity(orgId?: string, label: string = 'admin'): Promise<void> {
     try {
       logger.info('Importing admin identity from cryptogen certificates...');
@@ -964,13 +996,25 @@ export class FabricService {
         // This exact error is returned before an envelope reaches the ordering
         // service. Other errors (including MVCC errors and timeouts) may already
         // have a ledger transaction and must not be blindly resubmitted.
-        const isPreOrderingEndorsementFailure = !attemptTxId ||
+        // "No valid responses from any peers" with peer 500s IS such a
+        // pre-ordering failure: every endorser ran the chaincode and
+        // refused (a deterministic state rejection, e.g. "contract must
+        // be APPROVED" or "forex cannot be confirmed, current status:
+        // CONFIRMED"). It must NOT be reported as "outcome unknown" —
+        // the outcome is known (rejected, no ledger transaction) — and
+        // it must NOT be retried: resubmitting the same state can never
+        // succeed, it only burns 4–12s of backoff. The peer-500
+        // condition separates it from a transient "no valid responses"
+        // (peers down/unreachable), which stays retryable.
+        const hasPeer500Rejection = /No valid responses from any peers/i.test(errorMessage) &&
+          /status=500/.test(errorMessage);
+        const isPreOrderingEndorsementFailure = hasPeer500Rejection || !attemptTxId ||
           /Peer endorsements do not match|failed to endorse transaction/i.test(errorMessage);
         
         // Check for discovery/connection errors that are safe to retry
         const isDiscoveryError = /discovery|Failed to connect|Endorsement has failed|Timed out waiting for discovery/i.test(errorMessage);
         
-        if ((isPreOrderingEndorsementFailure || isDiscoveryError) && attempt < maxRetries) {
+        if ((isPreOrderingEndorsementFailure || isDiscoveryError) && !hasPeer500Rejection && attempt < maxRetries) {
           // Wait with exponential backoff before retry
           const waitTime = isDiscoveryError ? 3000 * (attempt + 1) : 4000 * attempt; // 3s, 6s, 9s, 12s for discovery errors
           logger.warn(`${isDiscoveryError ? 'Discovery/connection' : 'Pre-ordering endorsement'} failure; retrying in ${waitTime}ms (${attempt + 1}/${maxRetries})`);

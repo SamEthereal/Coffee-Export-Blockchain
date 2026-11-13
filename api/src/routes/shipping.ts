@@ -65,6 +65,14 @@ async function mirrorBookingStatusToShipment(
       params,
     );
     logger.info(`[SHIPPING] ✅ Shipment ${shipmentID} mirrored to ${status} (booking ${bookingId})`);
+    // The shipment's ledger/PG status just moved: drop its cached GET
+    // entry (same rule as shipmentService.mirrorShipmentStatus — the
+    // booking lifecycle is the one status writer that does not go
+    // through that choke point).
+    try {
+      const { CacheInvalidation } = await import('../services/blockchainCacheService');
+      CacheInvalidation.shipment(shipmentID);
+    } catch { /* best-effort: invalidation never fails the request */ }
     try {
       const chainResult = await fabricService.updateShipmentStatus(shipmentID, status);
       if (!chainResult?.success) {
@@ -510,6 +518,11 @@ router.post('/bookings', authMiddleware,
     // row itself is still created (status BOOKED).
     let blockchainSynced = false;
     let blockchainWarning: string | null = null;
+    // The chain write that moves the shipment to FREIGHT_BOOKED. Its
+    // txId is the booking's chain proof (there is no standalone
+    // BOOKING_* ledger doc — the chain state lives on the shipment
+    // doc), so capture it for the response instead of dropping it.
+    let bookingChainTxId: string | null = null;
     if (shipmentID) {
       // Ledger state first: status + transport mode (authoritative).
       let ledgerStatus: string | null = null;
@@ -584,7 +597,14 @@ router.post('/bookings', authMiddleware,
             try {
               const chainResult = await fabricService.updateShipmentStatus(shipmentID, 'FREIGHT_BOOKED');
               blockchainSynced = !!chainResult?.success;
-              if (!blockchainSynced) {
+              if (blockchainSynced) {
+                bookingChainTxId = chainResult?.txId || null;
+                // The shipment moved on-chain: drop its cached GET entry.
+                try {
+                  const { CacheInvalidation } = await import('../services/blockchainCacheService');
+                  CacheInvalidation.shipment(shipmentID);
+                } catch { /* best-effort */ }
+              } else {
                 blockchainWarning = `Chaincode status update did not succeed: ${chainResult?.error || 'unknown error'}`;
                 logger.warn(`[SHIPPING] ${blockchainWarning}`);
               }
@@ -614,8 +634,13 @@ router.post('/bookings', authMiddleware,
         portOfLoading,
         portOfDischarge,
         blockchainSynced,
+        // txId in both places, matching the release-endpoint pattern:
+        // top-level for the caller, under data for readers that only
+        // look there. Previously neither carried it.
+        txId: bookingChainTxId,
         ...(blockchainWarning ? { blockchainWarning } : {})
       },
+      txId: bookingChainTxId,
       timestamp: new Date().toISOString()
     });
 
@@ -1296,7 +1321,7 @@ router.delete('/bookings/:bookingId/cancel',
         });
       }
 
-      if (['LOADED', 'DEPARTED', 'ARRIVED', 'DELIVERED'].includes(booking.status)) {
+      if (['LOADED', 'DEPARTED', 'ARRIVED', 'DELIVERED', 'CANCELLED'].includes(booking.status)) {
         return res.status(400).json({
           success: false,
           error: { 

@@ -16,6 +16,7 @@ import { logger } from '../utils/logger';
 import { FabricService } from './fabricService';
 import { DatabaseService } from './databaseService';
 import { NotificationService } from './notificationService';
+import { CacheInvalidation } from './blockchainCacheService';
 
 export interface PostDeliveryStatus {
   shipmentId: string;
@@ -506,7 +507,7 @@ export class PostDeliveryWorkflowService {
   async closeContract(
     shipmentId: string,
     userId: string
-  ): Promise<{ success: boolean; error?: string; blockchainSynced?: boolean; blockchainWarning?: string | null; status?: number; code?: string; alreadyClosed?: boolean }> {
+  ): Promise<{ success: boolean; error?: string; blockchainSynced?: boolean; blockchainWarning?: string | null; status?: number; code?: string; alreadyClosed?: boolean; healed?: string | null }> {
     try {
       logger.info(`📋 Closing contract for shipment: ${shipmentId}`);
 
@@ -516,16 +517,34 @@ export class PostDeliveryWorkflowService {
         return { success: false, error: 'Post-delivery record not found' };
       }
 
-      // Re-close is idempotent: an already-closed contract returns its
-      // current state honestly with no new chain write, PG write,
-      // checklist change or notification claimed.
+      // Re-close is idempotent — but the old close flows left two
+      // divergent legacies behind, and a bare short-circuit preserves
+      // both forever:
+      //  (a) ledger COMPLETED, PG contracts.status still APPROVED
+      //      (the close never UPDATEs the contracts table — every
+      //      ledger-first close since the fix), and
+      //  (b) PG tracking contract_closed=true with the ledger still
+      //      APPROVED (the pre-fix PG-first close never wrote the
+      //      chain; the ledger is source of truth, so the contract was
+      //      never actually completed).
+      // Heal instead of no-op: read the ledger, then converge the
+      // side that lags. (a) mirrors COMPLETED into PG. (b) re-runs
+      // the chain close — but only when every close precondition is
+      // still met (payment, repatriation, LC settlement, ECTA audit),
+      // so a half-finished export is never completed by a re-close.
+      // Neither heal re-sends notifications or re-touches the
+      // checklist: the business outcome was already recorded.
       if (statusResult.contractClosed) {
-        logger.info(`📋 Contract for ${shipmentId} is already closed; returning current state without re-running the close`);
+        logger.info(`📋 Contract for ${shipmentId} is already closed; checking whether the ledger and PG agree before returning`);
+        const healed = await this.healClosedContract(statusResult, userId);
         return {
           success: true,
           alreadyClosed: true,
-          blockchainSynced: false,
-          blockchainWarning: 'Contract was already closed; no new chain transaction was submitted',
+          blockchainSynced: healed === 'chain-close',
+          blockchainWarning: healed
+            ? `Contract was already closed; healed divergence via ${healed}`
+            : 'Contract was already closed; no new chain transaction was submitted',
+          healed: healed || null,
         };
       }
 
@@ -553,36 +572,13 @@ export class PostDeliveryWorkflowService {
       }
 
       // Mark the contract completed on-chain FIRST (ledger-first honesty,
-      // TEST-STATUS-MATRIX §17 #7). CompleteContract takes (contractID,
-      // completedBy); UpdateContractStatus takes (contractID, newStatus) and
-      // is tried as a fallback if CompleteContract is not committed yet.
-      // Both attempts are pinned to ECTAMSP: close is ECTA-only (the route
-      // requires ECTA/ECTA_ADMIN) and both chaincode functions enforce
-      // "only ECTA and Admin" (main.go: CompleteContract, UpdateContractStatus).
-      // If neither chain write succeeds the close FAILS (503) and PG is left
-      // untouched — a PG COMPLETED row with the contract still APPROVED
-      // on-chain must never be written again.
-      let blockchainSynced = false;
-      let blockchainWarning: string | null = null;
-      const syncAttempts: Array<{ fn: string; args: string[] }> = [
-        { fn: 'CompleteContract', args: [statusResult.contractId, userId] },
-        { fn: 'UpdateContractStatus', args: [statusResult.contractId, 'COMPLETED'] },
-      ];
-      for (const attempt of syncAttempts) {
-        try {
-          const chainResult = await this.fabricService.invokeChaincode(attempt.fn, attempt.args, 'ECTAMSP');
-          if (chainResult.success) {
-            blockchainSynced = true;
-            logger.info(`📋 Contract ${statusResult.contractId} marked COMPLETED on-chain via ${attempt.fn}`);
-            break;
-          }
-          blockchainWarning = `Chaincode ${attempt.fn} did not complete ${statusResult.contractId}: ${chainResult.error || 'unknown error'}`;
-          logger.warn(`📋 ${blockchainWarning}`);
-        } catch (chainError: any) {
-          blockchainWarning = `Could not complete ${statusResult.contractId} on the ledger via ${attempt.fn} (no Fabric here?): ${chainError.message}`;
-          logger.warn(`📋 ${blockchainWarning}`);
-        }
-      }
+      // TEST-STATUS-MATRIX §17 #7). If neither chain write succeeds the
+      // close FAILS (503) and PG is left untouched — a PG COMPLETED row
+      // with the contract still APPROVED on-chain must never be written
+      // again.
+      const chainClose = await this.completeContractOnChain(statusResult.contractId, userId);
+      const blockchainSynced = chainClose.ok;
+      const blockchainWarning = chainClose.warning;
 
       if (!blockchainSynced) {
         logger.error(`📋 Cannot close contract for ${shipmentId}: chain write failed: ${blockchainWarning}`);
@@ -611,6 +607,14 @@ export class PostDeliveryWorkflowService {
 
       await this.db.query(query, [shipmentId, userId]);
 
+      // Mirror COMPLETED into the contracts table. The close used to
+      // update only post_delivery_tracking, so PG contracts.status
+      // stayed APPROVED for every closed contract (zero COMPLETED
+      // rows live) while the ledger said COMPLETED — the same stale
+      // mirror class as the shipment mirrors. Mirror only after the
+      // chain write above succeeded.
+      await this.mirrorContractCompleted(statusResult.contractId);
+
       // Update checklist
       await this.updateChecklistItem(shipmentId, 'CONTRACT_CLOSED');
 
@@ -627,6 +631,114 @@ export class PostDeliveryWorkflowService {
   }
 
   // ==================== PRIVATE HELPER METHODS ====================
+
+  /**
+   * CompleteContract takes (contractID, completedBy); UpdateContractStatus
+   * takes (contractID, newStatus) and is tried as a fallback if
+   * CompleteContract is not committed yet. Both attempts are pinned to
+   * ECTAMSP: close is ECTA-only (the route requires ECTA/ECTA_ADMIN)
+   * and both chaincode functions enforce "only ECTA and Admin"
+   * (main.go: CompleteContract, UpdateContractStatus).
+   */
+  private async completeContractOnChain(
+    contractId: string,
+    userId: string
+  ): Promise<{ ok: boolean; warning: string | null }> {
+    let warning: string | null = null;
+    const syncAttempts: Array<{ fn: string; args: string[] }> = [
+      { fn: 'CompleteContract', args: [contractId, userId] },
+      { fn: 'UpdateContractStatus', args: [contractId, 'COMPLETED'] },
+    ];
+    for (const attempt of syncAttempts) {
+      try {
+        const chainResult = await this.fabricService.invokeChaincode(attempt.fn, attempt.args, 'ECTAMSP');
+        if (chainResult.success) {
+          logger.info(`📋 Contract ${contractId} marked COMPLETED on-chain via ${attempt.fn}`);
+          return { ok: true, warning };
+        }
+        warning = `Chaincode ${attempt.fn} did not complete ${contractId}: ${chainResult.error || 'unknown error'}`;
+        logger.warn(`📋 ${warning}`);
+      } catch (chainError: any) {
+        warning = `Could not complete ${contractId} on the ledger via ${attempt.fn} (no Fabric here?): ${chainError.message}`;
+        logger.warn(`📋 ${warning}`);
+      }
+    }
+    return { ok: false, warning };
+  }
+
+  /**
+   * Mirror a ledger COMPLETED contract into PG and drop its cached GET
+   * entry. Only ever called after the ledger is known COMPLETED — never
+   * the reverse direction (PG must not overwrite the ledger).
+   */
+  private async mirrorContractCompleted(contractId: string): Promise<void> {
+    try {
+      await this.db.query(
+        `UPDATE contracts SET status = 'COMPLETED', updated_at = NOW() WHERE contract_id = $1`,
+        [contractId]
+      );
+      CacheInvalidation.contract(contractId);
+    } catch (err: any) {
+      logger.warn(`📋 Could not mirror COMPLETED for contract ${contractId} into PG:`, err?.message || err);
+    }
+  }
+
+  /**
+   * Heal an already-closed contract whose ledger and PG disagree (see
+   * closeContract). Returns 'pg-mirror' when the ledger was already
+   * COMPLETED and only PG lagged, 'chain-close' when the ledger still
+   * said APPROVED and the chain close was (re-)run, or null when
+   * nothing needed healing / healing was not safe. The ledger is
+   * source of truth in both directions: PG is never flipped to
+   * COMPLETED unless the ledger says so, and the chain close is only
+   * re-run when every close precondition is still met.
+   */
+  private async healClosedContract(
+    statusResult: PostDeliveryStatus,
+    userId: string
+  ): Promise<'pg-mirror' | 'chain-close' | null> {
+    let ledgerStatus: string | null = null;
+    try {
+      const ledger = await this.fabricService.getSalesContract(statusResult.contractId);
+      if (ledger.success && ledger.data) {
+        ledgerStatus = String(ledger.data.contractStatus || ledger.data.status || ledger.data.Status || '');
+      }
+    } catch (err: any) {
+      logger.warn(`📋 Heal: could not read ledger status for ${statusResult.contractId}:`, err?.message || err);
+    }
+    if (!ledgerStatus) {
+      logger.warn(`📋 Heal: ledger status for ${statusResult.contractId} is unreadable; leaving PG as-is`);
+      return null;
+    }
+    if (ledgerStatus === 'COMPLETED') {
+      await this.mirrorContractCompleted(statusResult.contractId);
+      logger.info(`📋 Heal: contract ${statusResult.contractId} already COMPLETED on ledger; mirrored into PG`);
+      return 'pg-mirror';
+    }
+    if (ledgerStatus !== 'APPROVED') {
+      logger.warn(`📋 Heal: contract ${statusResult.contractId} is ${ledgerStatus} on ledger, not APPROVED; refusing to complete it`);
+      return null;
+    }
+    // Ledger still APPROVED: only complete it when the business
+    // outcome was genuinely achieved (same gates as closeContract).
+    const missingSteps: string[] = [];
+    if (!statusResult.paymentReceived) missingSteps.push('payment');
+    if (!statusResult.forexRepatriated) missingSteps.push('forex repatriation');
+    if (statusResult.lcUsed && !statusResult.lcSettled) missingSteps.push('LC settlement');
+    if (!statusResult.ectaAuditCompleted) missingSteps.push('ECTA audit');
+    if (missingSteps.length > 0) {
+      logger.warn(`📋 Heal: contract ${statusResult.contractId} cannot be completed on-chain; incomplete steps: ${missingSteps.join(', ')}`);
+      return null;
+    }
+    const chainClose = await this.completeContractOnChain(statusResult.contractId, userId);
+    if (!chainClose.ok) {
+      logger.error(`📋 Heal: chain close failed for ${statusResult.contractId}: ${chainClose.warning}`);
+      return null;
+    }
+    await this.mirrorContractCompleted(statusResult.contractId);
+    logger.info(`📋 Heal: contract ${statusResult.contractId} completed on-chain and mirrored into PG`);
+    return 'chain-close';
+  }
 
   private calculateCompletionPercentage(record: any): number {
     let completed = 0;

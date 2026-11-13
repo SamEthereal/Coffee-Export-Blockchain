@@ -1554,12 +1554,19 @@ router.post('/:userId/reset-password',
  */
 router.post('/bulk-reset-passwords',
   authMiddleware,
-  [body('confirmReset').isBoolean().withMessage('Confirmation required')],
+  [
+    body('confirmReset').isBoolean().withMessage('Confirmation required'),
+    body('dryRun').optional().isBoolean().withMessage('dryRun must be a boolean'),
+    body('scope').optional().isObject().withMessage('scope must be an object'),
+    body('scope.usernames').optional().isArray().withMessage('scope.usernames must be an array'),
+    body('scope.roles').optional().isArray().withMessage('scope.roles must be an array'),
+    body('scope.organizations').optional().isArray().withMessage('scope.organizations must be an array'),
+  ],
   validateRequest,
   async (req: Request, res: Response) => {
     try {
       const requestingUser = (req as any).user;
-      const { confirmReset } = req.body;
+      const { confirmReset, dryRun = false, scope = {} } = req.body;
 
       // Only admins can perform bulk reset
       if (requestingUser.role !== 'ADMIN') {
@@ -1596,12 +1603,80 @@ router.post('/bulk-reset-passwords',
         });
       }
 
+      // Scoping is mandatory: the old endpoint reset EVERY active
+      // account (198 users live, including all portal admins) in one
+      // transaction whenever confirmReset was true, with no way to
+      // limit it or preview it. At least one scope filter is now
+      // required — explicit usernames, roles and/or organizations
+      // (combined with AND when several are given) — and dryRun
+      // previews the affected set without changing anything.
+      const cleanList = (v: any): string[] =>
+        Array.isArray(v) ? [...new Set(v.filter((x: any) => typeof x === 'string' && x.trim()).map((x: string) => x.trim()))] : [];
+      const scopeUsernames = cleanList(scope?.usernames);
+      const scopeRoles = cleanList(scope?.roles);
+      const scopeOrgs = cleanList(scope?.organizations);
+      const invalidRoles = scopeRoles.filter((r) => !(VALID_USER_ROLES as readonly string[]).includes(r));
+      if (invalidRoles.length > 0) {
+        return res.status(400).json({
+          success: false,
+          error: {
+            code: 'INVALID_SCOPE',
+            message: `Unknown role(s) in scope.roles: ${invalidRoles.join(', ')}`,
+          },
+          timestamp: new Date().toISOString(),
+        });
+      }
+      if (scopeUsernames.length === 0 && scopeRoles.length === 0 && scopeOrgs.length === 0) {
+        return res.status(400).json({
+          success: false,
+          error: {
+            code: 'SCOPE_REQUIRED',
+            message: 'Bulk password reset requires a scope: pass scope.usernames, scope.roles and/or scope.organizations (an unscoped reset would overwrite every active account). Use dryRun:true to preview the affected set first.',
+          },
+          timestamp: new Date().toISOString(),
+        });
+      }
+      const scopeConditions: string[] = [`status = 'active'`];
+      const scopeParams: any[] = [];
+      if (scopeUsernames.length > 0) {
+        scopeParams.push(scopeUsernames);
+        scopeConditions.push(`username = ANY($${scopeParams.length})`);
+      }
+      if (scopeRoles.length > 0) {
+        scopeParams.push(scopeRoles);
+        scopeConditions.push(`role = ANY($${scopeParams.length})`);
+      }
+      if (scopeOrgs.length > 0) {
+        scopeParams.push(scopeOrgs);
+        scopeConditions.push(`organization = ANY($${scopeParams.length})`);
+      }
+      const scopeWhere = scopeConditions.join(' AND ');
+
+      if (dryRun) {
+        const preview = await db.all(
+          `SELECT id, username, email, role, organization FROM users WHERE ${scopeWhere} ORDER BY username`,
+          scopeParams
+        );
+        logger.warn(`Bulk password reset DRY-RUN by admin: ${requestingUser.username} - ${preview.length} users would be affected`);
+        return res.json({
+          success: true,
+          data: {
+            message: 'Dry run — no passwords were changed',
+            dryRun: true,
+            usersAffected: preview.length,
+            users: preview.map((u: any) => ({ id: u.id, username: u.username, email: u.email, role: u.role, organization: u.organization })),
+            scope: { usernames: scopeUsernames, roles: scopeRoles, organizations: scopeOrgs },
+          },
+          timestamp: new Date().toISOString(),
+        });
+      }
+
       // Keep this development-only operation atomic, and issue a different
       // high-entropy temporary credential for each account.
       const credentials = await db.transaction(async (client) => {
         const result = await client.query(
-          'SELECT id, username, email FROM users WHERE status = $1 FOR UPDATE',
-          ['active']
+          `SELECT id, username, email FROM users WHERE ${scopeWhere} FOR UPDATE`,
+          scopeParams
         );
         const issuedCredentials: Array<{ id: string; username: string; email: string; newPassword: string }> = [];
 
@@ -1618,25 +1693,35 @@ router.post('/bulk-reset-passwords',
         return issuedCredentials;
       });
 
-      logger.warn(`Bulk password reset performed by admin: ${requestingUser.username} - ${credentials.length} users affected`);
+      logger.warn(`Bulk password reset performed by admin: ${requestingUser.username} - ${credentials.length} users affected (scope: ${JSON.stringify({ usernames: scopeUsernames, roles: scopeRoles, organizations: scopeOrgs })})`);
       await logUserActivity(
         requestingUser.userId,
         requestingUser.username,
         'BULK_RESET_PASSWORDS',
         null,
         null,
-        { usersAffected: credentials.length },
+        { usersAffected: credentials.length, scope: { usernames: scopeUsernames, roles: scopeRoles, organizations: scopeOrgs } },
         requestingUser.username,
         requestingUser.role,
         req
       );
 
+      // The old response returned every plaintext temporary password —
+      // all 198 of them for an unscoped run — to whoever called it.
+      // Temp passwords are returned only for small scoped runs (10 or
+      // fewer accounts, e.g. test users); larger runs return the count
+      // and the affected usernames, and the accounts are reset
+      // individually afterwards.
+      const returnCredentials = credentials.length <= 10;
       res.json({
         success: true,
         data: {
-          message: 'All user passwords reset successfully',
+          message: `${credentials.length} user password(s) reset successfully`,
           usersAffected: credentials.length,
-          credentials,
+          users: credentials.map((c) => c.username),
+          ...(returnCredentials
+            ? { credentials }
+            : { credentials: null, note: 'Temporary passwords are only returned for runs affecting 10 or fewer users; reset the remaining accounts individually to issue their credentials.' }),
           warning: 'Each user has a different temporary password; share each credential securely and have users change it after signing in.',
         },
         timestamp: new Date().toISOString(),

@@ -386,6 +386,10 @@ router.post('/:shipmentId/close-contract',
             blockchainSynced: result.blockchainSynced ?? false,
             blockchainWarning: result.blockchainWarning ?? null,
             alreadyClosed: result.alreadyClosed ?? false,
+            // 'pg-mirror' (ledger was already COMPLETED, PG lagged) or
+            // 'chain-close' (ledger still APPROVED, close re-run) when
+            // a re-close healed a legacy divergence; null otherwise.
+            healed: result.healed ?? null,
           },
           timestamp: new Date().toISOString()
         });
