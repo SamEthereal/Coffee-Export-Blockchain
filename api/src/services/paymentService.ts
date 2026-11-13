@@ -195,6 +195,109 @@ export class PaymentService {
   }
 
   /**
+   * Ledger-first payment resolution (NBE release/convert read-source
+   * fix): release and convert used to read PG `payments` only, so a
+   * payment that exists on the ledger but has no PG row — e.g. the
+   * LC-release-path payments, which banking.ts writes chaincode-only,
+   * and the Nov-11/12 suite payments — 404'd even though settle (which
+   * reads the ledger via ReadPayment) works on the same payment.
+   *
+   * PG first: a payment with a PG row resolves exactly as before, with
+   * no ledger call at all, so the PG path is unchanged. Only when
+   * there is no PG row is the ledger read (the same ReadPayment query
+   * the settle route and releasePayment already use). When the ledger
+   * has the payment, a PG-shaped row is derived from the ledger fields
+   * (amount, retentionRate, retentionConverted / retentionReleased,
+   * status, contract/exporter/LC/currency) and reconciled into PG with
+   * an ON CONFLICT DO NOTHING insert — the same mirror pattern the
+   * initiate route uses — so the release/convert PG updates below land
+   * on a real row and later reads find it. The insert is best-effort:
+   * if it fails, the derived row is still returned so the chain call
+   * can proceed (ledger-first). Returns null only when the payment is
+   * in neither store.
+   */
+  async resolvePayment(paymentID: string): Promise<any | null> {
+    const pgPayment = await this.dbService.get(
+      'SELECT * FROM payments WHERE payment_id = $1',
+      [paymentID]
+    );
+    if (pgPayment) return pgPayment;
+
+    let ledger: any;
+    try {
+      const read = await this.fabricService.queryChaincode('ReadPayment', [paymentID]);
+      if (!read.success || !read.data) return null;
+      ledger = read.data;
+    } catch (readErr: any) {
+      logger.warn(`[PaymentService] Could not read payment ${paymentID} from the ledger: ${readErr?.message}`);
+      return null;
+    }
+
+    // The NBE split is 40% retention / 60% release, from the ledger's
+    // own retentionRate (40 on every payment seen so far). Derive both
+    // from the total: the ledger's retainedAmount is only set by
+    // SettlePayment and convertedAmount is overwritten with birr by
+    // ConvertRetention, so neither is a reliable release amount here.
+    const total = Number(ledger.amount ?? 0);
+    const rawRate = Number(ledger.retentionRate ?? 40);
+    const retentionRate = Number.isFinite(rawRate) && rawRate > 0 && rawRate < 100 ? rawRate : 40;
+    const retentionAmount = Math.round(total * retentionRate / 100 * 100) / 100;
+    const releaseAmount = Math.round((total - retentionAmount) * 100) / 100;
+    const retentionStatus = ledger.retentionReleased
+      ? 'RELEASED'
+      : ledger.retentionConverted
+        ? 'RETENTION_CONVERTED'
+        : 'RECEIVED';
+    const reconciled: any = {
+      payment_id: paymentID,
+      contract_id: ledger.contractId ?? null,
+      shipment_id: ledger.shipmentId ?? null,
+      exporter_id: ledger.exporterId ?? null,
+      lc_id: ledger.lcId ?? null,
+      lc_number: ledger.lcId ?? null,
+      amount: total,
+      amount_usd: total,
+      currency: ledger.currency || 'USD',
+      payment_date: ledger.paymentDate ?? null,
+      retention_rate: retentionRate,
+      retention_amount: retentionAmount,
+      release_amount: releaseAmount,
+      status: String(ledger.status || 'PENDING'),
+      retention_status: retentionStatus,
+    };
+
+    try {
+      await this.dbService.run(
+        `INSERT INTO payments (
+          payment_id, contract_id, shipment_id, exporter_id, lc_id, lc_number,
+          amount, amount_usd, currency, payment_date,
+          retention_rate, retention_amount, release_amount,
+          status, retention_status
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+        ON CONFLICT (payment_id) DO NOTHING`,
+        [
+          reconciled.payment_id, reconciled.contract_id, reconciled.shipment_id,
+          reconciled.exporter_id, reconciled.lc_id, reconciled.lc_number,
+          reconciled.amount, reconciled.amount_usd, reconciled.currency,
+          reconciled.payment_date, reconciled.retention_rate,
+          reconciled.retention_amount, reconciled.release_amount,
+          reconciled.status, reconciled.retention_status,
+        ]
+      );
+      // Another writer may have created the row meanwhile: prefer the
+      // stored row when it exists.
+      const stored = await this.dbService.get(
+        'SELECT * FROM payments WHERE payment_id = $1',
+        [paymentID]
+      );
+      if (stored) return stored;
+    } catch (mirrorErr: any) {
+      logger.warn(`[PaymentService] Could not reconcile ledger payment ${paymentID} into Postgres: ${mirrorErr?.message}`);
+    }
+    return reconciled;
+  }
+
+  /**
    * Convert retention amount to Birr - NBE/Bank processes 40% retention
    * @workflow Payment Received → Retention Converted → Birr Deposited
    */
@@ -211,11 +314,9 @@ export class PaymentService {
     try {
       logger.info(`[PaymentService] Converting retention for payment: ${conversionData.paymentID}`);
 
-      // Get payment details
-      const payment = await this.dbService.get(
-        'SELECT * FROM payments WHERE payment_id = $1',
-        [conversionData.paymentID]
-      );
+      // Ledger-first resolution (see resolvePayment): a payment with no
+      // PG row but a ledger record converts instead of 404'ing.
+      const payment = await this.resolvePayment(conversionData.paymentID);
 
       if (!payment) {
         throw new Error(`Payment not found: ${conversionData.paymentID}`);
@@ -415,11 +516,10 @@ export class PaymentService {
     try {
       logger.info(`[PaymentService] Releasing payment to exporter: ${releaseData.paymentID}`);
 
-      // Get payment details
-      const payment = await this.dbService.get(
-        'SELECT * FROM payments WHERE payment_id = $1',
-        [releaseData.paymentID]
-      );
+      // Ledger-first resolution (see resolvePayment): a payment with no
+      // PG row but a ledger record releases instead of 404'ing. The
+      // on-chain status read below still gates the release.
+      const payment = await this.resolvePayment(releaseData.paymentID);
 
       if (!payment) {
         throw new Error(`Payment not found: ${releaseData.paymentID}`);
