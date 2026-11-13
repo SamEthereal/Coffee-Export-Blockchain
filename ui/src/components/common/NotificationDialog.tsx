@@ -25,6 +25,12 @@ interface NotificationDialogProps {
   title: string;
   message: string;
   details?: string;
+  /**
+   * Blockchain transaction id of the write being reported. Shown in
+   * short form (full id on hover) so the user can see the write
+   * landed on the ledger. Omitted when the API returned no id.
+   */
+  txId?: string;
 }
 
 export const NotificationDialog: React.FC<NotificationDialogProps> = ({
@@ -34,6 +40,7 @@ export const NotificationDialog: React.FC<NotificationDialogProps> = ({
   title,
   message,
   details,
+  txId,
 }) => {
   const config = {
     success: {
@@ -95,11 +102,20 @@ export const NotificationDialog: React.FC<NotificationDialogProps> = ({
       </DialogTitle>
 
       <DialogContent sx={{ pt: 2 }}>
-        <Alert severity={type} variant="outlined" sx={{ mb: details ? 2 : 0 }}>
+        <Alert severity={type} variant="outlined" sx={{ mb: details || txId ? 2 : 0 }}>
           <AlertTitle sx={{ fontWeight: 600 }}>{message}</AlertTitle>
           {details && (
             <Typography variant="body2" sx={{ mt: 1 }}>
               {details}
+            </Typography>
+          )}
+          {txId && (
+            <Typography
+              variant="body2"
+              sx={{ mt: 1, fontFamily: 'monospace', wordBreak: 'break-all' }}
+              title={txId}
+            >
+              Blockchain TX: {txId.length > 12 ? `${txId.substring(0, 12)}…` : txId}
             </Typography>
           )}
         </Alert>

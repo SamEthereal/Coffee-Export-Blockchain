@@ -17,6 +17,7 @@ import {
   Search as SearchIcon
 } from '@mui/icons-material';
 import api from '../../utils/api';
+import { AnimatedButton } from '@/components/modern';
 
 interface PhytosanitaryCertificate {
   certificateID: string;
@@ -582,9 +583,9 @@ export const PhytosanitaryCertificates: React.FC = () => {
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setIssueDialogOpen(false)}>Cancel</Button>
-          <Button onClick={handleIssue} variant="contained" color="primary" disabled={loading}>
-            {loading ? 'Issuing...' : 'Issue Certificate'}
-          </Button>
+          <AnimatedButton onClick={handleIssue} variant="contained" color="primary" disabled={loading} loading={loading} loadingLabel="Issuing…" ledgerWrite>
+            Issue Certificate
+          </AnimatedButton>
         </DialogActions>
       </Dialog>
 

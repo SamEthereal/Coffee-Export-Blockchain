@@ -37,6 +37,7 @@ import { Upload, CheckCircle, Visibility, Delete, Warning, Info, AccessTime } fr
 import { AnimatedButton, StatusChip, StatusType } from '@/components/modern';
 import { NotificationDialog } from '@/components/common/NotificationDialog';
 import { useNotification } from '@/hooks/useNotification';
+import { extractTxId } from '@/utils/txId';
 import api from '@/utils/api';
 import {
   canSubmitPaymentDocuments,
@@ -118,7 +119,8 @@ export const PaymentDocuments: React.FC = () => {
         showSuccess(
           'Documents Submitted',
           'Payment documents have been successfully submitted',
-          `${documents.length} documents submitted for payment ${selectedPayment.paymentId}`
+          `${documents.length} documents submitted for payment ${selectedPayment.paymentId}`,
+          extractTxId(response),
         );
         setSubmitDialogOpen(false);
         setDocuments([]);
@@ -164,7 +166,8 @@ export const PaymentDocuments: React.FC = () => {
         showSuccess(
           'Documents Verified',
           'Payment documents have been verified and approved',
-          `Verified by: ${verifiedBy} | Payment can proceed to SWIFT`
+          `Verified by: ${verifiedBy} | Payment can proceed to SWIFT`,
+          extractTxId(response),
         );
         setVerifyDialogOpen(false);
         setVerificationComments('');
@@ -319,14 +322,16 @@ export const PaymentDocuments: React.FC = () => {
         </DialogContent>
         <DialogActions sx={{ px: 3, pb: 2 }}>
           <Button onClick={() => setSubmitDialogOpen(false)} variant="outlined">Cancel</Button>
-          <Button
+          <AnimatedButton
             variant="contained"
             startIcon={<Upload />}
+            loadingLabel="Submitting…"
+            ledgerWrite
             onClick={handleSubmitDocuments}
             disabled={documents.length === 0}
           >
             Submit {documents.length} Document{documents.length !== 1 ? 's' : ''}
-          </Button>
+          </AnimatedButton>
         </DialogActions>
       </Dialog>
 
@@ -401,15 +406,17 @@ export const PaymentDocuments: React.FC = () => {
         </DialogContent>
         <DialogActions sx={{ px: 3, pb: 2 }}>
           <Button onClick={() => setVerifyDialogOpen(false)} variant="outlined">Cancel</Button>
-          <Button 
-            variant="contained" 
-            color="success" 
-            startIcon={<CheckCircle />} 
+          <AnimatedButton
+            variant="contained"
+            color="success"
+            startIcon={<CheckCircle />}
+            loadingLabel="Verifying…"
+            ledgerWrite
             onClick={handleVerifyDocuments}
             disabled={!verifiedBy || !lcCompliant}
           >
             Verify & Approve
-          </Button>
+          </AnimatedButton>
         </DialogActions>
       </Dialog>
 
@@ -420,6 +427,7 @@ export const PaymentDocuments: React.FC = () => {
         title={notification.title}
         message={notification.message}
         details={notification.details}
+        txId={notification.txId}
       />
     </Box>
   );

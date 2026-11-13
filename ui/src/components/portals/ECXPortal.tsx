@@ -23,6 +23,7 @@ import {
   PrimaryButton, GhostButton, PortalDialog, PortalField, StatusChip, getPortalBrand,
 } from '@/components/shared/portal';
 import { useNotification } from '@/hooks/useNotification';
+import { extractTxId } from '@/utils/txId';
 import { useTabFromQuery } from '@/hooks/useTabFromQuery';
 import { NotificationDialog } from '@/components/common/NotificationDialog';
 import AuditTrailViewer from './AuditTrailViewer';
@@ -289,7 +290,7 @@ const ECXPortal: React.FC = () => {
       };
       const res = await api.post('/ecx/lots', payload);
       if (res.data?.success) {
-        showSuccess('Warehouse Receipt Issued', `Lot ${ecxLotNumber} received at ${intakeForm.warehouseId}`, 'Next: ECX grader will inspect and assign grade within 2 working days.');
+        showSuccess('Warehouse Receipt Issued', `Lot ${ecxLotNumber} received at ${intakeForm.warehouseId}`, 'Next: ECX grader will inspect and assign grade within 2 working days.', extractTxId(res));
         setIntakeOpen(false);
         setIntakeForm({ exporterId: '', exporterName: '', warehouseId: 'WH-ADDIS-01', origin: '', subRegion: '', quantity: '', bags: '', processingMethod: '', harvestSeason: '2025/2026' });
         loadData();
@@ -339,9 +340,9 @@ const ECXPortal: React.FC = () => {
       });
       if (res.data?.success) {
         if (res.data?.data?.status === 'REJECTED') {
-          showSuccess('Lot Rejected', `${selectedLot.ecxLotNumber} rejected — ${res.data.data.rejectionReason}`, 'The lot is recorded as REJECTED and shows under the Rejected filter. It cannot be graded again.');
+          showSuccess('Lot Rejected', `${selectedLot.ecxLotNumber} rejected — ${res.data.data.rejectionReason}`, 'The lot is recorded as REJECTED and shows under the Rejected filter. It cannot be graded again.', extractTxId(res));
         } else {
-          showSuccess('Grade Assigned', `${selectedLot.ecxLotNumber} graded as ${gradeForm.grade} (score: ${gradeForm.qualityScore})`, 'Exporter can now assign this lot to a sales contract.');
+          showSuccess('Grade Assigned', `${selectedLot.ecxLotNumber} graded as ${gradeForm.grade} (score: ${gradeForm.qualityScore})`, 'Exporter can now assign this lot to a sales contract.', extractTxId(res));
         }
         setGradeOpen(false); setSelectedLot(null); loadData();
       } else {
@@ -363,7 +364,7 @@ const ECXPortal: React.FC = () => {
         rejectionDate: new Date().toISOString(),
       });
       if (res.data?.success) {
-        showSuccess('Lot Rejected', `${selectedLot.ecxLotNumber} rejected — ${rejectForm.rejectionReason}`, 'The lot is recorded as REJECTED and shows under the Rejected filter. It cannot be graded again.');
+        showSuccess('Lot Rejected', `${selectedLot.ecxLotNumber} rejected — ${rejectForm.rejectionReason}`, 'The lot is recorded as REJECTED and shows under the Rejected filter. It cannot be graded again.', extractTxId(res));
         setRejectOpen(false); setSelectedLot(null); loadData();
       } else {
         showError('Rejection Failed', res.data?.error?.message || 'Could not reject lot');
@@ -381,7 +382,7 @@ const ECXPortal: React.FC = () => {
         assignmentDate: new Date().toISOString(),
       });
       if (res.data?.success) {
-        showSuccess('Lot Assigned', `${selectedLot.ecxLotNumber} linked to contract ${assignForm.contractId}`, 'Exporter can now register this shipment. ECX will release the lot after customs clearance.');
+        showSuccess('Lot Assigned', `${selectedLot.ecxLotNumber} linked to contract ${assignForm.contractId}`, 'Exporter can now register this shipment. ECX will release the lot after customs clearance.', extractTxId(res));
         setAssignOpen(false); setSelectedLot(null); loadData();
       } else {
         showError('Assignment Failed', res.data?.error?.message || 'Could not assign lot to contract');
@@ -397,7 +398,7 @@ const ECXPortal: React.FC = () => {
         releaseDate: new Date().toISOString(), note: releaseNote,
       });
       if (res.data?.success) {
-        showSuccess('Lot Released', `${selectedLot.ecxLotNumber} released for export`, 'Exporter can now proceed with customs declaration and shipping.');
+        showSuccess('Lot Released', `${selectedLot.ecxLotNumber} released for export`, 'Exporter can now proceed with customs declaration and shipping.', extractTxId(res));
         setReleaseOpen(false); setSelectedLot(null); loadData();
       } else {
         showError('Release Failed', res.data?.error?.message || 'Could not release lot');
@@ -418,7 +419,8 @@ const ECXPortal: React.FC = () => {
           '🤖 Auto-Release Successful', 
           `Lot automatically released after customs clearance`, 
           `Shipment: ${shipmentId}\nLot is now authorized for transport to port.`
-        );
+        ,
+          extractTxId(res));
         setAutoReleaseOpen(false); setAutoReleaseShipmentId(''); setSelectedLot(null);
         loadData();
       } else {
@@ -727,7 +729,7 @@ const ECXPortal: React.FC = () => {
         actions={
           <>
             <GhostButton brand="ECX" onClick={() => setIntakeOpen(false)}>Cancel</GhostButton>
-            <AnimatedButton variant="contained" brandColor={BRAND_COLOR} onClick={handleIntake}
+            <AnimatedButton variant="contained" brandColor={BRAND_COLOR} onClick={handleIntake} loadingLabel="Issuing receipt…" ledgerWrite
               disabled={!intakeForm.exporterId || !intakeForm.origin || !intakeForm.quantity || !intakeForm.processingMethod}>
               Issue Warehouse Receipt
             </AnimatedButton>
@@ -812,7 +814,7 @@ const ECXPortal: React.FC = () => {
         actions={
           <>
             <GhostButton brand="ECX" onClick={() => setGradeOpen(false)}>Cancel</GhostButton>
-            <AnimatedButton variant="contained" brandColor="#ff9800" onClick={handleGrade}
+            <AnimatedButton variant="contained" brandColor="#ff9800" onClick={handleGrade} loadingLabel="Recording grade…" ledgerWrite
               disabled={!gradeForm.grade || !gradeForm.qualityScore || !gradeForm.moistureContent || !gradeForm.defectCount || !gradeForm.gradingOfficer}>
               Record Grade
             </AnimatedButton>
@@ -882,7 +884,7 @@ const ECXPortal: React.FC = () => {
         actions={
           <>
             <GhostButton brand="ECX" onClick={() => setRejectOpen(false)}>Cancel</GhostButton>
-            <AnimatedButton variant="contained" brandColor="#f44336" onClick={handleReject}
+            <AnimatedButton variant="contained" brandColor="#f44336" onClick={handleReject} loadingLabel="Rejecting…" ledgerWrite
               disabled={!rejectForm.rejectionReason.trim()}>
               Reject Lot
             </AnimatedButton>
@@ -918,7 +920,7 @@ const ECXPortal: React.FC = () => {
         actions={
           <>
             <GhostButton brand="ECX" onClick={() => setAssignOpen(false)}>Cancel</GhostButton>
-            <AnimatedButton variant="contained" brandColor={BRAND_COLOR} onClick={handleAssign}
+            <AnimatedButton variant="contained" brandColor={BRAND_COLOR} onClick={handleAssign} loadingLabel="Assigning…" ledgerWrite
               disabled={!assignForm.contractId || !assignForm.pricePerKg || parseFloat(assignForm.pricePerKg) < 5}>
               Assign &amp; Issue Warehouse Receipt Transfer
             </AnimatedButton>
@@ -984,7 +986,7 @@ const ECXPortal: React.FC = () => {
         actions={
           <>
             <GhostButton brand="ECX" onClick={() => setReleaseOpen(false)}>Cancel</GhostButton>
-            <AnimatedButton variant="contained" brandColor="#4caf50" onClick={handleRelease}>
+            <AnimatedButton variant="contained" brandColor="#4caf50" onClick={handleRelease} loadingLabel="Releasing…" ledgerWrite>
               Confirm Release
             </AnimatedButton>
           </>
@@ -1021,7 +1023,8 @@ const ECXPortal: React.FC = () => {
           <>
             <GhostButton brand="ECX" onClick={() => setAutoReleaseOpen(false)}>Cancel</GhostButton>
             <AnimatedButton variant="contained" brandColor="#4caf50"
-              onClick={() => { if (selectedLot) void handleAutoRelease(selectedLot.lotId, autoReleaseShipmentId.trim()); }}
+              onClick={() => { if (selectedLot) return handleAutoRelease(selectedLot.lotId, autoReleaseShipmentId.trim()); }}
+              loadingLabel="Releasing…" ledgerWrite
               disabled={!autoReleaseShipmentId.trim()}>
               Auto-Release
             </AnimatedButton>
@@ -1116,7 +1119,8 @@ const ECXPortal: React.FC = () => {
           )}
       </PortalDialog>
 
-      <NotificationDialog open={notification.open} onClose={closeNotification} type={notification.type} title={notification.title} message={notification.message} details={notification.details} />
+      <NotificationDialog open={notification.open} onClose={closeNotification} type={notification.type} title={notification.title} message={notification.message} details={notification.details}
+        txId={notification.txId} />
       <Snackbar open={snack.open} autoHideDuration={4000} onClose={() => setSnack(s => ({ ...s, open: false }))} anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}>
         <Alert severity={snack.ok ? 'success' : 'error'} onClose={() => setSnack(s => ({ ...s, open: false }))}>{snack.msg}</Alert>
       </Snackbar>

@@ -115,10 +115,13 @@ import {
   PortalDialog,
   PortalDialogActions,
   PortalField,
+  LedgerProgress,
+  useElapsedSeconds,
   getPortalBrand,
 } from '@/components/shared/portal';
 import { NotificationDialog } from '@/components/common/NotificationDialog';
 import { useNotification } from '@/hooks/useNotification';
+import { extractTxId } from '@/utils/txId';
 import { useTabFromQuery } from '@/hooks/useTabFromQuery';
 import { DocumentManagementPanel } from '@/components/documents';
 import BlockchainSignatureVerification from '@/components/documents/BlockchainSignatureVerification';
@@ -318,11 +321,13 @@ const ECTAPortal: React.FC = () => {
   // disable while the request runs. Dialog closing is unchanged — the
   // handlers still close the dialogs on success with a confirmation.
   const [rejectingApplication, setRejectingApplication] = useState(false);
+  const rejectElapsed = useElapsedSeconds(rejectingApplication);
   const [rejectingContract, setRejectingContract] = useState(false);
+  const rejectContractElapsed = useElapsedSeconds(rejectingContract);
   // In-flight flag for the contract resubmission (F-1), same round-trip.
   const [resubmittingContract, setResubmittingContract] = useState(false);
   const [notificationDialogOpen, setNotificationDialogOpen] = useState(false);
-  const [notificationContent, setNotificationContent] = useState({ title: '', message: '', type: 'success' as 'success' | 'error' });
+  const [notificationContent, setNotificationContent] = useState<{ title: string; message: string; type: 'success' | 'error'; txId?: string }>({ title: '', message: '', type: 'success' });
   // NOTE: no local search input here on purpose — global search lives in
   // the shared NavigationBar (GET /api/v1/search) and covers this
   // portal's contracts / shipments / applications. The old SearchBar
@@ -958,7 +963,8 @@ Next Steps for Exporter:
    • Branch Code: ${approvalData.bankBranchCode}
 
 The exporter account is now active and can start using the system.`,
-          type: 'success'
+          type: 'success',
+          txId: extractTxId(response),
         });
         setNotificationDialogOpen(true);
         
@@ -1278,7 +1284,8 @@ Requirements to Meet:
 • Bank account with commercial bank
 
 The exporter can reapply once all requirements are met.`,
-          type: 'error'
+          type: 'error',
+          txId: extractTxId(response),
         });
         setNotificationDialogOpen(true);
         
@@ -1320,7 +1327,9 @@ The exporter can reapply once all requirements are met.`,
         setContractApprovalDialogOpen(false);
         showSuccess(
           'Contract Approved',
-          `Contract ${contractId} has been approved for export compliance. Banks can now issue LC and allocate forex.`
+          `Contract ${contractId} has been approved for export compliance. Banks can now issue LC and allocate forex.`,
+          undefined,
+          extractTxId(response),
         );
         
         // Update the contract status immediately in the UI
@@ -1384,7 +1393,9 @@ The exporter can reapply once all requirements are met.`,
         setContractRejectDialogOpen(false);
         showSuccess(
           'Contract Rejected',
-          `Contract ${selectedContract.contractID || selectedContract.contractId} has been rejected. The exporter will be notified.`
+          `Contract ${selectedContract.contractID || selectedContract.contractId} has been rejected. The exporter will be notified.`,
+          undefined,
+          extractTxId(response),
         );
         
         // Refresh contracts
@@ -1562,7 +1573,8 @@ The exporter can reapply once all requirements are met.`,
         showSuccess(
           'Inspection Approved',
           `Quality certificate ${certificateNo} issued`,
-          'Inspection approved. Ready to issue export permit'
+          'Inspection approved. Ready to issue export permit',
+          extractTxId(response),
         );
         loadData();
       } else {
@@ -1598,7 +1610,8 @@ The exporter can reapply once all requirements are met.`,
         showSuccess(
           'Export Permit Issued',
           `Export Permit ${issuedPermitNo} issued by the Commercial Bank of Ethiopia (BanksMSP) for ${shipmentId} — submitted by ECTA`,
-          'The customs declaration is a separate next step — no customs declaration was created automatically.'
+          'The customs declaration is a separate next step — no customs declaration was created automatically.',
+          extractTxId(response),
         );
         loadData();
       } else {
@@ -1627,7 +1640,8 @@ The exporter can reapply once all requirements are met.`,
         showSuccess(
           'Inspection Rejected',
           `Inspection ${inspectionId} has been rejected`,
-          `Reason: ${rejectionReason}. Exporter must address quality issues before re-submitting`
+          `Reason: ${rejectionReason}. Exporter must address quality issues before re-submitting`,
+          extractTxId(response),
         );
         loadData();
       } else {
@@ -2283,7 +2297,7 @@ The exporter can reapply once all requirements are met.`,
                                       reason,
                                     });
                                     if (response.data?.success) {
-                                      showSuccess('License Suspended', `${application.company_name} license has been suspended. They cannot access the system until reactivated.`);
+                                      showSuccess('License Suspended', `${application.company_name} license has been suspended. They cannot access the system until reactivated.`, undefined, extractTxId(response));
                                       loadData();
                                     }
                                   } catch (error: any) {
@@ -2308,7 +2322,7 @@ The exporter can reapply once all requirements are met.`,
                                       const response = await api.post(`/exporters/${application.exporter_id}/revoke`, { reason });
                                       if (response.data?.success) {
                                         if (response.data?.data?.accountDisabled) {
-                                          showSuccess('License Revoked', `${application.company_name} license has been permanently revoked and the account has been disabled.`);
+                                          showSuccess('License Revoked', `${application.company_name} license has been permanently revoked and the account has been disabled.`, undefined, extractTxId(response));
                                         } else {
                                           showError('License Revoked with Account Warning', response.data?.warning || 'The license was revoked on the ledger, but the local account could not be disabled.');
                                         }
@@ -2751,15 +2765,17 @@ The exporter can reapply once all requirements are met.`,
                           <TableCell>{certificate}</TableCell>
                           <TableCell align="right">
                             {isShipment ? (
-                              <Button
-                                variant="contained"
+                              <PrimaryButton
+                                brand="ECTA"
                                 size="small"
                                 startIcon={<Assignment />}
+                                loadingLabel="Scheduling…"
+                                ledgerWrite
                                 sx={{ bgcolor: '#ff9800', '&:hover': { bgcolor: '#f57c00' } }}
                                 onClick={() => handleRequestInspection(item)}
                               >
                                 Schedule
-                              </Button>
+                              </PrimaryButton>
                             ) : status === 'PENDING' || status === 'REQUESTED' ? (
                               <Button
                                 variant="contained"
@@ -2772,22 +2788,25 @@ The exporter can reapply once all requirements are met.`,
                               </Button>
                             ) : status === 'INSPECTED' ? (
                               <Box display="flex" gap={1} justifyContent="flex-end">
-                                <Button
-                                  variant="contained"
+                                <PrimaryButton
+                                  brand="ECTA"
                                   size="small"
                                   startIcon={<CheckCircle />}
-                                  sx={{ bgcolor: '#4caf50', '&:hover': { bgcolor: '#388e3c' } }}
+                                  loadingLabel="Approving…"
+                                  ledgerWrite
                                   onClick={() => handleApproveInspection(item)}
                                 >
                                   Approve
-                                </Button>
+                                </PrimaryButton>
                                 <DangerButton
                                   brand="ECTA"
                                   size="small"
                                   startIcon={<Cancel />}
+                                  loadingLabel="Rejecting…"
+                                  ledgerWrite
                                   onClick={() => {
                                     const reason = prompt('Enter rejection reason:');
-                                    if (reason) handleRejectInspection(item, reason);
+                                    if (reason) return handleRejectInspection(item, reason);
                                   }}
                                 >
                                   Reject
@@ -2798,6 +2817,8 @@ The exporter can reapply once all requirements are met.`,
                                 brand="ECTA"
                                 size="small"
                                 startIcon={<Description />}
+                                loadingLabel="Issuing permit…"
+                                ledgerWrite
                                 onClick={() => handleIssueExportPermit(item)}
                               >
                                 Issue Permit
@@ -2914,6 +2935,9 @@ The exporter can reapply once all requirements are met.`,
                             size="small" 
                             variant="outlined"
                             brandColor={BRAND_COLOR}
+                            loadingLabel="Renewing…"
+                            ledgerWrite
+                            showSuccess={false}
                             onClick={() => {
                               const currentExpiryDate = new Date(exporter.licenseExpiryDate);
                               const renewalBaseDate = new Date(Math.max(currentExpiryDate.getTime(), Date.now()));
@@ -2923,7 +2947,7 @@ The exporter can reapply once all requirements are met.`,
                               if (window.confirm(`Process License Renewal?\n\nExporter: ${exporter.companyName}\nLicense: ${exporter.ectaLicenseNumber}\nCurrent Expiry: ${formatDate(exporter.licenseExpiryDate)}\nNew Expiry: ${formatDate(newExpiryDate.toISOString())}\n\nThis will extend the license for 1 year.`)) {
                                 const reason = window.prompt(`Enter the reason for renewing ${exporter.companyName}'s license:`);
                                 if (!reason?.trim()) return;
-                                apiFetch(`/exporters/${exporter.exporterId}/renew-license`, {
+                                return apiFetch(`/exporters/${exporter.exporterId}/renew-license`, {
                                   method: 'POST',
                                   headers: {
                                     'Authorization': `Bearer ${localStorage.getItem('authToken')}`,
@@ -3415,13 +3439,19 @@ The exporter can reapply once all requirements are met.`,
           <GhostButton brand="ECTA" onClick={() => setRejectConfirmOpen(false)}>
             Go Back
           </GhostButton>
-          <DangerButton brand="ECTA" startIcon={rejectingApplication ? <CircularProgress size={18} color="inherit" /> : <WarningAmber />} disabled={rejectingApplication} onClick={() => { setRejectConfirmOpen(false); handleRejectApplication(); }}>
-            {rejectingApplication ? 'Rejecting…' : 'Yes, Reject Permanently'}
+          <DangerButton brand="ECTA" loading={rejectingApplication} loadingLabel="Rejecting…" ledgerWrite onClick={handleRejectApplication}>
+            Yes, Reject Permanently
           </DangerButton>
         
       </>}>
 
           <Alert severity="error" sx={{ mb: 2 }}>Once rejected, this decision is final.</Alert>
+          {rejectingApplication && (
+            <LedgerProgress
+              message="Rejecting application… this writes to the blockchain and can take 10–35 seconds. Please wait — this dialog closes when the rejection is confirmed."
+              elapsed={rejectElapsed}
+            />
+          )}
           <Typography variant="body1" paragraph>
             You are about to permanently reject <strong>{selectedApplication?.company_name}</strong>'s application. This action cannot be undone.
           </Typography>
@@ -3452,6 +3482,8 @@ The exporter can reapply once all requirements are met.`,
             variant="contained"
             brandColor="#4caf50"
             onClick={handleApproveApplication}
+            loadingLabel="Approving…"
+            ledgerWrite
             disabled={
               !approvalData.exporterId || 
               !approvalData.ectaLicenseNumber || 
@@ -3595,7 +3627,6 @@ The exporter can reapply once all requirements are met.`,
             brandColor="#f44336"
             onClick={() => setRejectConfirmOpen(true)}
             disabled={!rejectionReason}
-            loading={rejectingApplication}
           >
             Reject Application
           </AnimatedButton>
@@ -3608,9 +3639,10 @@ The exporter can reapply once all requirements are met.`,
               arrives when the round-trip completes. Closing behaviour is
               unchanged: the handler still closes this dialog on success. */}
           {rejectingApplication && (
-            <Alert severity="info" sx={{ mb: 2 }}>
-              Rejecting application… this writes to the blockchain and can take 10–35 seconds. Please wait — this dialog closes when the rejection is confirmed.
-            </Alert>
+            <LedgerProgress
+              message="Rejecting application… this writes to the blockchain and can take 10–35 seconds. Please wait — this dialog closes when the rejection is confirmed."
+              elapsed={rejectElapsed}
+            />
           )}
           <Typography variant="body2" color="textSecondary" paragraph>
             Please provide a reason for rejecting this application.
@@ -3783,6 +3815,11 @@ The exporter can reapply once all requirements are met.`,
           >
             {notificationContent.message}
           </Typography>
+          {notificationContent.txId && (
+            <Typography variant="body2" sx={{ mt: 2, fontFamily: 'monospace', wordBreak: 'break-all' }} title={notificationContent.txId}>
+              Blockchain TX: {notificationContent.txId.length > 12 ? `${notificationContent.txId.substring(0, 12)}…` : notificationContent.txId}
+            </Typography>
+          )}
         </DialogContent>
         <PortalDialogActions>
           <AnimatedButton 
@@ -3808,8 +3845,8 @@ The exporter can reapply once all requirements are met.`,
       <PortalDialog brand="ECTA" title="Perform Quality Inspection" subtitle={inspectTarget ? `${inspectTarget.inspection_id || inspectTarget.inspectionID || inspectTarget.InspectionID} • Shipment ${inspectTarget.shipment_id || inspectTarget.shipmentID || inspectTarget.ShipmentID}` : undefined} open={inspectDialogOpen} onClose={() => { if (!inspectSubmitting) { setInspectDialogOpen(false); setInspectTarget(null); } }} maxWidth="md" actions={<>
 
           <GhostButton brand="ECTA" onClick={() => { setInspectDialogOpen(false); setInspectTarget(null); }} disabled={inspectSubmitting}>Cancel</GhostButton>
-          <PrimaryButton brand="ECTA" onClick={handleSubmitInspectForm} disabled={inspectSubmitting}>
-            {inspectSubmitting ? 'Submitting…' : 'Submit Inspection Results'}
+          <PrimaryButton brand="ECTA" onClick={handleSubmitInspectForm} loading={inspectSubmitting} loadingLabel="Submitting…" ledgerWrite disabled={inspectSubmitting}>
+            Submit Inspection Results
           </PrimaryButton>
         
       </>}>
@@ -3884,6 +3921,7 @@ The exporter can reapply once all requirements are met.`,
         title={notification.title}
         message={notification.message}
         details={notification.details}
+        txId={notification.txId}
       />
 
       {/* Document Validation Dialog */}
@@ -3945,8 +3983,8 @@ The exporter can reapply once all requirements are met.`,
           {/* Resubmit (F-1): only a REJECTED contract can be resubmitted.
               Calls POST /api/v1/contracts/:contractId/resubmit. */}
           {(selectedContract?.contractStatus === 'REJECTED' || selectedContract?.status === 'REJECTED') && (
-            <PrimaryButton brand="ECTA" startIcon={resubmittingContract ? <CircularProgress size={18} color="inherit" /> : undefined} disabled={resubmittingContract} onClick={handleResubmitContract}>
-              {resubmittingContract ? 'Resubmitting…' : 'Resubmit Contract'}
+            <PrimaryButton brand="ECTA" loading={resubmittingContract} loadingLabel="Resubmitting…" ledgerWrite disabled={resubmittingContract} onClick={handleResubmitContract}>
+              Resubmit Contract
             </PrimaryButton>
           )}
 
@@ -4193,7 +4231,7 @@ The exporter can reapply once all requirements are met.`,
           <GhostButton brand="ECTA" onClick={() => setContractApprovalDialogOpen(false)}>
             Cancel
           </GhostButton>
-          <PrimaryButton brand="ECTA" onClick={handleApproveContract}>
+          <PrimaryButton brand="ECTA" onClick={handleApproveContract} loadingLabel="Approving…" ledgerWrite>
             Approve Contract
           </PrimaryButton>
         
@@ -4328,8 +4366,8 @@ The exporter can reapply once all requirements are met.`,
           <GhostButton brand="ECTA" disabled={rejectingContract} onClick={() => { setContractRejectDialogOpen(false); setContractRejectionField(''); setContractRejectionReason(''); }}>
             Cancel
           </GhostButton>
-          <DangerButton brand="ECTA" onClick={handleRejectContract} disabled={rejectingContract || !contractRejectionField || contractRejectionReason.trim().length < 20} startIcon={rejectingContract ? <CircularProgress size={18} color="inherit" /> : undefined}>
-            {rejectingContract ? 'Rejecting…' : 'Reject Contract'}
+          <DangerButton brand="ECTA" onClick={handleRejectContract} disabled={rejectingContract || !contractRejectionField || contractRejectionReason.trim().length < 20} loading={rejectingContract} loadingLabel="Rejecting…" ledgerWrite>
+            Reject Contract
           </DangerButton>
         
       </>}>
@@ -4346,9 +4384,10 @@ The exporter can reapply once all requirements are met.`,
                   behaviour is unchanged: the handler still closes this
                   dialog on success with a confirmation. */}
               {rejectingContract && (
-                <Alert severity="info" sx={{ mb: 2 }}>
-                  Rejecting contract… this writes to the blockchain and can take 10–35 seconds. Please wait — this dialog closes when the rejection is confirmed.
-                </Alert>
+                <LedgerProgress
+                  message="Rejecting contract… this writes to the blockchain and can take 10–35 seconds. Please wait — this dialog closes when the rejection is confirmed."
+                  elapsed={rejectContractElapsed}
+                />
               )}
               
               <Typography variant="body2" sx={{ mb: 1 }}>
