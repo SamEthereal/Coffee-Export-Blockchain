@@ -1287,7 +1287,7 @@ check_success_or_blocked "Port arrival"
 log_test "Container stuffing (POST /shipments/:id/container/stuff, shipments.ts:2261)"
 call POST "/shipments/$SHIPMENT_ID/container/stuff" "$SHIPPING_TOKEN" "{
     \"containerNumber\": \"CONT-$TS\",
-    \"containerType\": \"40FT\",
+    \"containerType\": \"DRY\",
     \"sealNumber\": \"SEAL-$TS\",
     \"stuffedBy\": \"Djibouti Port Team\",
     \"location\": \"Djibouti Port\"
