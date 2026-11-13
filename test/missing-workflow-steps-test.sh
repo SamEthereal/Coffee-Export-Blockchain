@@ -453,8 +453,16 @@ LICENSE_NUM="ECTA-$TS"
 APPROVE_DATA="{
     \"exporterId\": \"$EXPORTER_ID\",
     \"ectaLicenseNumber\": \"$LICENSE_NUM\",
-    \"licenseExpiryDate\": \"2027-12-31\"
+    \"licenseExpiryDate\": \"2027-12-31\",
+    \"bankName\": \"Commercial Bank of Ethiopia\",
+    \"bankAccountNumber\": \"1000123456789\",
+    \"bankBranch\": \"Bole Branch\"
 }"
+# BANK_DETAILS_REQUIRED: the approve endpoint (exporters.ts) requires
+# effective bankName + bankAccountNumber + bankBranch, falling back to
+# the application row — but this suite's application submits only
+# bankAccountNumber, so the approve must carry all three itself.
+# The validation is correct product behaviour; only this script changes.
 call POST "/exporters/exporter-applications/$APPLICATION_ID/approve" "$ECTA_TOKEN" "$APPROVE_DATA"
 check_success_or_blocked "Approve exporter application" ".data.exporterId"
 
