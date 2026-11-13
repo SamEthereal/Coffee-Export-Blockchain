@@ -2372,6 +2372,20 @@ const ExporterPortal: React.FC = () => {
       return;
     }
 
+    // Approval auto-creates the LC, so a contract that already has one
+    // listed must never be re-requested — the API 409s DUPLICATE_LC.
+    // Guard here as well as at the buttons: the dialog can have been
+    // opened before the LC list refreshed with the auto-created LC.
+    const existingLCForRequest = lcStatuses.find(lc => lc.contractId === selectedContractForLC.contractId);
+    if (existingLCForRequest) {
+      showError(
+        'LC Already Exists',
+        `Contract ${selectedContractForLC.contractId} already has LC ${existingLCForRequest.lcId} (${existingLCForRequest.status})`,
+        'Approval creates the LC automatically — no second request is needed. Track it in the "Forex & Banking" tab.'
+      );
+      return;
+    }
+
     setIsRequestingLC(true);
     try {
       const token = localStorage.getItem('authToken');
@@ -2486,6 +2500,22 @@ const ExporterPortal: React.FC = () => {
         });
         
         // Reload data to show new LC
+        setTimeout(() => {
+          loadExporterData();
+        }, 2000);
+      } else if (result.error?.code === 'DUPLICATE_LC') {
+        // The API found the auto-created LC for this contract. Say so
+        // plainly instead of a generic failure, close the dialog, and
+        // reload so the existing LC shows up in the lists.
+        showError(
+          'LC Already Exists',
+          result.error.message || `An LC already exists for contract ${selectedContractForLC.contractId}`,
+          result.error.existingLC
+            ? `Existing LC: ${result.error.existingLC}${result.error.existingStatus ? ` (${result.error.existingStatus})` : ''}. Track it in the "Forex & Banking" tab.`
+            : 'Track the existing LC in the "Forex & Banking" tab.'
+        );
+        setLcRequestDialogOpen(false);
+        setSelectedContractForLC(null);
         setTimeout(() => {
           loadExporterData();
         }, 2000);
@@ -6036,11 +6066,19 @@ This contract is registered with ECTA and approved by NBE.
         {(() => {
           // Only show "Create Shipment" button if contract has forex allocated
           if (selectedContractForDetail) {
-            const hasForex = forexStatuses.some(f => 
-              f.contractId === selectedContractForDetail.contractId && 
+            const hasForex = forexStatuses.some(f =>
+              f.contractId === selectedContractForDetail.contractId &&
               f.status === 'ALLOCATED'
             );
-            
+            // Approval auto-creates the LC, so an approved contract with
+            // no forex allocated yet ALREADY has one — the API rejects a
+            // second request with 409 DUPLICATE_LC. The LC-existence
+            // check is any LC for the contract (same rule as the API's
+            // duplicate check), not just an issued one.
+            const existingLC = lcStatuses.find(lc =>
+              lc.contractId === selectedContractForDetail.contractId
+            );
+
             if (hasForex) {
               return (
                 <PrimaryButton brand='EXPORTER'
@@ -6063,6 +6101,23 @@ This contract is registered with ECTA and approved by NBE.
                   Create Shipment
                 </PrimaryButton>
               );
+            } else if (existingLC) {
+              // Never offer "Request LC" once one exists: show the
+              // existing LC instead, disabled, with its real status.
+              // REQUESTED means the auto-created LC is awaiting the
+              // bank; ISSUED and later means it is already issued.
+              return (
+                <Tooltip title={`LC ${existingLC.lcId} is already ${existingLC.status} for this contract. Approval creates the LC automatically — a second request is rejected by the bank (DUPLICATE_LC). Track it in the "Forex & Banking" tab.`}>
+                  <span>
+                    <SecondaryButton brand='EXPORTER'
+                      startIcon={<AccountBalance />}
+                      disabled
+                    >
+                      {existingLC.status === 'REQUESTED' ? 'LC already requested' : 'LC already issued'}
+                    </SecondaryButton>
+                  </span>
+                </Tooltip>
+              );
             } else {
               // Show info button to request LC instead
               return (
@@ -6071,7 +6126,7 @@ This contract is registered with ECTA and approved by NBE.
                   onClick={() => {
                     // Close contract details dialog
                     setContractDetailDialogOpen(false);
-                    
+
                     // Directly open LC request dialog with pre-filled data
                     if (selectedContractForDetail) {
                       setSelectedContractForLC(selectedContractForDetail);
