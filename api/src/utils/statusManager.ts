@@ -124,9 +124,15 @@ export const StatusTransitions = {
     // CompleteDelivery DESTINATION_ARRIVED→DELIVERED,
     // ConfirmDelivery IN_TRANSIT→DELIVERED (second path to DELIVERED),
     // PickupShipment CUSTOMS_CLEARED|PERMIT_ISSUED→IN_TRANSIT (bypass).
-    // FREIGHT_BOOKED is set by the book-freight route; LOADED by
-    // RecordShippingDetails / RecordBillOfLading (gated F3 leg2:
-    // CUSTOMS_CLEARED, FREIGHT_BOOKED or LOADED only).
+    // LOADED is set by RecordBillOfLading / RecordAirwayBill /
+    // RecordShippingDetails (gated F3 leg2: CUSTOMS_CLEARED,
+    // FREIGHT_BOOKED or LOADED only). A shipment with its B/L issued is
+    // the normal pre-transport state, so LOADED lists LAND_TRANSPORT:
+    // StartLandTransport accepts LOADED (delivered-gap fix, seq 13) and
+    // without this edge the generic status route stranded every
+    // B/L-issued shipment short of DELIVERED. IN_TRANSIT / DELIVERED
+    // stay as the generic-route fallbacks (PickupShipment /
+    // ConfirmDelivery paths).
     // CUSTOMS_DECLARED is set by SubmitCustomsDeclaration, which
     // requires PERMIT_ISSUED (customs.go); the clear cascade
     // (ClearDeclaration / ClearCustomsDeclaration) sets CUSTOMS_CLEARED
@@ -171,7 +177,7 @@ export const StatusTransitions = {
     DESTINATION_ARRIVED: ['DELIVERED', 'ARRIVED'],
     ARRIVED: ['DELIVERED'],
     DELIVERED: [],
-    LOADED: ['IN_TRANSIT', 'DELIVERED'],
+    LOADED: ['IN_TRANSIT', 'DELIVERED', 'LAND_TRANSPORT'],
     CANCELLED: [],
   },
 

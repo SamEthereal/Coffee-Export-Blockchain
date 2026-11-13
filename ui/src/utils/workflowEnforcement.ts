@@ -10,7 +10,8 @@
 // chaincodes/coffee main.go validShipmentStatuses (coffee v2.3).
 // There is no BOOKED (chaincode: FREIGHT_BOOKED), no QUALITY_APPROVED
 // (that is a quality-inspection state, never a shipment state), and
-// LOADED (set unconditionally by RecordBillOfLading/RecordAirwayBill)
+// LOADED (set by RecordBillOfLading/RecordAirwayBill after customs
+// clearance; the pre-transport state — StartLandTransport accepts it)
 // is distinct from VESSEL_LOADED (LoadOnVessel, after CONTAINER_STUFFED).
 export const SHIPMENT_STATUS = {
   CREATED: 'CREATED',
@@ -255,10 +256,14 @@ export const canStartLandTransport = (shipmentStatus: string): {
   allowed: boolean;
   reason?: string;
 } => {
-  if (shipmentStatus !== SHIPMENT_STATUS.CUSTOMS_CLEARED) {
+  if (
+    shipmentStatus !== SHIPMENT_STATUS.CUSTOMS_CLEARED &&
+    shipmentStatus !== SHIPMENT_STATUS.FREIGHT_BOOKED &&
+    shipmentStatus !== SHIPMENT_STATUS.LOADED
+  ) {
     return {
       allowed: false,
-      reason: 'Land transport can only start from a customs-cleared shipment. Current status: ' + shipmentStatus,
+      reason: 'Land transport can only start from a customs-cleared, freight-booked or B/L-issued shipment. Current status: ' + shipmentStatus,
     };
   }
 
@@ -268,10 +273,11 @@ export const canStartLandTransport = (shipmentStatus: string): {
 /**
  * Check if shipment can be loaded on the vessel
  * Chaincode gate (main.go LoadOnVessel): CONTAINER_STUFFED → VESSEL_LOADED.
- * LOADED is a different chaincode state, set unconditionally by
- * RecordBillOfLading / RecordAirwayBill from any status — it is not the
- * vessel-loading step. (Starting land transport is canStartLandTransport,
- * which requires CUSTOMS_CLEARED.)
+ * LOADED is a different chaincode state, set by RecordBillOfLading /
+ * RecordAirwayBill after customs clearance — it is not the
+ * vessel-loading step, but it is the pre-transport state: starting land
+ * transport is canStartLandTransport, which accepts CUSTOMS_CLEARED,
+ * FREIGHT_BOOKED and LOADED.
  */
 export const canLoadShipment = (shipmentStatus: string): {
   allowed: boolean;
@@ -461,7 +467,7 @@ export const getWorkflowStageMessage = (
     case SHIPMENT_STATUS.VESSEL_LOADED:
       return '📦 Loaded on Vessel - Coffee loaded on vessel, awaiting departure';
     case SHIPMENT_STATUS.LOADED:
-      return '📦 Loaded - Bill of Lading / Airway Bill recorded. Note: LOADED is set unconditionally by the chaincode and does not advance the transport chain — offer BoL/AWB recording only as post-delivery paperwork.';
+      return '📦 Loaded - Bill of Lading / Airway Bill recorded. Ready for land transport: StartLandTransport accepts LOADED, so the shipment proceeds Addis → Djibouti from here.';
     case SHIPMENT_STATUS.CONTAINER_STUFFED:
       return '📦 Container Stuffed - Ready for vessel loading';
     case SHIPMENT_STATUS.PORT_ARRIVED:
@@ -469,7 +475,7 @@ export const getWorkflowStageMessage = (
     case SHIPMENT_STATUS.LAND_TRANSPORT:
       return '🚚 Land Transport - Coffee in transit to the port';
     case SHIPMENT_STATUS.FREIGHT_BOOKED:
-      return '📋 Freight Booked - Note: FREIGHT_BOOKED has no chaincode exit to land transport (StartLandTransport requires CUSTOMS_CLEARED). Offer booking only after delivery.';
+      return '📋 Freight Booked - Ready for land transport (StartLandTransport accepts FREIGHT_BOOKED).';
     case SHIPMENT_STATUS.CUSTOMS_CLEARED:
       return '✓ Customs Cleared - Ready for land transport';
     case SHIPMENT_STATUS.CUSTOMS_REJECTED:

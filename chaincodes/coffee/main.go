@@ -2446,18 +2446,24 @@ func (c *CoffeeContract) RecordShipmentActionRejection(ctx contractapi.Transacti
 		return fmt.Errorf("RecordShipmentActionRejection: rejection reason is required")
 	}
 
-	expectedStatus := map[string]string{
-		"START_LAND_TRANSPORT": "CUSTOMS_CLEARED",
-		"RECORD_PORT_ARRIVAL":  "LAND_TRANSPORT",
-		"CONTAINER_STUFFING":   "PORT_ARRIVED",
-		"VESSEL_LOADING":       "CONTAINER_STUFFED",
-		"VESSEL_DEPARTURE":     "VESSEL_LOADED",
-		"IN_TRANSIT_UPDATE":    "DEPARTED",
-		"DESTINATION_ARRIVAL":  "IN_TRANSIT",
-		"DELIVERY_COMPLETE":    "DESTINATION_ARRIVED",
+	// Each action is valid only from the state(s) its lifecycle function
+	// accepts as input: START_LAND_TRANSPORT from CUSTOMS_CLEARED,
+	// FREIGHT_BOOKED or LOADED (same three states StartLandTransport
+	// accepts — the single-state map used to list only CUSTOMS_CLEARED,
+	// so a FREIGHT_BOOKED or LOADED shipment's start could not be
+	// rejected through this path even though the start itself was legal).
+	expectedStatuses := map[string][]string{
+		"START_LAND_TRANSPORT": {"CUSTOMS_CLEARED", "FREIGHT_BOOKED", "LOADED"},
+		"RECORD_PORT_ARRIVAL":  {"LAND_TRANSPORT"},
+		"CONTAINER_STUFFING":   {"PORT_ARRIVED"},
+		"VESSEL_LOADING":       {"CONTAINER_STUFFED"},
+		"VESSEL_DEPARTURE":     {"VESSEL_LOADED"},
+		"IN_TRANSIT_UPDATE":    {"DEPARTED"},
+		"DESTINATION_ARRIVAL":  {"IN_TRANSIT"},
+		"DELIVERY_COMPLETE":    {"DESTINATION_ARRIVED"},
 	}
 	proposedAction = strings.ToUpper(strings.TrimSpace(proposedAction))
-	requiredStatus, ok := expectedStatus[proposedAction]
+	requiredStatuses, ok := expectedStatuses[proposedAction]
 	if !ok {
 		return fmt.Errorf("RecordShipmentActionRejection: unsupported shipping action %q", proposedAction)
 	}
@@ -2466,8 +2472,15 @@ func (c *CoffeeContract) RecordShipmentActionRejection(ctx contractapi.Transacti
 	if err != nil {
 		return err
 	}
-	if shipment.Status != requiredStatus {
-		return fmt.Errorf("RecordShipmentActionRejection: %s can only be rejected from %s, current status is %s", proposedAction, requiredStatus, shipment.Status)
+	allowed := false
+	for _, s := range requiredStatuses {
+		if shipment.Status == s {
+			allowed = true
+			break
+		}
+	}
+	if !allowed {
+		return fmt.Errorf("RecordShipmentActionRejection: %s can only be rejected from %s, current status is %s", proposedAction, strings.Join(requiredStatuses, ", "), shipment.Status)
 	}
 	changes := []FieldChange{
 		{FieldName: "proposedAction", OldValue: "", NewValue: proposedAction, DataType: "string"},
@@ -3487,12 +3500,17 @@ func (c *CoffeeContract) ConfirmDelivery(ctx contractapi.TransactionContextInter
 // ==================== COMPLETE SHIPPING WORKFLOW FUNCTIONS ====================
 
 // StartLandTransport - Begin land transport from Addis to Djibouti
-// Updates status from CUSTOMS_CLEARED (or FREIGHT_BOOKED — leg2 #7) to
-// LAND_TRANSPORT. FREIGHT_BOOKED is accepted because the literal order
-// is customs cleared → book freight → land transport: a shipment booked
-// after clearance must still be able to start land transport, and the
-// status machine (statusManager.ts) now lists FREIGHT_BOOKED as a
-// from-state for LAND_TRANSPORT.
+// Updates status from CUSTOMS_CLEARED (or FREIGHT_BOOKED — leg2 #7, or
+// LOADED — delivered-gap fix) to LAND_TRANSPORT. FREIGHT_BOOKED is accepted
+// because the literal order is customs cleared → book freight → land
+// transport: a shipment booked after clearance must still be able to start
+// land transport, and the status machine (statusManager.ts) now lists
+// FREIGHT_BOOKED as a from-state for LAND_TRANSPORT. LOADED is accepted
+// because the portal order records the bill of lading after customs
+// clearance: a shipment with its B/L issued is the normal pre-transport
+// state, and LOADED otherwise has no gated outgoing transition at all,
+// which stranded every B/L-issued shipment short of DELIVERED (the only
+// DELIVERED route was the ungated reconcile-status override).
 func (c *CoffeeContract) StartLandTransport(ctx contractapi.TransactionContextInterface,
 	shipmentID, transportCompany, truckPlate, driverName, sealNumber string) error {
 
@@ -3505,8 +3523,8 @@ func (c *CoffeeContract) StartLandTransport(ctx contractapi.TransactionContextIn
 		return fmt.Errorf("StartLandTransport: %w", err)
 	}
 
-	if shipment.Status != "CUSTOMS_CLEARED" && shipment.Status != "FREIGHT_BOOKED" {
-		return fmt.Errorf("shipment must be CUSTOMS_CLEARED or FREIGHT_BOOKED to start land transport, current status: %s", shipment.Status)
+	if shipment.Status != "CUSTOMS_CLEARED" && shipment.Status != "FREIGHT_BOOKED" && shipment.Status != "LOADED" {
+		return fmt.Errorf("shipment must be CUSTOMS_CLEARED, FREIGHT_BOOKED or LOADED to start land transport, current status: %s", shipment.Status)
 	}
 
 	txTimestamp, err := ctx.GetStub().GetTxTimestamp()

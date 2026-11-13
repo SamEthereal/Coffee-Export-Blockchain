@@ -421,9 +421,10 @@ const ShippingPortal: React.FC = () => {
 
   // Dead-end statuses: the chaincode has no onward transition from these, so the
   // portal must show the fact instead of an action button that can never work.
+  // (LOADED and FREIGHT_BOOKED used to be listed here; both now have a gated
+  // exit — StartLandTransport accepts CUSTOMS_CLEARED, FREIGHT_BOOKED and
+  // LOADED — so they are no longer dead ends.)
   const DEAD_END_NOTES: Record<string, string> = {
-    FREIGHT_BOOKED: 'Freight booked — this shipment cannot advance to land transport. Start Land Transport requires exactly CUSTOMS_CLEARED and the chaincode has no exit from FREIGHT_BOOKED, so booking freight before customs clearance strands the shipment. Freight booking is therefore only offered after delivery.',
-    LOADED: 'Bill of lading / airway bill recorded — this shipment cannot depart. DepartFromPort requires exactly VESSEL_LOADED and RecordShippingDetails sets LOADED unconditionally, so LOADED has no onward step. BoL/AWB recording is post-delivery paperwork only.',
     ARRIVED: 'ARRIVED is written by the freight-booking mirror, not the main lifecycle. Complete Delivery requires exactly DESTINATION_ARRIVED, so this shipment has no onward action in this portal.',
   };
 
@@ -450,10 +451,10 @@ const ShippingPortal: React.FC = () => {
         // Pre-fill B/L form with shipment ID
         setBolForm({ ...bolForm, shipmentId: data.shipmentId });
 
-        // BoL/AWB recording is post-delivery paperwork only: RecordShippingDetails
-        // sets LOADED unconditionally, which strands any shipment that has not
-        // delivered yet (DepartFromPort requires VESSEL_LOADED). Only auto-open
-        // the dialog once the shipment is DELIVERED.
+        // BoL/AWB recording is the post-clearance step: RecordBillOfLading
+        // accepts CUSTOMS_CLEARED, FREIGHT_BOOKED or LOADED and moves the
+        // shipment to LOADED, from which land transport starts. Only
+        // auto-open the dialog while the shipment can still record a B/L.
         void (async () => {
           try {
             const statusResponse = await apiFetch(`/shipments/${data.shipmentId}`, {
@@ -461,7 +462,7 @@ const ShippingPortal: React.FC = () => {
             });
             const statusResult = await statusResponse.json();
             const currentStatus = String(statusResult?.data?.status || statusResult?.data?.Status || '').toUpperCase();
-            if (currentStatus === 'DELIVERED') {
+            if (['CUSTOMS_CLEARED', 'FREIGHT_BOOKED', 'LOADED'].includes(currentStatus)) {
               setSnackbar({
                 open: true,
                 message:
@@ -476,7 +477,7 @@ const ShippingPortal: React.FC = () => {
                 open: true,
                 message:
                   `📦 Customs clearance received for shipment ${data.shipmentId} (status ${currentStatus || 'unknown'}). ` +
-                  `Bill of lading / airway bill recording is post-delivery paperwork only and will be available once the shipment is DELIVERED.`,
+                  `Bill of lading / airway bill recording is available once the shipment is customs-cleared.`,
                 severity: 'info'
               });
             }
@@ -485,7 +486,7 @@ const ShippingPortal: React.FC = () => {
               open: true,
               message:
                 `📦 Customs clearance received for shipment ${data.shipmentId}. ` +
-                `Bill of lading / airway bill recording is post-delivery paperwork only and will be available once the shipment is DELIVERED.`,
+                `Bill of lading / airway bill recording is available once the shipment is customs-cleared.`,
               severity: 'info'
             });
           }
@@ -628,9 +629,11 @@ const ShippingPortal: React.FC = () => {
             // Booked but not yet dispatched — still shown on the Clearance tab (S3)
             shippingStatus = 'FREIGHT_BOOKED';
           } else if (status === 'LOADED') {
-            // LOADED = bill of lading / airway bill recorded after vessel loading.
-            // Its own display bucket at the vessel-loaded stage — it must NOT
-            // fold back to CUSTOMS_CLEARED (that sent the shipment backwards).
+            // LOADED = bill of lading / airway bill recorded after customs
+            // clearance (the pre-transport state — land transport starts
+            // from here). Its own display bucket at the vessel-loaded
+            // stage — it must NOT fold back to CUSTOMS_CLEARED (that sent
+            // the shipment backwards).
             shippingStatus = 'LOADED';
           } else if (status === 'ARRIVED') {
             // Booking-lifecycle arrival (mirrorBookingStatusToShipment writes
@@ -1711,10 +1714,11 @@ const ShippingPortal: React.FC = () => {
     }
   };
 
-  // Open the BoL/AWB dialog only for a DELIVERED shipment. Recording a B/L
-  // or AWB sets LOADED unconditionally (chaincode RecordShippingDetails, no
-  // status guard), so opening it mid-chain would strand the shipment:
-  // DepartFromPort requires exactly VESSEL_LOADED.
+  // Open the BoL/AWB dialog only for a shipment that can record one:
+  // RecordBillOfLading / RecordAirwayBill accept CUSTOMS_CLEARED,
+  // FREIGHT_BOOKED or LOADED (chaincode gate) and move the shipment to
+  // LOADED, from which land transport starts — this is the portal-order
+  // step after customs clearance, not post-delivery paperwork.
   const openBolDialog = async (shipmentId: string) => {
     const token = localStorage.getItem('authToken');
     if (!token) return;
@@ -1724,10 +1728,10 @@ const ShippingPortal: React.FC = () => {
       });
       const statusResult = await statusResponse.json();
       const currentStatus = String(statusResult?.data?.status || statusResult?.data?.Status || '').toUpperCase();
-      if (currentStatus !== 'DELIVERED') {
+      if (!['CUSTOMS_CLEARED', 'FREIGHT_BOOKED', 'LOADED'].includes(currentStatus)) {
         setSnackbar({
           open: true,
-          message: `❌ Bill of lading / airway bill recording is post-delivery paperwork only — shipment ${shipmentId} is ${currentStatus || 'not delivered'} and recording it now would set it to LOADED, which has no onward step.`,
+          message: `❌ Bill of lading / airway bill can only be recorded once the shipment is customs-cleared (or freight-booked / already loaded) — shipment ${shipmentId} is ${currentStatus || 'unknown'}.`,
           severity: 'warning'
         });
         return;
@@ -1840,20 +1844,20 @@ const ShippingPortal: React.FC = () => {
       return;
     }
 
-    // Post-delivery paperwork only: re-check the live status here too, since
-    // the dialog's Shipment ID field is editable and the dialog can be opened
-    // with any id. Recording on a non-DELIVERED shipment would set LOADED
-    // unconditionally and strand it (DepartFromPort needs VESSEL_LOADED).
+    // Post-clearance step: re-check the live status here too, since the
+    // dialog's Shipment ID field is editable and the dialog can be opened
+    // with any id. Recording is only valid from CUSTOMS_CLEARED,
+    // FREIGHT_BOOKED or LOADED (chaincode RecordBillOfLading gate).
     try {
       const statusResponse = await apiFetch(`/shipments/${bolForm.shipmentId}`, {
         headers: { 'Authorization': `Bearer ${token}` }
       });
       const statusResult = await statusResponse.json();
       const currentStatus = String(statusResult?.data?.status || statusResult?.data?.Status || '').toUpperCase();
-      if (currentStatus !== 'DELIVERED') {
+      if (!['CUSTOMS_CLEARED', 'FREIGHT_BOOKED', 'LOADED'].includes(currentStatus)) {
         setSnackbar({
           open: true,
-          message: `❌ Bill of lading / airway bill recording is post-delivery paperwork only — shipment ${bolForm.shipmentId} is ${currentStatus || 'not delivered'}.`,
+          message: `❌ Bill of lading / airway bill can only be recorded once the shipment is customs-cleared — shipment ${bolForm.shipmentId} is ${currentStatus || 'unknown'}.`,
           severity: 'warning'
         });
         return;
@@ -2474,11 +2478,13 @@ const ShippingPortal: React.FC = () => {
             </IconButton>
           </Tooltip>
           
-          {/* CUSTOMS_CLEARED → Start Land Transport (via the approval dialog:
-              the handler requires transport company + truck plate, which are
-              only collected in the dialog — calling it from the grid always
-              failed client-side validation) */}
-          {params.row.status === 'CUSTOMS_CLEARED' && (
+          {/* CUSTOMS_CLEARED / FREIGHT_BOOKED / LOADED → Start Land Transport
+              (via the approval dialog: the handler requires transport company
+              + truck plate, which are only collected in the dialog — calling
+              it from the grid always failed client-side validation). LOADED
+              is the portal-order state (B/L recorded after customs
+              clearance); StartLandTransport accepts all three. */}
+          {['CUSTOMS_CLEARED', 'FREIGHT_BOOKED', 'LOADED'].includes(params.row.status) && (
             <Tooltip title="Start Land Transport">
               <IconButton
                 size="small"
@@ -3017,16 +3023,6 @@ const ShippingPortal: React.FC = () => {
               </Typography>
             </Alert>
 
-            {tab.index === 0 && rowsForTab(tab).some(r => r.status === 'FREIGHT_BOOKED') && (
-              <Alert severity="warning" sx={{ mb: 3 }}>
-                <Typography variant="body2">{DEAD_END_NOTES.FREIGHT_BOOKED}</Typography>
-              </Alert>
-            )}
-            {tab.index === 4 && rowsForTab(tab).some(r => r.status === 'LOADED') && (
-              <Alert severity="warning" sx={{ mb: 3 }}>
-                <Typography variant="body2">{DEAD_END_NOTES.LOADED}</Typography>
-              </Alert>
-            )}
             {tab.index === 7 && rowsForTab(tab).some(r => r.status === 'ARRIVED') && (
               <Alert severity="warning" sx={{ mb: 3 }}>
                 <Typography variant="body2">{DEAD_END_NOTES.ARRIVED}</Typography>
@@ -3178,7 +3174,7 @@ const ShippingPortal: React.FC = () => {
           {selectedRecord && (
             <>
               {/* Status-based Action Buttons */}
-              {selectedRecord.status === 'CUSTOMS_CLEARED' && (
+              {['CUSTOMS_CLEARED', 'FREIGHT_BOOKED', 'LOADED'].includes(selectedRecord.status) && (
                 <AnimatedButton 
                   onClick={() => openApprovalDialog('START_LAND_TRANSPORT', 'Start Land Transport', selectedRecord.shipmentId)}
                   variant="contained"
@@ -3266,10 +3262,11 @@ const ShippingPortal: React.FC = () => {
                 </AnimatedButton>
               )}
 
-              {/* Bill of lading / airway bill is post-delivery paperwork only:
-                  RecordShippingDetails sets LOADED unconditionally, which has
-                  no onward step — it must never be offered mid-chain. */}
-              {selectedRecord.status === 'DELIVERED' && (
+              {/* Bill of lading / airway bill is the post-clearance step:
+                  RecordBillOfLading accepts CUSTOMS_CLEARED, FREIGHT_BOOKED
+                  or LOADED and moves the shipment to LOADED, from which
+                  land transport starts. */}
+              {['CUSTOMS_CLEARED', 'FREIGHT_BOOKED', 'LOADED'].includes(selectedRecord.status) && (
                 <AnimatedButton
                   onClick={() => openBolDialog(selectedRecord.shipmentId)}
                   variant="contained"
@@ -3882,7 +3879,7 @@ const ShippingPortal: React.FC = () => {
             </Alert>
             <Alert severity="warning" sx={{ mb: 3 }}>
               <Typography variant="body2">
-                <strong>Post-delivery paperwork only:</strong> recording a bill of lading / airway bill sets the shipment to LOADED, which has no onward step on-chain (DepartFromPort requires VESSEL_LOADED). This dialog only accepts DELIVERED shipments.
+                <strong>Post-clearance step:</strong> recording a bill of lading / airway bill sets the shipment to LOADED, from which land transport starts (StartLandTransport accepts LOADED). This dialog accepts CUSTOMS_CLEARED, FREIGHT_BOOKED or LOADED shipments.
               </Typography>
             </Alert>
 

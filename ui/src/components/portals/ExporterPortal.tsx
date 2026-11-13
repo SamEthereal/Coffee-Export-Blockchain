@@ -3083,18 +3083,13 @@ const ExporterPortal: React.FC = () => {
               </Tooltip>
             )}
 
-            {/* 0.12: an existing FREIGHT_BOOKED row has no on-chain exit
-                to land transport — show the real status with a note, and
-                no onward button. Same for LOADED / ARRIVED: BoL/AWB
-                recording sets LOADED unconditionally and DepartFromPort
-                needs VESSEL_LOADED, so those rows have no onward step. */}
-            {status === 'FREIGHT_BOOKED' && (
-              <Tooltip title="Freight booked. This status has no on-chain exit to land transport — booking is post-delivery paperwork only.">
-                <Chip label="No onward transport" size="small" sx={{ bgcolor: '#FF980015', color: '#FF9800', fontWeight: 600 }} />
-              </Tooltip>
-            )}
-            {(status === 'LOADED' || status === 'ARRIVED') && (
-              <Tooltip title="Recorded as post-delivery paperwork (bill of lading / airway bill sets LOADED). DepartFromPort requires VESSEL_LOADED, so this row has no onward chain step.">
+            {/* 0.12: ARRIVED has no on-chain exit — show the real status
+                with a note, and no onward button. (FREIGHT_BOOKED and
+                LOADED used to be listed here; both now start land transport
+                — StartLandTransport accepts CUSTOMS_CLEARED, FREIGHT_BOOKED
+                and LOADED — so they are no longer dead ends.) */}
+            {status === 'ARRIVED' && (
+              <Tooltip title="Recorded as a booking-mirror arrival. Complete Delivery requires DESTINATION_ARRIVED, so this row has no onward chain step.">
                 <Chip label="No onward step" size="small" sx={{ bgcolor: '#FF980015', color: '#FF9800', fontWeight: 600 }} />
               </Tooltip>
             )}
@@ -6615,7 +6610,7 @@ This contract is registered with ECTA and approved by NBE.
               <Typography variant="body2">
                 Shipment: <strong>{selectedShipmentForShipping.shipmentId}</strong> • Quantity: <strong>{selectedShipmentForShipping.quantity ? Number(selectedShipmentForShipping.quantity).toLocaleString() : '0'} kg</strong>
                 <br />
-                Delivered — post-delivery freight booking. Booking sets the shipment to FREIGHT_BOOKED, which has no on-chain exit to land transport.
+                Delivered — post-delivery freight booking. Booking sets the shipment to FREIGHT_BOOKED, from which land transport can start.
               </Typography>
             </Alert>
 
@@ -6715,11 +6710,11 @@ This contract is registered with ECTA and approved by NBE.
               <Typography variant="body2">
                 <strong>What happens after booking:</strong>
                 <br />
-                1. Booking recorded against this delivered shipment
+                1. Booking recorded against this shipment
                 <br />
-                2. Bill of Lading (B/L) issued by the shipping line as post-delivery paperwork
+                2. Bill of Lading (B/L) issued by the shipping line after customs clearance
                 <br />
-                3. Shipment status becomes FREIGHT_BOOKED — it cannot advance to land transport on-chain
+                3. Shipment status becomes FREIGHT_BOOKED — land transport can start from here
                 <br />
                 4. Proceed to Payment Settlement
               </Typography>
@@ -7533,18 +7528,27 @@ This contract is registered with ECTA and approved by NBE.
                     </Typography>
                   </Grid>
 
-                  {/* 0.12: terminal-ish freight states — real status, note, no fake onward button */}
+                  {/* 0.12: ARRIVED is terminal-ish — real status, note, no
+                      fake onward button. FREIGHT_BOOKED / LOADED now start
+                      land transport, so they get a next-step note instead. */}
                   {selectedShipmentForDetail.status === 'FREIGHT_BOOKED' && (
                     <Grid item xs={12}>
-                      <Alert severity="warning">
-                        Freight booked. This status has no on-chain exit to land transport — booking is post-delivery paperwork only.
+                      <Alert severity="info">
+                        Freight booked — ready for land transport (Addis Ababa → Djibouti).
                       </Alert>
                     </Grid>
                   )}
-                  {(selectedShipmentForDetail.status === 'LOADED' || selectedShipmentForDetail.status === 'ARRIVED') && (
+                  {selectedShipmentForDetail.status === 'LOADED' && (
+                    <Grid item xs={12}>
+                      <Alert severity="info">
+                        Bill of lading / airway bill recorded — ready for land transport (Addis Ababa → Djibouti).
+                      </Alert>
+                    </Grid>
+                  )}
+                  {selectedShipmentForDetail.status === 'ARRIVED' && (
                     <Grid item xs={12}>
                       <Alert severity="warning">
-                        Recorded as post-delivery paperwork (bill of lading / airway bill sets LOADED). DepartFromPort requires VESSEL_LOADED, so this row has no onward chain step.
+                        Recorded as a booking-mirror arrival. Complete Delivery requires DESTINATION_ARRIVED, so this row has no onward chain step.
                       </Alert>
                     </Grid>
                   )}
