@@ -1512,9 +1512,36 @@ const ExporterPortal: React.FC = () => {
       const contractId = draftContractId || `CONTRACT${Date.now()}`;
       const quantity = parseFloat(newContract.quantity);
       const pricePerKg = parseFloat(newContract.pricePerKg);
-      
+
       if (isNaN(quantity) || isNaN(pricePerKg)) {
         showWarning('Invalid Input', 'Please enter valid numbers for quantity and price', 'Quantity and price must be numeric values');
+        return;
+      }
+
+      // Validation fix (2026-11-13): the old check stopped only at NaN —
+      // a quantity of 0 (or negative) sailed through to the chaincode,
+      // which rejected it with a peer error dump. Same rule as the
+      // chaincode (ValidateQuantity: > 0, max 10,000,000 kg).
+      if (quantity <= 0 || quantity > 10_000_000) {
+        showWarning('Invalid Quantity', 'Quantity must be greater than 0 kg and no more than 10,000,000 kg', 'Enter a positive quantity within the ledger limit');
+        return;
+      }
+
+      // Validation fix (2026-11-13): the $5.00/kg minimum lived only in
+      // the submit button's disabled condition — a programmatic submit
+      // (or a stale button state) sent a lower price to the API, which
+      // 400d. Enforce it here too, same message as the API.
+      if (pricePerKg < 5.0) {
+        showWarning('Price Below Minimum', 'Price per kg must be at least $5.00 (minimum price requirement)', 'Raise the price per kg to $5.00 or more');
+        return;
+      }
+
+      // Validation fix (2026-11-13): the dialog requires a buyer email
+      // but never checked its shape — an invalid one 400d at the API
+      // ('Buyer email must be a valid email address') after the whole
+      // submission round-trip.
+      if (newContract.buyerEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(newContract.buyerEmail.trim())) {
+        showWarning('Invalid Buyer Email', 'Enter a valid buyer email address', 'The email must look like name@company.com');
         return;
       }
 
@@ -2124,6 +2151,16 @@ const ExporterPortal: React.FC = () => {
       return;
     }
 
+    // Validation fix (2026-11-13): the API only checks the BIC is
+    // non-empty, but the chaincode rejects anything that is not a valid
+    // 8- or 11-character SWIFT/BIC (ValidateBICCode) — a 3-character
+    // code sailed through the form and failed on-chain. Same rule here.
+    const bic = paymentForm.beneficiaryBankBIC.trim().toUpperCase();
+    if (!/^[A-Z]{6}[A-Z0-9]{2}([A-Z0-9]{3})?$/.test(bic)) {
+      showError('Invalid SWIFT/BIC', 'Enter a valid 8- or 11-character SWIFT/BIC code (e.g. CBEBIETAAAA).');
+      return;
+    }
+
     setIsInitiatingPayment(true);
     try {
       const token = localStorage.getItem('authToken');
@@ -2156,7 +2193,9 @@ const ExporterPortal: React.FC = () => {
         amount: selectedContract ? (selectedShipmentForPayment.quantity * selectedContract.pricePerKg).toString() : '0',
         currency: selectedContract?.currency || 'USD',
         receivingBank: paymentForm.beneficiaryBank || profile.bankName || '',
-        receivingBankBIC: paymentForm.beneficiaryBankBIC || '',
+        // Validation fix (2026-11-13): send the normalised BIC validated
+        // above (trimmed, upper-case) rather than the raw field value.
+        receivingBankBIC: bic,
         beneficiaryName: paymentForm.beneficiaryName || profile.companyName || '',
         beneficiaryAccount: paymentForm.beneficiaryAccount || '',
         paymentMethod: paymentForm.paymentMethod,
@@ -2343,10 +2382,34 @@ const ExporterPortal: React.FC = () => {
 
       // Generate LC ID
       const lcId = `LC-${selectedContractForLC.contractId}-${Date.now()}`;
-      
+
+      // Validation fix (2026-11-13): the day counts are free-text number
+      // fields — a cleared field parsed to NaN, the expiry date became
+      // Invalid Date, and toISOString() threw, surfacing as a misleading
+      // 'Network Error'. Validate them here, before any date math.
+      const expiryDaysNum = parseInt(lcRequestForm.expiryDays, 10);
+      const latestDaysNum = parseInt(lcRequestForm.latestShipmentDays, 10);
+      if (!Number.isFinite(expiryDaysNum) || expiryDaysNum <= 0) {
+        showError('Invalid LC Validity', 'LC validity must be a positive number of days', 'Enter how many days the LC stays valid');
+        return;
+      }
+      if (!Number.isFinite(latestDaysNum) || latestDaysNum <= 0) {
+        showError('Invalid Latest Shipment', 'Latest shipment must be a positive number of days', 'Enter how many days from LC issuance the goods must ship');
+        return;
+      }
+      // Validation fix (2026-11-13): the amount fell back to the
+      // contract total with .toString() — when the contract had no total
+      // value that threw, again as a 'Network Error'. Resolve the amount
+      // once, and refuse a non-positive one (the chaincode rejects it).
+      const resolvedAmount = Number(lcRequestForm.amount) || Number(selectedContractForLC.totalValue) || 0;
+      if (!(resolvedAmount > 0)) {
+        showError('Invalid LC Amount', 'LC amount must be greater than 0', 'Enter an amount, or select a contract with a total value');
+        return;
+      }
+
       // Calculate expiry date
       const expiryDate = new Date();
-      expiryDate.setDate(expiryDate.getDate() + parseInt(lcRequestForm.expiryDays));
+      expiryDate.setDate(expiryDate.getDate() + expiryDaysNum);
 
       const lcData = {
         lcID: lcId,
@@ -2361,13 +2424,13 @@ const ExporterPortal: React.FC = () => {
         issuingBank: lcRequestForm.issuingBank,
         advisingBank: lcRequestForm.advisingBank || profile.bankName || 'Commercial Bank of Ethiopia', // Exporter's bank
         beneficiary: lcRequestForm.beneficiaryName || profile.companyName,
-        amount: lcRequestForm.amount || selectedContractForLC.totalValue.toString(),
+        amount: resolvedAmount.toString(),
         currency: lcRequestForm.currency || selectedContractForLC.currency,
         expiryDate: expiryDate.toISOString().split('T')[0],
         transportMode: lcRequestForm.transportMode,
         portOfLoading: lcRequestForm.portOfLoading,
         portOfDischarge: lcRequestForm.portOfDischarge || selectedContractForLC.buyerCountry,
-        latestShipmentDate: new Date(Date.now() + parseInt(lcRequestForm.latestShipmentDays) * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+        latestShipmentDate: new Date(Date.now() + latestDaysNum * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
         partialShipment: lcRequestForm.partialShipment,
         transhipment: lcRequestForm.transhipment,
         paymentTerms: lcRequestForm.paymentTerms,
@@ -2462,6 +2525,15 @@ const ExporterPortal: React.FC = () => {
         return;
       }
       const forexId = `FOREX_${forexRequestForm.contractId}_${Date.now()}`;
+      // Validation fix (2026-11-13): the amount fell back to the contract
+      // total, and when that was 0 (or missing) a 0-amount request reached
+      // the chaincode, which rejected it with a peer error dump. Resolve
+      // the amount once and refuse a non-positive one here.
+      const resolvedForexAmount = Number(forexRequestForm.amount) || Number(selectedContract?.totalValue) || 0;
+      if (!(resolvedForexAmount > 0)) {
+        showError('Invalid Forex Amount', 'Enter a forex amount greater than 0, or select a contract with a total value', 'The amount must be a positive number');
+        return;
+      }
       const response = await apiFetch('/forex/request', {
         method: 'POST',
         headers: {
@@ -2473,7 +2545,7 @@ const ExporterPortal: React.FC = () => {
           contractId: forexRequestForm.contractId,
           exporterId: profile.exporterId,
           lcId: forexRequestForm.lcId || undefined,
-          amount: Number(forexRequestForm.amount) || Number(selectedContract?.totalValue) || 0,
+          amount: resolvedForexAmount,
           currency: forexRequestForm.currency || selectedContract?.currency || 'USD',
         }),
       });
@@ -3797,10 +3869,15 @@ const ExporterPortal: React.FC = () => {
               loading={isCreatingContract}
               loadingLabel={isEditMode ? 'Updating…' : 'Registering…'}
               ledgerWrite
-              disabled={isCreatingContract || !newContract.buyerCompany || !newContract.buyerCountry || 
+              disabled={isCreatingContract || !newContract.buyerCompany || !newContract.buyerCountry ||
                         !newContract.buyerBank || !newContract.exporterBank ||
-                        !newContract.buyerEmail || !newContract.coffeeType || !newContract.quantity || 
-                        !newContract.pricePerKg || !newContract.portOfDestination || !newContract.deliveryDate || 
+                        !newContract.buyerEmail || !newContract.coffeeType || !newContract.quantity ||
+                        !newContract.pricePerKg || !newContract.portOfDestination || !newContract.deliveryDate ||
+                        // Validation fix (2026-11-13): the payment method
+                        // and a positive quantity were enforced only in the
+                        // submit handler, so the button looked submittable
+                        // while the handler refused the click.
+                        !newContract.paymentMethod || parseFloat(newContract.quantity) <= 0 ||
                         (parseFloat(newContract.pricePerKg) < 5.0) || contractDocuments.some((doc) => doc.status !== 'success')}
               size="large"
               sx={{ minWidth: 150 }}
@@ -3983,7 +4060,11 @@ const ExporterPortal: React.FC = () => {
                   onChange={(e) => setNewContract({...newContract, quantity: e.target.value})}
                   required
                   InputProps={{ inputProps: { min: 1000, step: 100 } }}
-                  helperText="Minimum: 1,000 kg"
+                  // Validation fix (2026-11-13): no 1,000 kg minimum exists
+                  // anywhere — the API/chaincode rule is > 0 kg (max
+                  // 10,000,000 kg). The old helper text invented a rule
+                  // and a 500 kg contract would have succeeded.
+                  helperText="Must be greater than 0 kg (max 10,000,000 kg)"
                 />
               </Grid>
 
@@ -5397,7 +5478,12 @@ const ExporterPortal: React.FC = () => {
           loading={isRequestingLC}
           loadingLabel="Submitting…"
           ledgerWrite
-          disabled={isRequestingLC || !lcRequestForm.issuingBank?.trim() || !lcRequestForm.advisingBank || !lcRequestForm.beneficiaryName}
+          disabled={isRequestingLC || !lcRequestForm.issuingBank?.trim() || !lcRequestForm.advisingBank || !lcRequestForm.beneficiaryName ||
+            // Validation fix (2026-11-13): a cleared day count used to
+            // leave the button enabled while the handler threw on
+            // Invalid Date — gate on positive day counts too.
+            !parseInt(lcRequestForm.expiryDays, 10) || parseInt(lcRequestForm.expiryDays, 10) <= 0 ||
+            !parseInt(lcRequestForm.latestShipmentDays, 10) || parseInt(lcRequestForm.latestShipmentDays, 10) <= 0}
         >
           Submit LC Request
         </PrimaryButton>
@@ -6753,11 +6839,14 @@ This contract is registered with ECTA and approved by NBE.
           variant="contained"
           brandColor={brandPrimary}
           disabled={
-            isInitiatingPayment || 
-            !paymentForm.beneficiaryName || 
+            isInitiatingPayment ||
+            !paymentForm.beneficiaryName ||
             !paymentForm.beneficiaryAccount ||
             !paymentForm.beneficiaryBank ||
             !paymentForm.beneficiaryBankBIC ||
+            // Validation fix (2026-11-13): gate on a valid BIC shape too —
+            // the chaincode accepts only 8- or 11-character SWIFT/BICs.
+            !/^[A-Za-z]{6}[A-Za-z0-9]{2}([A-Za-z0-9]{3})?$/.test(paymentForm.beneficiaryBankBIC.trim()) ||
             !forexStatuses.some((fx) => fx.contractId === selectedShipmentForPayment?.contractId && ['ALLOCATED', 'UTILIZED'].includes(String(fx.status).toUpperCase()) && Number(fx.exchangeRate) > 0 && Number.isFinite(Number(fx.retentionRate)))
           }
           loading={isInitiatingPayment}
@@ -6902,8 +6991,12 @@ This contract is registered with ECTA and approved by NBE.
                         label="Bank SWIFT/BIC Code"
                         value={paymentForm.beneficiaryBankBIC}
                         onChange={(e) => setPaymentForm({ ...paymentForm, beneficiaryBankBIC: e.target.value })}
-                        placeholder="e.g., CBETETAA"
-                        helperText="SWIFT code for international transfer"
+                        placeholder="e.g., CBEBIETAAAA"
+                        // Validation fix (2026-11-13): name the format the
+                        // ledger enforces — the old text said only 'SWIFT
+                        // code for international transfer' and any string
+                        // passed the form.
+                        helperText="8- or 11-character SWIFT/BIC (e.g. CBEBIETAAAA)"
                       />
                     </Grid>
                     <Grid item xs={12}>

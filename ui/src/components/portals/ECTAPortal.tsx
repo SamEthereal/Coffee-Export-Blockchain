@@ -159,10 +159,29 @@ const getMinCapital = (exporterType?: string): number =>
 const exporterSchema = yup.object({
   exporterId: yup.string().matches(/^EXP\d{7}$/, 'Invalid exporter ID format').required(),
   companyName: yup.string().min(3).max(100).required(),
-  ectaLicenseNumber: yup.string().matches(/^ECTA-LIC-\d{4}-\d{3}$/, 'Invalid license format').required(),
-  // Floor of the per-type minima above (individual: 10M); the per-type
-  // minimum is enforced by getMinCapital() wherever the type is known.
-  capitalRequirement: yup.number().min(MIN_CAPITAL_BY_EXPORTER_TYPE.individual).required('Minimum capital: 10M ETB for individual exporters (15M private, 20M company)'),
+  // Validation fix (2026-11-13): the server mints ECTA-LIC-YYYY-######
+  // (6 digits); the old \d{3} pattern rejected the server's own format.
+  ectaLicenseNumber: yup.string().matches(/^ECTA-LIC-\d{4}-\d{3,6}$/, 'Invalid license format (ECTA-LIC-YYYY-XXX)').required(),
+  // Validation fix (2026-11-13): the exporter type is collected by the
+  // dialog now, so the minimum is the per-type one (private 15M /
+  // company 20M / individual 10M) — the old flat 10M floor let a
+  // private/company registration through the form that the API and
+  // chaincode then rejected.
+  exporterType: yup.string().oneOf(['private', 'company', 'individual'], 'Exporter type must be private, company, or individual').required('Exporter type is required'),
+  capitalRequirement: yup.number().typeError('Capital requirement must be a number').required('Capital requirement is required').test(
+    'min-capital',
+    function (value) {
+      const type = (this.parent as any)?.exporterType;
+      const min = getMinCapital(type);
+      if (value === undefined || value === null || Number.isNaN(value)) {
+        return this.createError({ message: 'Capital requirement is required' });
+      }
+      if (value < min) {
+        return this.createError({ message: `Minimum capital: ${min.toLocaleString()} ETB for ${type || 'private'} exporters (15M private, 20M company, 10M individual)` });
+      }
+      return true;
+    },
+  ),
   professionalTaster: yup.string().min(3).max(50).required(),
   tasterCertificate: yup.string().required(),
   licenseExpiryDate: yup.string().required(),
@@ -292,8 +311,13 @@ const ECTAPortal: React.FC = () => {
     moistureContent: 0,
     defectCount: 0,
     remarks: '',
-    fragrance: 0, flavor: 0, aftertaste: 0, acidity: 0, body: 0,
-    balance: 0, uniformity: 0, cleanCup: 0, sweetness: 0, overall: 0,
+    // Validation fix (2026-11-13): cupping scores start BLANK, not 0.
+    // A 0 is inside the API's 0–100 range, so the old 0 defaults passed
+    // validation as if the inspector had entered them — an untouched form
+    // submitted ten zero scores to the ledger. The submit handler now
+    // requires a real entry for every cupping field.
+    fragrance: '', flavor: '', aftertaste: '', acidity: '', body: '',
+    balance: '', uniformity: '', cleanCup: '', sweetness: '', overall: '',
   };
   const [inspectDialogOpen, setInspectDialogOpen] = useState(false);
   const [inspectTarget, setInspectTarget] = useState<any>(null);
@@ -855,9 +879,15 @@ const ECTAPortal: React.FC = () => {
         setDialogOpen(false);
         reset();
         loadData();
+      } else {
+        // Validation fix (2026-11-13): a failed registration used to fail
+        // silently (console only) — the dialog stayed open with no
+        // explanation. Surface the API's message.
+        showError('Registration Failed', (response as any).error?.message || 'Failed to register exporter');
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error('Failed to create exporter:', error);
+      showError('Registration Failed', error?.response?.data?.error?.message || error?.message || 'Failed to register exporter');
     }
   };
 
@@ -885,7 +915,7 @@ const ECTAPortal: React.FC = () => {
 
     try {
       const newStatus = action === 'suspend' ? 'SUSPENDED' : 'ACTIVE';
-      const response = await api.put(`/exporters/${exporterId}/status`, { status: newStatus, reason });
+      const response = await api.put(`/exporters/${exporterId}/status`, { status: newStatus, reason: reason?.trim() });
       
       if (response.data?.success) {
         setNotificationContent({
@@ -909,6 +939,23 @@ ${action === 'suspend' ?
 
   const handleApproveApplication = async () => {
     if (!selectedApplication) return;
+
+    // Validation fix (2026-11-13): the IDs are server-minted in this
+    // format, but the officer can edit them — a malformed ID used to
+    // reach the API and fail on-chain with a peer error dump. Stop it
+    // here with the format the dialog itself documents.
+    if (!/^EXP\d{7}$/.test(approvalData.exporterId)) {
+      showError('Invalid Exporter ID', 'Exporter ID must be EXP followed by 7 digits (e.g. EXP1000028).');
+      return;
+    }
+    if (!/^ECTA-LIC-\d{4}-\d{3,6}$/.test(approvalData.ectaLicenseNumber)) {
+      showError('Invalid License Number', 'License number must be ECTA-LIC-YYYY-XXX (e.g. ECTA-LIC-2026-000020).');
+      return;
+    }
+    if (!approvalData.bankAccountNumber.trim()) {
+      showError('Bank Account Required', 'Enter the exporter bank account number — approval is refused without bank details (BANK_DETAILS_REQUIRED).');
+      return;
+    }
     
     try {
       // ✅ Blockchain operations need more time - increase timeout to 120 seconds
@@ -1245,13 +1292,15 @@ Contact system administrator if the issue persists.`,
   };
 
   const handleRejectApplication = async () => {
-    if (!selectedApplication || !rejectionReason) return;
+    // Validation fix (2026-11-13): trim — a whitespace-only reason passed
+    // the truthy check and was sent to the API.
+    if (!selectedApplication || !rejectionReason.trim()) return;
 
     setRejectingApplication(true);
     try {
       const response = await api.post(
         `/exporters/exporter-applications/${selectedApplication.application_id}/reject`,
-        { reason: rejectionReason }
+        { reason: rejectionReason.trim() }
       );
       
       if (response.data?.success) {
@@ -1521,7 +1570,14 @@ The exporter can reapply once all requirements are met.`,
       return;
     }
     for (const { key, label } of CUPPING_FIELDS) {
-      const v = Number(inspectForm[key]);
+      // Validation fix (2026-11-13): a blank field is missing, not 0 —
+      // Number('') is 0, which used to pass this check silently.
+      const raw = inspectForm[key];
+      if (raw === '' || raw === null || raw === undefined) {
+        showError('Validation Failed', `${label} score is required — enter a score from 0 to 100`);
+        return;
+      }
+      const v = Number(raw);
       if (!Number.isFinite(v) || v < 0 || v > 100) {
         showError('Validation Failed', `${label} score must be between 0 and 100`);
         return;
@@ -1624,16 +1680,18 @@ The exporter can reapply once all requirements are met.`,
 
   // STAGE 5: Reject Inspection (ANY → REJECTED)
   const handleRejectInspection = async (inspection: any, rejectionReason: string) => {
-    if (!rejectionReason) {
+    // Validation fix (2026-11-13): trim — a whitespace-only reason passed
+    // the truthy check and was sent to the API.
+    if (!rejectionReason?.trim()) {
       showError('Rejection Failed', 'Please provide a reason for rejection');
       return;
     }
-    
+
     try {
       const inspectionId = inspection.inspection_id || inspection.inspectionID || inspection.InspectionID;
       const response = await api.post(`/quality/inspections/${inspectionId}/reject`, {
         rejectedBy: 'ECTA Quality Director',
-        rejectionReason,
+        rejectionReason: rejectionReason.trim(),
       });
       
       if (response.data.success) {
@@ -2290,11 +2348,13 @@ The exporter can reapply once all requirements are met.`,
                               color="warning"
                               onClick={async () => {
                                 const reason = prompt(`Enter reason for suspending ${application.company_name}:`);
-                                if (reason) {
+                                // Validation fix (2026-11-13): trim —
+                                // whitespace alone was accepted and stored.
+                                if (reason?.trim()) {
                                   try {
                                     const response = await api.put(`/exporters/${application.exporter_id}/status`, {
                                       status: 'SUSPENDED',
-                                      reason,
+                                      reason: reason.trim(),
                                     });
                                     if (response.data?.success) {
                                       showSuccess('License Suspended', `${application.company_name} license has been suspended. They cannot access the system until reactivated.`, undefined, extractTxId(response));
@@ -2317,9 +2377,19 @@ The exporter can reapply once all requirements are met.`,
                                 const confirmed = confirm(`⚠️ PERMANENT ACTION\n\nRevoke license for ${application.company_name}?\n\nThis will:\n- Permanently disable their account\n- Prevent all system access\n- Cannot be undone\n\nAre you absolutely sure?`);
                                 if (confirmed) {
                                   const reason = prompt(`Enter reason for revoking ${application.company_name} license:`);
-                                  if (reason) {
+                                  // Validation fix (2026-11-13): the API
+                                  // requires a 3–1000 character reason after
+                                  // trimming — a 1–2 character or
+                                  // whitespace-only reason 400d with no
+                                  // hint in the dialog. Stop it here.
+                                  if (!reason?.trim()) return;
+                                  if (reason.trim().length < 3) {
+                                    showError('Revocation Reason Required', 'Enter a revocation reason of at least 3 characters.');
+                                    return;
+                                  }
+                                  {
                                     try {
-                                      const response = await api.post(`/exporters/${application.exporter_id}/revoke`, { reason });
+                                      const response = await api.post(`/exporters/${application.exporter_id}/revoke`, { reason: reason.trim() });
                                       if (response.data?.success) {
                                         if (response.data?.data?.accountDisabled) {
                                           showSuccess('License Revoked', `${application.company_name} license has been permanently revoked and the account has been disabled.`, undefined, extractTxId(response));
@@ -2806,7 +2876,10 @@ The exporter can reapply once all requirements are met.`,
                                   ledgerWrite
                                   onClick={() => {
                                     const reason = prompt('Enter rejection reason:');
-                                    if (reason) return handleRejectInspection(item, reason);
+                                    // Validation fix (2026-11-13): trim —
+                                    // whitespace alone was sent as the reason.
+                                    if (!reason?.trim()) return;
+                                    return handleRejectInspection(item, reason.trim());
                                   }}
                                 >
                                   Reject
@@ -2947,6 +3020,13 @@ The exporter can reapply once all requirements are met.`,
                               if (window.confirm(`Process License Renewal?\n\nExporter: ${exporter.companyName}\nLicense: ${exporter.ectaLicenseNumber}\nCurrent Expiry: ${formatDate(exporter.licenseExpiryDate)}\nNew Expiry: ${formatDate(newExpiryDate.toISOString())}\n\nThis will extend the license for 1 year.`)) {
                                 const reason = window.prompt(`Enter the reason for renewing ${exporter.companyName}'s license:`);
                                 if (!reason?.trim()) return;
+                                // Validation fix (2026-11-13): the API
+                                // requires a 3–1000 character reason after
+                                // trimming — a shorter one 400d.
+                                if (reason.trim().length < 3) {
+                                  alert('❌ Renewal reason must be at least 3 characters.');
+                                  return;
+                                }
                                 return apiFetch(`/exporters/${exporter.exporterId}/renew-license`, {
                                   method: 'POST',
                                   headers: {
@@ -3196,6 +3276,29 @@ The exporter can reapply once all requirements are met.`,
                   )}
                 />
               </Grid>
+              {/* Validation fix (2026-11-13): the exporter type was never
+                  collected here, so the per-type capital minimum could not
+                  be enforced in the form and the API defaulted it. */}
+              <Grid item xs={12} md={6}>
+                <Controller
+                  name="exporterType"
+                  control={control}
+                  render={({ field }) => (
+                    <PortalField
+                      {...field}
+                      select
+                      label="Exporter Type"
+                      fullWidth
+                      error={!!errors.exporterType}
+                      helperText={errors.exporterType?.message || 'Determines the minimum capital (15M private, 20M company, 10M individual)'}
+                    >
+                      <MenuItem value="private">Private Limited</MenuItem>
+                      <MenuItem value="company">Share Company</MenuItem>
+                      <MenuItem value="individual">Individual</MenuItem>
+                    </PortalField>
+                  )}
+                />
+              </Grid>
               <Grid item xs={12} md={6}>
                 <Controller
                   name="capitalRequirement"
@@ -3238,6 +3341,27 @@ The exporter can reapply once all requirements are met.`,
                       fullWidth
                       error={!!errors.tasterCertificate}
                       helperText={errors.tasterCertificate?.message}
+                    />
+                  )}
+                />
+              </Grid>
+              {/* Validation fix (2026-11-13): the schema and the API both
+                  require licenseExpiryDate, but the dialog rendered no
+                  input for it — the form could never validate, and the
+                  failure was silent (no field showed the error). */}
+              <Grid item xs={12} md={6}>
+                <Controller
+                  name="licenseExpiryDate"
+                  control={control}
+                  render={({ field }) => (
+                    <PortalField
+                      {...field}
+                      label="License Expiry Date"
+                      type="date"
+                      fullWidth
+                      InputLabelProps={{ shrink: true }}
+                      error={!!errors.licenseExpiryDate}
+                      helperText={errors.licenseExpiryDate?.message || 'Typically 1 year from registration'}
                     />
                   )}
                 />
@@ -3485,10 +3609,15 @@ The exporter can reapply once all requirements are met.`,
             loadingLabel="Approving…"
             ledgerWrite
             disabled={
-              !approvalData.exporterId || 
-              !approvalData.ectaLicenseNumber || 
+              !approvalData.exporterId ||
+              !approvalData.ectaLicenseNumber ||
               !approvalData.licenseExpiryDate ||
               !approvalData.bankName ||
+              // Validation fix (2026-11-13): the account number was not
+              // in this gate, so the officer could approve a legacy
+              // application that has none — the API then 400d with
+              // BANK_DETAILS_REQUIRED and the dialog gave no hint why.
+              !approvalData.bankAccountNumber ||
               !approvalData.bankBranch
             }
           >
@@ -3531,7 +3660,7 @@ The exporter can reapply once all requirements are met.`,
                 placeholder="ECTA-LIC-2026-001"
                 value={approvalData.ectaLicenseNumber}
                 onChange={(e) => setApprovalData({ ...approvalData, ectaLicenseNumber: e.target.value })}
-                helperText="Format: ECTA-LIC-YYYY-XXX"
+                helperText="Format: ECTA-LIC-YYYY-###### (6 digits, assigned by the server)"
               />
             </Grid>
             
@@ -3580,14 +3709,18 @@ The exporter can reapply once all requirements are met.`,
               />
             </Grid>
 
-            {/* Account Number — pre-filled from exporter's application */}
+            {/* Account Number — pre-filled from exporter's application.
+                Validation fix (2026-11-13): required — the API refuses
+                approval without bank details (BANK_DETAILS_REQUIRED), but
+                this field was optional in the dialog. */}
             <Grid item xs={12} md={4}>
               <PortalField
                 fullWidth
+                required
                 label="Account Number"
                 value={approvalData.bankAccountNumber}
                 onChange={(e) => setApprovalData({ ...approvalData, bankAccountNumber: e.target.value })}
-                helperText="As submitted by the exporter"
+                helperText="As submitted by the exporter — required for approval"
               />
             </Grid>
             
@@ -3626,7 +3759,9 @@ The exporter can reapply once all requirements are met.`,
             variant="contained"
             brandColor="#f44336"
             onClick={() => setRejectConfirmOpen(true)}
-            disabled={!rejectionReason}
+            // Validation fix (2026-11-13): trim — whitespace alone enabled
+            // the button and was sent as the rejection reason.
+            disabled={!rejectionReason.trim()}
           >
             Reject Application
           </AnimatedButton>
@@ -3694,8 +3829,10 @@ The exporter can reapply once all requirements are met.`,
                   console.log('[ECTA] Suspending license for:', selectedExporter.exporterId);
                   
                   const reason = prompt('Enter suspension reason:');
-                  if (!reason) return;
-                  
+                  // Validation fix (2026-11-13): trim — whitespace alone
+                  // was accepted and stored as the suspension reason.
+                  if (!reason?.trim()) return;
+
                   const response = await apiFetch(`/exporters/${selectedExporter.exporterId}/status`, {
                     method: 'PUT',
                     headers: {
@@ -3704,7 +3841,7 @@ The exporter can reapply once all requirements are met.`,
                     },
                     body: JSON.stringify({
                       status: 'SUSPENDED',
-                      reason,
+                      reason: reason.trim(),
                       suspendedBy: 'ECTA Officer',
                       suspensionDate: new Date().toISOString(),
                     })
@@ -3882,7 +4019,10 @@ The exporter can reapply once all requirements are met.`,
               <Grid item xs={6} sm={4} key={key}>
                 <PortalField fullWidth required type="number" label={`${label} (0–100)`}
                   value={inspectForm[key] || ''}
-                  onChange={(e) => setInspectForm({ ...inspectForm, [key]: Number(e.target.value) })}
+                  // Validation fix (2026-11-13): keep the raw text — the
+                  // old Number(e.target.value) turned a cleared field into
+                  // 0, which then passed as an entered score.
+                  onChange={(e) => setInspectForm({ ...inspectForm, [key]: e.target.value })}
                   inputProps={{ min: 0, max: 100 }} />
               </Grid>
             ))}

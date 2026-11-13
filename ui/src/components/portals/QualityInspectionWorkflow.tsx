@@ -155,6 +155,40 @@ export const QualityInspectionWorkflow: React.FC<QualityInspectionWorkflowProps>
       showError('Validation Error', 'Please select an inspection date');
       return;
     }
+    // Validation fix (2026-11-13): this form used to send whatever was
+    // typed straight to the API — an out-of-range moisture reached the
+    // chaincode and failed there with a 503 peer dump, and a cleared
+    // cupping field arrived as null and 400d. Same rules as the Quality
+    // Control tab's Inspect form (moisture 8–12%, sample > 0, defects
+    // 0–100, every cupping score entered and 0–100).
+    const sampleSizeNum = parseFloat(inspectionForm.sampleSize);
+    if (!Number.isFinite(sampleSizeNum) || sampleSizeNum <= 0) {
+      showError('Validation Error', 'Sample size must be greater than 0 g');
+      return;
+    }
+    const moistureNum = parseFloat(inspectionForm.moistureContent);
+    if (!Number.isFinite(moistureNum) || moistureNum < 8 || moistureNum > 12) {
+      showError('Validation Error', 'Moisture content must be between 8% and 12% (chaincode ValidateMoistureContent)');
+      return;
+    }
+    const defectNum = parseInt(inspectionForm.defectCount, 10);
+    if (!Number.isFinite(defectNum) || defectNum < 0 || defectNum > 100) {
+      showError('Validation Error', 'Defect count must be between 0 and 100');
+      return;
+    }
+    const cuppingKeys = ['fragrance', 'flavor', 'aftertaste', 'acidity', 'body', 'balance', 'uniformity', 'cleanCup', 'sweetness', 'overall'] as const;
+    for (const key of cuppingKeys) {
+      const raw = inspectionForm[key];
+      if (raw === '' || raw === undefined) {
+        showError('Validation Error', `${key} score is required — enter a score from 0 to 100`);
+        return;
+      }
+      const v = parseFloat(raw);
+      if (!Number.isFinite(v) || v < 0 || v > 100) {
+        showError('Validation Error', `${key} score must be between 0 and 100`);
+        return;
+      }
+    }
 
     setLoading(true);
     try {
@@ -503,8 +537,12 @@ export const QualityInspectionWorkflow: React.FC<QualityInspectionWorkflowProps>
                       label={label}
                       value={inspectionForm[key as keyof typeof inspectionForm]}
                       onChange={(e) => setInspectionForm({ ...inspectionForm, [key]: e.target.value })}
-                      helperText="/10"
-                      inputProps={{ step: 0.5, min: 0, max: 10 }}
+                      // Validation fix (2026-11-13): cupping scores are on
+                      // the 0–100 scale (the API grades the ten-field sum
+                      // out of 1000) — the old '/10' helper and max:10
+                      // described a scale nothing else uses.
+                      helperText="/100"
+                      inputProps={{ step: 0.5, min: 0, max: 100 }}
                     />
                   </Grid>
                 ))}

@@ -1883,7 +1883,9 @@ router.post('/:contractID/reject',
   authMiddleware,
   [
     param('contractID').notEmpty().withMessage('Contract ID is required'),
-    body('reason').notEmpty().withMessage('Rejection reason is required'),
+    // Validation fix (2026-11-13): trim — a whitespace-only reason passed
+    // notEmpty and was stored as the rejection reason.
+    body('reason').trim().notEmpty().withMessage('Rejection reason is required'),
     body('rejectedBy').optional().isString(),
   ],
   validateRequest,
