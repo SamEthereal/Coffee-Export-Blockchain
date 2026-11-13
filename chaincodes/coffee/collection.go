@@ -61,6 +61,12 @@ type DocumentaryCollection struct {
 }
 
 // ==================== DOCUMENTARY COLLECTION FUNCTIONS ====================
+// Key prefix: every DocumentaryCollection record lives under "CAD_<id>" —
+// the prefix RegisterDocumentaryCollection (payment.go) writes and the one
+// live ledger records use. The step/read functions here used "COLLECTION_",
+// under which zero records ever existed, so a registered collection could
+// never be read back or advanced (present/accept/settle/return). All sites
+// below use CAD_ so register, read and the lifecycle steps share one key.
 
 // SendDocumentaryCollection - Bank sends collection documents to foreign bank
 func (c *CoffeeContract) SendDocumentaryCollection(ctx contractapi.TransactionContextInterface,
@@ -124,7 +130,7 @@ func (c *CoffeeContract) SendDocumentaryCollection(ctx contractapi.TransactionCo
 	}
 
 	// Check if collection already exists
-	existingCollection, err := ctx.GetStub().GetState("COLLECTION_" + collectionID)
+	existingCollection, err := ctx.GetStub().GetState("CAD_" + collectionID)
 	if err != nil {
 		return fmt.Errorf("failed to read collection: %v", err)
 	}
@@ -195,7 +201,7 @@ func (c *CoffeeContract) SendDocumentaryCollection(ctx contractapi.TransactionCo
 	eventJSON, _ := json.Marshal(event)
 	ctx.GetStub().SetEvent("CollectionSent", eventJSON)
 
-	err = ctx.GetStub().PutState("COLLECTION_"+collectionID, collectionJSON)
+	err = ctx.GetStub().PutState("CAD_"+collectionID, collectionJSON)
 	if err != nil {
 		return fmt.Errorf("failed to save collection: %v", err)
 	}
@@ -241,7 +247,7 @@ func (c *CoffeeContract) PresentDocumentaryCollection(ctx contractapi.Transactio
 		presenterID = presenterMSP // Fallback
 	}
 
-	collectionJSON, err := ctx.GetStub().GetState("COLLECTION_" + collectionID)
+	collectionJSON, err := ctx.GetStub().GetState("CAD_" + collectionID)
 	if err != nil {
 		return fmt.Errorf("failed to read collection: %v", err)
 	}
@@ -276,7 +282,7 @@ func (c *CoffeeContract) PresentDocumentaryCollection(ctx contractapi.Transactio
 		return fmt.Errorf("failed to marshal collection: %v", err)
 	}
 
-	return ctx.GetStub().PutState("COLLECTION_"+collectionID, collectionJSON)
+	return ctx.GetStub().PutState("CAD_"+collectionID, collectionJSON)
 }
 
 // AcceptDocumentaryCollection - Drawee accepts documents (for ACCEPTANCE term)
@@ -294,7 +300,7 @@ func (c *CoffeeContract) AcceptDocumentaryCollection(ctx contractapi.Transaction
 		acceptorID = acceptorMSP // Fallback
 	}
 
-	collectionJSON, err := ctx.GetStub().GetState("COLLECTION_" + collectionID)
+	collectionJSON, err := ctx.GetStub().GetState("CAD_" + collectionID)
 	if err != nil {
 		return fmt.Errorf("failed to read collection: %v", err)
 	}
@@ -333,7 +339,7 @@ func (c *CoffeeContract) AcceptDocumentaryCollection(ctx contractapi.Transaction
 		return fmt.Errorf("failed to marshal collection: %v", err)
 	}
 
-	return ctx.GetStub().PutState("COLLECTION_"+collectionID, collectionJSON)
+	return ctx.GetStub().PutState("CAD_"+collectionID, collectionJSON)
 }
 
 // SettleDocumentaryCollection - Record payment received
@@ -359,7 +365,7 @@ func (c *CoffeeContract) SettleDocumentaryCollection(ctx contractapi.Transaction
 
 	charges, _ := strconv.ParseFloat(chargesStr, 64)
 
-	collectionJSON, err := ctx.GetStub().GetState("COLLECTION_" + collectionID)
+	collectionJSON, err := ctx.GetStub().GetState("CAD_" + collectionID)
 	if err != nil {
 		return fmt.Errorf("failed to read collection: %v", err)
 	}
@@ -418,7 +424,7 @@ func (c *CoffeeContract) SettleDocumentaryCollection(ctx contractapi.Transaction
 	eventJSON, _ := json.Marshal(event)
 	ctx.GetStub().SetEvent("CollectionPaid", eventJSON)
 
-	return ctx.GetStub().PutState("COLLECTION_"+collectionID, collectionJSON)
+	return ctx.GetStub().PutState("CAD_"+collectionID, collectionJSON)
 }
 
 // ReturnDocumentaryCollection - Mark collection as returned (unpaid)
@@ -436,7 +442,7 @@ func (c *CoffeeContract) ReturnDocumentaryCollection(ctx contractapi.Transaction
 		returnerID = returnerMSP // Fallback
 	}
 
-	collectionJSON, err := ctx.GetStub().GetState("COLLECTION_" + collectionID)
+	collectionJSON, err := ctx.GetStub().GetState("CAD_" + collectionID)
 	if err != nil {
 		return fmt.Errorf("failed to read collection: %v", err)
 	}
@@ -472,7 +478,7 @@ func (c *CoffeeContract) ReturnDocumentaryCollection(ctx contractapi.Transaction
 		return fmt.Errorf("failed to marshal collection: %v", err)
 	}
 
-	return ctx.GetStub().PutState("COLLECTION_"+collectionID, collectionJSON)
+	return ctx.GetStub().PutState("CAD_"+collectionID, collectionJSON)
 }
 
 // SendCollectionReminder - Record reminder sent to collecting bank
@@ -490,7 +496,7 @@ func (c *CoffeeContract) SendCollectionReminder(ctx contractapi.TransactionConte
 		reminderID = reminderMSP // Fallback
 	}
 
-	collectionJSON, err := ctx.GetStub().GetState("COLLECTION_" + collectionID)
+	collectionJSON, err := ctx.GetStub().GetState("CAD_" + collectionID)
 	if err != nil {
 		return fmt.Errorf("failed to read collection: %v", err)
 	}
@@ -529,14 +535,14 @@ func (c *CoffeeContract) SendCollectionReminder(ctx contractapi.TransactionConte
 		return fmt.Errorf("failed to marshal collection: %v", err)
 	}
 
-	return ctx.GetStub().PutState("COLLECTION_"+collectionID, collectionJSON)
+	return ctx.GetStub().PutState("CAD_"+collectionID, collectionJSON)
 }
 
 // ReadDocumentaryCollection - Get collection details
 func (c *CoffeeContract) ReadDocumentaryCollection(ctx contractapi.TransactionContextInterface,
 	collectionID string) (*DocumentaryCollection, error) {
 
-	collectionJSON, err := ctx.GetStub().GetState("COLLECTION_" + collectionID)
+	collectionJSON, err := ctx.GetStub().GetState("CAD_" + collectionID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read collection: %v", err)
 	}
@@ -570,7 +576,7 @@ func (c *CoffeeContract) QueryOutstandingCollections(ctx contractapi.Transaction
 
 // QueryAllCollections - Get all documentary collections
 func (c *CoffeeContract) QueryAllCollections(ctx contractapi.TransactionContextInterface) ([]*DocumentaryCollection, error) {
-	resultsIterator, err := ctx.GetStub().GetStateByRange("COLLECTION_", "COLLECTION_~")
+	resultsIterator, err := ctx.GetStub().GetStateByRange("CAD_", "CAD_~")
 	if err != nil {
 		return nil, err
 	}

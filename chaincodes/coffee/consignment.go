@@ -427,6 +427,19 @@ func (c *CoffeeContract) ReadConsignmentPayment(ctx contractapi.TransactionConte
 	return &consignment, nil
 }
 
+// ReadConsignment - Get consignment details by ID.
+//
+// The API (GET /banking/consignment/:id) calls ReadConsignment, but only
+// ReadConsignmentPayment existed, so every read failed with "function not
+// found" and the API returned 404. IssueConsignmentPermit stores the record
+// under "CONSIGN_"+consignmentID, exactly what ReadConsignmentPayment reads,
+// so this is a thin alias over it — one read path, one key — rather than a
+// second implementation that could drift.
+func (c *CoffeeContract) ReadConsignment(ctx contractapi.TransactionContextInterface,
+	consignmentID string) (*ConsignmentPayment, error) {
+	return c.ReadConsignmentPayment(ctx, consignmentID)
+}
+
 // QueryConsignmentsByExporter - Get all consignments for exporter
 func (c *CoffeeContract) QueryConsignmentsByExporter(ctx contractapi.TransactionContextInterface,
 	exporterID string) ([]*ConsignmentPayment, error) {
