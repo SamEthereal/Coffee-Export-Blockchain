@@ -4,6 +4,7 @@ import { DatabaseService } from '../services/databaseService';
 import { ShipmentService } from '../services/shipmentService';
 import { authMiddleware, requireRole } from '../middleware/auth';
 import { logger } from '../utils/logger';
+import { logAuditBestEffort } from '../utils/auditBestEffort';
 import notificationService from '../services/notificationService';
 
 const router = express.Router();
@@ -252,6 +253,17 @@ router.post('/export', authMiddleware, requireRole('BANKS', 'BANK_ADMIN'), async
       // the helper never throws and never duplicates.
       await shipmentService.maybeTriggerCustomsDeclarationAfterPermit(shipmentID, (req as any).user?.username || approvedBy);
       logger.info(`✅ [PERMITS] Export permit issued: ${permitId}`);
+      // Audit: this chain move never wrote an audit_trail row.
+      // Best-effort — a failed audit write must not fail the move.
+      await logAuditBestEffort(req, {
+        entityType: 'PERMIT',
+        entityId: permitId,
+        action: 'ISSUE',
+        newValue: 'ISSUED',
+        blockchainTxId: result.txId || undefined,
+        metadata: { permitNumber, contractId, exporterId, lcId, blockchainTxId: result.txId || null },
+      }, `permit ${permitId} issue`);
+
       res.status(201).json({ 
         success: true, 
         message: 'Export permit issued successfully',
@@ -374,6 +386,17 @@ router.post('/', authMiddleware, requireRole('BANKS', 'BANK_ADMIN'), async (req,
       // the helper never throws and never duplicates.
       await shipmentService.maybeTriggerCustomsDeclarationAfterPermit(shipmentID, (req as any).user?.username || approvedBy);
       logger.info(`✅ [PERMITS] Export permit issued: ${permitId}`);
+      // Audit: this chain move never wrote an audit_trail row.
+      // Best-effort — a failed audit write must not fail the move.
+      await logAuditBestEffort(req, {
+        entityType: 'PERMIT',
+        entityId: permitId,
+        action: 'ISSUE',
+        newValue: 'ISSUED',
+        blockchainTxId: result.txId || undefined,
+        metadata: { permitNumber, contractId, exporterId, lcId, blockchainTxId: result.txId || null },
+      }, `permit ${permitId} issue`);
+
       res.status(201).json({ 
         success: true, 
         message: 'Export permit issued successfully',
@@ -487,6 +510,16 @@ router.post('/issue', authMiddleware, requireRole('BANKS', 'BANK_ADMIN'), async 
         actionUrl: '/portals/exporter?tab=permits',
         actionUrls: { ECTA: '/portals/ecta?tab=permits', CUSTOMS: '/portals/customs?tab=permits' },
       });
+      // Audit: this chain move never wrote an audit_trail row.
+      // Best-effort — a failed audit write must not fail the move.
+      await logAuditBestEffort(req, {
+        entityType: 'PERMIT',
+        entityId: permitId,
+        action: 'ISSUE',
+        newValue: 'ISSUED',
+        blockchainTxId: result.txId || undefined,
+        metadata: { contractId, exporterId, lcId, blockchainTxId: result.txId || null },
+      }, `permit ${permitId} issue`);
       res.json({ 
         success: true, 
         message: 'Export permit issued successfully',
@@ -516,6 +549,15 @@ router.post('/utilize', authMiddleware, requireRole('BANKS', 'BANK_ADMIN'), asyn
     const result = await fabricService.invokeChaincode('UtilizeExportPermit', [permitId], 'BanksMSP');
 
     if (result.success) {
+      // Audit: this chain move never wrote an audit_trail row.
+      // Best-effort — a failed audit write must not fail the move.
+      await logAuditBestEffort(req, {
+        entityType: 'PERMIT',
+        entityId: permitId,
+        action: 'UTILIZE',
+        blockchainTxId: result.txId || undefined,
+        metadata: { blockchainTxId: result.txId || null },
+      }, `permit ${permitId} utilize`);
       res.json({ success: true, message: 'Export permit utilized successfully' });
     } else {
       res.status(400).json({ success: false, error: { message: result.error } });
@@ -537,6 +579,15 @@ router.post('/settle', authMiddleware, requireRole('BANKS', 'BANK_ADMIN'), async
     );
 
     if (result.success) {
+      // Audit: this chain move never wrote an audit_trail row.
+      // Best-effort — a failed audit write must not fail the move.
+      await logAuditBestEffort(req, {
+        entityType: 'PERMIT',
+        entityId: permitId,
+        action: 'SETTLE',
+        blockchainTxId: result.txId || undefined,
+        metadata: { repatriatedAmount, blockchainTxId: result.txId || null },
+      }, `permit ${permitId} settle`);
       res.json({ success: true, message: 'Export permit settled successfully' });
     } else {
       res.status(400).json({ success: false, error: { message: result.error } });

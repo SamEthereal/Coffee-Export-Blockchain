@@ -4,6 +4,7 @@
 import express from 'express';
 import { FabricService } from '../services/fabricService';
 import { logger } from '../utils/logger';
+import { logAuditBestEffort } from '../utils/auditBestEffort';
 import { validateRequest } from '../middleware/validation';
 import { authMiddleware, requireRole } from '../middleware/auth';
 import { body, param } from 'express-validator';
@@ -73,6 +74,16 @@ router.post('/register',
 
       if (result.success) {
         logger.info(`✅ Insurance policy registered: ${policyNumber}`);
+        // Audit: this chain move never wrote an audit_trail row.
+        // Best-effort — a failed audit write must not fail the move.
+        await logAuditBestEffort(req, {
+          entityType: 'INSURANCE_POLICY',
+          entityId: policyNumber,
+          action: 'REGISTER',
+          blockchainTxId: result.txId || undefined,
+          metadata: { blockchainTxId: result.txId || null },
+        }, `insurance ${policyNumber} register`);
+
         res.status(201).json({
           success: true,
           message: 'Insurance policy registered successfully',
@@ -175,6 +186,16 @@ router.post('/:policyNumber/claim',
 
       if (result.success) {
         logger.info(`✅ Insurance claim filed: ${policyNumber}`);
+        // Audit: this chain move never wrote an audit_trail row.
+        // Best-effort — a failed audit write must not fail the move.
+        await logAuditBestEffort(req, {
+          entityType: 'INSURANCE_POLICY',
+          entityId: policyNumber,
+          action: 'FILE_CLAIM',
+          blockchainTxId: result.txId || undefined,
+          metadata: { blockchainTxId: result.txId || null },
+        }, `insurance ${policyNumber} claim`);
+
         res.json({
           success: true,
           message: 'Insurance claim filed successfully',

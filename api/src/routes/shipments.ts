@@ -6,6 +6,7 @@ import { FabricService } from '../services/fabricService';
 import { ShipmentService } from '../services/shipmentService';
 import { DatabaseService } from '../services/databaseService';
 import { logger } from '../utils/logger';
+import { logAuditBestEffort } from '../utils/auditBestEffort';
 import notificationService from '../services/notificationService';
 import { validateRequest } from '../middleware/validation';
 import { body, param, query } from 'express-validator';
@@ -524,6 +525,19 @@ router.post('/',
         // DON'T link shipment to LC yet - this will be done after ECTA quality approval
         // The LC status should only change to SHIPPED after quality inspection is approved
         logger.info(`[SHIPMENT] Shipment ${shipmentID} created for contract ${contractID}. LC linking will happen after ECTA quality approval.`);
+        // Audit: this inline chain move never called the audited
+        // shipmentService method, so it left no audit_trail row.
+        // Best-effort — a failed audit write must not fail the move.
+        await logAuditBestEffort(req, {
+          entityType: 'SHIPMENT',
+          entityId: shipmentID,
+          action: 'CREATE',
+          newValue: 'CREATED',
+          reason: `Shipment created for contract ${contractID}`,
+          blockchainTxId: result.txId || undefined,
+          metadata: { contractId: contractID, status: 'CREATED', blockchainTxId: result.txId || null },
+        }, `shipment ${shipmentID} create`);
+
         
         res.status(201).json({
           success: true,
@@ -1171,6 +1185,19 @@ async function updateShipmentStatusHandler(req: Request, res: Response) {
 
     // Mirror into Postgres (the old PUT handler only updated the chain)
     await mirrorShipmentStatusPG(shipmentID, status);
+    // Audit: this inline chain move never called the audited
+    // shipmentService method, so it left no audit_trail row.
+    // Best-effort — a failed audit write must not fail the move.
+    await logAuditBestEffort(req, {
+      entityType: 'SHIPMENT',
+      entityId: shipmentID,
+      action: 'UPDATE_STATUS',
+      oldValue: currentStatus,
+      newValue: status,
+      blockchainTxId: result.txId || undefined,
+      metadata: { status, blockchainTxId: result.txId || null },
+    }, `shipment ${shipmentID} status ${currentStatus} -> ${status}`);
+
 
     logger.info(`Shipment status updated successfully: ${shipmentID} - ${currentStatus} → ${status}`);
     // In-app notification (persisted feed + live WS broadcast). This
@@ -1274,6 +1301,17 @@ router.patch('/:shipmentID/buyer',
 
       if (result.success) {
         logger.info(`Shipment buyer updated successfully: ${shipmentID} → ${buyerId}`);
+        // Audit: this inline chain move never called the audited
+        // shipmentService method, so it left no audit_trail row.
+        // Best-effort — a failed audit write must not fail the move.
+        await logAuditBestEffort(req, {
+          entityType: 'SHIPMENT',
+          entityId: shipmentID,
+          action: 'UPDATE_BUYER',
+          blockchainTxId: result.txId || undefined,
+          metadata: { buyerId, blockchainTxId: result.txId || null },
+        }, `shipment ${shipmentID} buyer update`);
+
         res.json({
           success: true,
           data: { shipmentID, buyerId },
@@ -1375,6 +1413,19 @@ router.post('/:shipmentID/reconcile-status',
       if (result.success) {
         await mirrorShipmentStatusPG(shipmentID, targetStatus);
         logger.info(`✅ Status reconciled: ${shipmentID} ${currentStatus} → ${targetStatus}`);
+        // Audit: this inline chain move never called the audited
+        // shipmentService method, so it left no audit_trail row.
+        // Best-effort — a failed audit write must not fail the move.
+        await logAuditBestEffort(req, {
+          entityType: 'SHIPMENT',
+          entityId: shipmentID,
+          action: 'RECONCILE_STATUS',
+          oldValue: currentStatus,
+          newValue: targetStatus,
+          blockchainTxId: result.txId || undefined,
+          metadata: { targetStatus, blockchainTxId: result.txId || null },
+        }, `shipment ${shipmentID} reconcile ${currentStatus} -> ${targetStatus}`);
+
         res.json({
           success: true,
           data: {
@@ -1669,6 +1720,18 @@ router.post('/:shipmentID/bill-of-lading',
       await mirrorShipmentStatusPG(shipmentID, 'LOADED');
 
       logger.info(`✅ [SHIPPING] B/L recorded on the ledger for shipment ${shipmentID}: ${billOfLadingNo}, TX: ${chainResult.txId}`);
+      // Audit: this inline chain move never called the audited
+      // shipmentService method, so it left no audit_trail row.
+      // Best-effort — a failed audit write must not fail the move.
+      await logAuditBestEffort(req, {
+        entityType: 'SHIPMENT',
+        entityId: shipmentID,
+        action: 'RECORD_BILL_OF_LADING',
+        newValue: 'LOADED',
+        blockchainTxId: chainResult.txId || undefined,
+        metadata: { billOfLadingNo, blockchainTxId: chainResult.txId || null },
+      }, `shipment ${shipmentID} bill-of-lading`);
+
 
       res.json({
         success: true,
@@ -1762,6 +1825,18 @@ router.put('/:shipmentID/shipping-status',
         // validShipmentStatuses, so the value is legal here.
         await mirrorShipmentStatusPG(shipmentID, status);
         logger.info(`✅ [SHIPPING] Shipping status updated: ${shipmentID} -> ${status}`);
+        // Audit: this inline chain move never called the audited
+        // shipmentService method, so it left no audit_trail row.
+        // Best-effort — a failed audit write must not fail the move.
+        await logAuditBestEffort(req, {
+          entityType: 'SHIPMENT',
+          entityId: shipmentID,
+          action: 'UPDATE_LOCATION',
+          newValue: status,
+          blockchainTxId: result.txId || undefined,
+          metadata: { status, blockchainTxId: result.txId || null },
+        }, `shipment ${shipmentID} shipping-status ${status}`);
+
         res.json({
           success: true,
           message: 'Shipping status updated successfully',
@@ -1963,6 +2038,19 @@ router.post('/:shipmentID/book-freight',
         // updated the chain, so the portal query found no bookings).
         await mirrorShipmentStatusPG(shipmentID, 'FREIGHT_BOOKED');
         logger.info(`✅ [SHIPPING] Freight booked for ${shipmentID} via ${freightForwarder}`);
+        // Audit: this inline chain move never called the audited
+        // shipmentService method, so it left no audit_trail row.
+        // Best-effort — a failed audit write must not fail the move.
+        await logAuditBestEffort(req, {
+          entityType: 'SHIPMENT',
+          entityId: shipmentID,
+          action: 'BOOK_FREIGHT',
+          oldValue: currentStatus,
+          newValue: 'FREIGHT_BOOKED',
+          blockchainTxId: statusUpdate.txId || undefined,
+          metadata: { freightForwarder, status: 'FREIGHT_BOOKED', blockchainTxId: statusUpdate.txId || null },
+        }, `shipment ${shipmentID} book-freight`);
+
         
         res.json({
           success: true,
@@ -2026,6 +2114,18 @@ router.post('/:shipmentID/pickup',
       if (result.success) {
         await mirrorShipmentStatusPG(shipmentID, 'IN_TRANSIT');
         logger.info(`✅ [SHIPPING] Shipment picked up: ${shipmentID} by ${pickupBy}`);
+        // Audit: this inline chain move never called the audited
+        // shipmentService method, so it left no audit_trail row.
+        // Best-effort — a failed audit write must not fail the move.
+        await logAuditBestEffort(req, {
+          entityType: 'SHIPMENT',
+          entityId: shipmentID,
+          action: 'PICKUP',
+          newValue: 'IN_TRANSIT',
+          blockchainTxId: result.txId || undefined,
+          metadata: { pickupBy, status: 'IN_TRANSIT', blockchainTxId: result.txId || null },
+        }, `shipment ${shipmentID} pickup`);
+
         res.json({
           success: true,
           message: 'Shipment marked as picked up',
@@ -2123,6 +2223,18 @@ router.post('/:shipmentID/delivery',
       if (result.success) {
         await mirrorShipmentStatusPG(shipmentID, 'DELIVERED');
         logger.info(`✅ [SHIPPING] Shipment delivered: ${shipmentID} to ${deliveredTo || 'buyer'}`);
+        // Audit: this inline chain move never called the audited
+        // shipmentService method, so it left no audit_trail row.
+        // Best-effort — a failed audit write must not fail the move.
+        await logAuditBestEffort(req, {
+          entityType: 'SHIPMENT',
+          entityId: shipmentID,
+          action: 'CONFIRM_DELIVERY',
+          newValue: 'DELIVERED',
+          blockchainTxId: result.txId || undefined,
+          metadata: { status: 'DELIVERED', blockchainTxId: result.txId || null },
+        }, `shipment ${shipmentID} confirm-delivery`);
+
         res.json({
           success: true,
           message: 'Shipment delivery confirmed',
@@ -2216,6 +2328,17 @@ router.post('/:shipmentID/lc-documents',
 
       if (result.success) {
         logger.info(`✅ [SHIPMENT] LC documents submitted: LC ${lcID}, ${documentIDs.length} documents`);
+        // Audit: this inline chain move never called the audited
+        // shipmentService method, so it left no audit_trail row.
+        // Best-effort — a failed audit write must not fail the move.
+        await logAuditBestEffort(req, {
+          entityType: 'LC',
+          entityId: lcID,
+          action: 'SUBMIT_DOCUMENTS',
+          blockchainTxId: result.txId || undefined,
+          metadata: { shipmentID, blockchainTxId: result.txId || null },
+        }, `lc ${lcID} submit-documents`);
+
         res.json({
           success: true,
           message: 'LC documents submitted successfully',
@@ -2282,6 +2405,18 @@ router.post('/:shipmentID/land-transport/start',
       if (result.success) {
         await mirrorShipmentStatusPG(shipmentID, 'LAND_TRANSPORT');
         logger.info(`✅ [SHIPPING] Land transport started: ${shipmentID}`);
+        // Audit: this inline chain move never called the audited
+        // shipmentService method, so it left no audit_trail row.
+        // Best-effort — a failed audit write must not fail the move.
+        await logAuditBestEffort(req, {
+          entityType: 'SHIPMENT',
+          entityId: shipmentID,
+          action: 'START_LAND_TRANSPORT',
+          newValue: 'LAND_TRANSPORT',
+          blockchainTxId: result.txId || undefined,
+          metadata: { status: 'LAND_TRANSPORT', blockchainTxId: result.txId || null },
+        }, `shipment ${shipmentID} start-land-transport`);
+
         res.json({
           success: true,
           message: 'Land transport started',
@@ -2339,6 +2474,18 @@ router.post('/:shipmentID/port/arrive',
       if (result.success) {
         await mirrorShipmentStatusPG(shipmentID, 'PORT_ARRIVED');
         logger.info(`✅ [SHIPPING] Port arrival recorded: ${shipmentID}`);
+        // Audit: this inline chain move never called the audited
+        // shipmentService method, so it left no audit_trail row.
+        // Best-effort — a failed audit write must not fail the move.
+        await logAuditBestEffort(req, {
+          entityType: 'SHIPMENT',
+          entityId: shipmentID,
+          action: 'ARRIVE_AT_PORT',
+          newValue: 'PORT_ARRIVED',
+          blockchainTxId: result.txId || undefined,
+          metadata: { status: 'PORT_ARRIVED', blockchainTxId: result.txId || null },
+        }, `shipment ${shipmentID} port-arrival`);
+
         res.json({
           success: true,
           message: 'Port arrival recorded',
@@ -2405,6 +2552,18 @@ router.post('/:shipmentID/container/stuff',
       if (result.success) {
         await mirrorShipmentStatusPG(shipmentID, 'CONTAINER_STUFFED');
         logger.info(`✅ [SHIPPING] Container stuffed: ${shipmentID} → ${containerNumber}`);
+        // Audit: this inline chain move never called the audited
+        // shipmentService method, so it left no audit_trail row.
+        // Best-effort — a failed audit write must not fail the move.
+        await logAuditBestEffort(req, {
+          entityType: 'SHIPMENT',
+          entityId: shipmentID,
+          action: 'STUFF_CONTAINER',
+          newValue: 'CONTAINER_STUFFED',
+          blockchainTxId: result.txId || undefined,
+          metadata: { containerNumber, status: 'CONTAINER_STUFFED', blockchainTxId: result.txId || null },
+        }, `shipment ${shipmentID} container-stuffing`);
+
         res.json({
           success: true,
           message: 'Container stuffing recorded',
@@ -2472,6 +2631,18 @@ router.post('/:shipmentID/vessel/load',
       if (result.success) {
         await mirrorShipmentStatusPG(shipmentID, 'VESSEL_LOADED');
         logger.info(`✅ [SHIPPING] Vessel loaded: ${shipmentID}`);
+        // Audit: this inline chain move never called the audited
+        // shipmentService method, so it left no audit_trail row.
+        // Best-effort — a failed audit write must not fail the move.
+        await logAuditBestEffort(req, {
+          entityType: 'SHIPMENT',
+          entityId: shipmentID,
+          action: 'LOAD_ON_VESSEL',
+          newValue: 'VESSEL_LOADED',
+          blockchainTxId: result.txId || undefined,
+          metadata: { status: 'VESSEL_LOADED', blockchainTxId: result.txId || null },
+        }, `shipment ${shipmentID} vessel-loading`);
+
         res.json({
           success: true,
           message: 'Vessel loading recorded',
@@ -2537,6 +2708,18 @@ router.post('/:shipmentID/vessel/depart',
       if (result.success) {
         await mirrorShipmentStatusPG(shipmentID, 'DEPARTED');
         logger.info(`✅ [SHIPPING] Vessel departed: ${shipmentID}`);
+        // Audit: this inline chain move never called the audited
+        // shipmentService method, so it left no audit_trail row.
+        // Best-effort — a failed audit write must not fail the move.
+        await logAuditBestEffort(req, {
+          entityType: 'SHIPMENT',
+          entityId: shipmentID,
+          action: 'DEPART_FROM_PORT',
+          newValue: 'DEPARTED',
+          blockchainTxId: result.txId || undefined,
+          metadata: { status: 'DEPARTED', blockchainTxId: result.txId || null },
+        }, `shipment ${shipmentID} vessel-departure`);
+
         res.json({
           success: true,
           message: 'Vessel departure recorded',
@@ -2594,6 +2777,18 @@ router.post('/:shipmentID/in-transit/update',
       if (result.success) {
         await mirrorShipmentStatusPG(shipmentID, 'IN_TRANSIT');
         logger.info(`✅ [SHIPPING] In-transit updated: ${shipmentID}`);
+        // Audit: this inline chain move never called the audited
+        // shipmentService method, so it left no audit_trail row.
+        // Best-effort — a failed audit write must not fail the move.
+        await logAuditBestEffort(req, {
+          entityType: 'SHIPMENT',
+          entityId: shipmentID,
+          action: 'UPDATE_TO_IN_TRANSIT',
+          newValue: 'IN_TRANSIT',
+          blockchainTxId: result.txId || undefined,
+          metadata: { status: 'IN_TRANSIT', blockchainTxId: result.txId || null },
+        }, `shipment ${shipmentID} in-transit`);
+
         res.json({
           success: true,
           message: 'In-transit status updated',
@@ -2651,6 +2846,18 @@ router.post('/:shipmentID/destination/arrive',
       if (result.success) {
         await mirrorShipmentStatusPG(shipmentID, 'DESTINATION_ARRIVED');
         logger.info(`✅ [SHIPPING] Destination arrival recorded: ${shipmentID}`);
+        // Audit: this inline chain move never called the audited
+        // shipmentService method, so it left no audit_trail row.
+        // Best-effort — a failed audit write must not fail the move.
+        await logAuditBestEffort(req, {
+          entityType: 'SHIPMENT',
+          entityId: shipmentID,
+          action: 'ARRIVE_AT_DESTINATION',
+          newValue: 'DESTINATION_ARRIVED',
+          blockchainTxId: result.txId || undefined,
+          metadata: { status: 'DESTINATION_ARRIVED', blockchainTxId: result.txId || null },
+        }, `shipment ${shipmentID} destination-arrival`);
+
         res.json({
           success: true,
           message: 'Destination arrival recorded',
@@ -2708,6 +2915,18 @@ router.post('/:shipmentID/delivery/complete',
       if (result.success) {
         await mirrorShipmentStatusPG(shipmentID, 'DELIVERED');
         logger.info(`✅ [SHIPPING] Delivery completed: ${shipmentID}`);
+        // Audit: this inline chain move never called the audited
+        // shipmentService method, so it left no audit_trail row.
+        // Best-effort — a failed audit write must not fail the move.
+        await logAuditBestEffort(req, {
+          entityType: 'SHIPMENT',
+          entityId: shipmentID,
+          action: 'COMPLETE_DELIVERY',
+          newValue: 'DELIVERED',
+          blockchainTxId: result.txId || undefined,
+          metadata: { status: 'DELIVERED', blockchainTxId: result.txId || null },
+        }, `shipment ${shipmentID} complete-delivery`);
+
         
         // Initialize post-delivery workflow
         try {
@@ -2817,6 +3036,17 @@ router.post('/:shipmentID/reject-action',
         });
       }
 
+      // Audit: this inline chain move never called the audited
+      // shipmentService method, so it left no audit_trail row.
+      // Best-effort — a failed audit write must not fail the move.
+      await logAuditBestEffort(req, {
+        entityType: 'SHIPMENT',
+        entityId: shipmentID,
+        action: 'REJECT_ACTION',
+        blockchainTxId: result.txId || undefined,
+        metadata: { proposedAction, reason, blockchainTxId: result.txId || null },
+      }, `shipment ${shipmentID} reject-action ${proposedAction}`);
+
       return res.status(201).json({
         success: true,
         data: { shipmentID, proposedAction, reason, shipmentStatusChanged: false },
@@ -2910,6 +3140,18 @@ router.post('/:shipmentID/shipping-document',
         await mirrorShipmentStatusPG(shipmentID, 'LOADED');
         const docType = transportMode === 'SEA' ? 'Bill of Lading' : 'Airway Bill';
         logger.info(`✅ [SHIPPING] ${docType} recorded successfully: ${documentNo}`);
+        // Audit: this inline chain move never called the audited
+        // shipmentService method, so it left no audit_trail row.
+        // Best-effort — a failed audit write must not fail the move.
+        await logAuditBestEffort(req, {
+          entityType: 'SHIPMENT',
+          entityId: shipmentID,
+          action: 'RECORD_SHIPPING_DETAILS',
+          newValue: 'LOADED',
+          blockchainTxId: result.txId || undefined,
+          metadata: { documentNo, transportMode, blockchainTxId: result.txId || null },
+        }, `shipment ${shipmentID} shipping-document`);
+
         res.json({
           success: true,
           message: `${docType} recorded successfully`,
@@ -2983,6 +3225,18 @@ router.post('/:shipmentId/container/stuff',
 
       if (result.success) {
         logger.info(`✅ Container stuffing recorded: ${shipmentId}`);
+        // Audit: this inline chain move never called the audited
+        // shipmentService method, so it left no audit_trail row.
+        // Best-effort — a failed audit write must not fail the move.
+        await logAuditBestEffort(req, {
+          entityType: 'SHIPMENT',
+          entityId: shipmentId,
+          action: 'STUFF_CONTAINER',
+          newValue: 'CONTAINER_STUFFED',
+          blockchainTxId: result.txId || undefined,
+          metadata: { status: 'CONTAINER_STUFFED', blockchainTxId: result.txId || null },
+        }, `shipment ${shipmentId} container-stuffing`);
+
         res.json({
           success: true,
           message: 'Container stuffing recorded successfully',
@@ -3034,6 +3288,18 @@ router.post('/:shipmentId/vessel/load',
         // mirrors; this :shipmentId alias did not.)
         await mirrorShipmentStatusPG(shipmentId, 'VESSEL_LOADED');
         logger.info(`✅ Vessel loading recorded: ${shipmentId}`);
+        // Audit: this inline chain move never called the audited
+        // shipmentService method, so it left no audit_trail row.
+        // Best-effort — a failed audit write must not fail the move.
+        await logAuditBestEffort(req, {
+          entityType: 'SHIPMENT',
+          entityId: shipmentId,
+          action: 'RECORD_VESSEL_LOADING',
+          newValue: 'VESSEL_LOADED',
+          blockchainTxId: result.txId || undefined,
+          metadata: { status: 'VESSEL_LOADED', blockchainTxId: result.txId || null },
+        }, `shipment ${shipmentId} vessel-loading`);
+
         res.json({
           success: true,
           message: 'Vessel loading recorded successfully',
@@ -3085,6 +3351,18 @@ router.post('/:shipmentId/vessel/depart',
         // mirrors; this :shipmentId alias did not.)
         await mirrorShipmentStatusPG(shipmentId, 'DEPARTED');
         logger.info(`✅ Vessel departure recorded: ${shipmentId}`);
+        // Audit: this inline chain move never called the audited
+        // shipmentService method, so it left no audit_trail row.
+        // Best-effort — a failed audit write must not fail the move.
+        await logAuditBestEffort(req, {
+          entityType: 'SHIPMENT',
+          entityId: shipmentId,
+          action: 'RECORD_VESSEL_DEPARTURE',
+          newValue: 'DEPARTED',
+          blockchainTxId: result.txId || undefined,
+          metadata: { status: 'DEPARTED', blockchainTxId: result.txId || null },
+        }, `shipment ${shipmentId} vessel-departure`);
+
         res.json({
           success: true,
           message: 'Vessel departure recorded successfully',
@@ -3131,6 +3409,18 @@ router.post('/:shipmentId/in-transit/update',
       if (result.success) {
         await mirrorShipmentStatusPG(shipmentId, 'IN_TRANSIT');
         logger.info(`✅ In-transit status updated: ${shipmentId}`);
+        // Audit: this inline chain move never called the audited
+        // shipmentService method, so it left no audit_trail row.
+        // Best-effort — a failed audit write must not fail the move.
+        await logAuditBestEffort(req, {
+          entityType: 'SHIPMENT',
+          entityId: shipmentId,
+          action: 'UPDATE_TO_IN_TRANSIT',
+          newValue: 'IN_TRANSIT',
+          blockchainTxId: result.txId || undefined,
+          metadata: { status: 'IN_TRANSIT', blockchainTxId: result.txId || null },
+        }, `shipment ${shipmentId} in-transit`);
+
         res.json({
           success: true,
           message: 'In-transit status updated successfully',
@@ -3182,6 +3472,18 @@ router.post('/:shipmentId/destination/arrive',
         // arrive handler already mirrors; this :shipmentId alias did not.)
         await mirrorShipmentStatusPG(shipmentId, 'DESTINATION_ARRIVED');
         logger.info(`✅ Destination arrival recorded: ${shipmentId}`);
+        // Audit: this inline chain move never called the audited
+        // shipmentService method, so it left no audit_trail row.
+        // Best-effort — a failed audit write must not fail the move.
+        await logAuditBestEffort(req, {
+          entityType: 'SHIPMENT',
+          entityId: shipmentId,
+          action: 'RECORD_DESTINATION_ARRIVAL',
+          newValue: 'DESTINATION_ARRIVED',
+          blockchainTxId: result.txId || undefined,
+          metadata: { status: 'DESTINATION_ARRIVED', blockchainTxId: result.txId || null },
+        }, `shipment ${shipmentId} destination-arrival`);
+
         res.json({
           success: true,
           message: 'Destination arrival recorded successfully',

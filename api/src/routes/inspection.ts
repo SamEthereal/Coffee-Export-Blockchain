@@ -6,6 +6,7 @@ import { FabricService } from '../services/fabricService';
 import { DatabaseService } from '../services/databaseService';
 import { authMiddleware, requireRole } from '../middleware/auth';
 import { logger } from '../utils/logger';
+import { logAuditBestEffort } from '../utils/auditBestEffort';
 
 const router = express.Router();
 const fabricService = FabricService.getInstance();
@@ -81,6 +82,17 @@ router.post('/', authMiddleware,
     }
 
     logger.info(`[INSPECTION] ✅ Created: ${inspectionId}`);
+    // Audit: this chain move never wrote an audit_trail row.
+    // Best-effort — a failed audit write must not fail the move.
+    await logAuditBestEffort(req, {
+      entityType: 'PRE_SHIPMENT_INSPECTION',
+      entityId: inspectionId,
+      action: 'CREATE',
+      newValue: 'PENDING',
+      blockchainTxId: result.transactionId || undefined,
+      metadata: { shipmentId, contractId, exporterId, blockchainTxId: result.transactionId || null },
+    }, `pre-shipment inspection ${inspectionId} create`);
+
 
     res.status(201).json({
       success: true,
@@ -271,6 +283,17 @@ router.post('/request', authMiddleware,
     }
 
     logger.info(`[INSPECTION] ✅ Requested: ${inspectionId}`);
+    // Audit: this chain move never wrote an audit_trail row.
+    // Best-effort — a failed audit write must not fail the move.
+    await logAuditBestEffort(req, {
+      entityType: 'PRE_SHIPMENT_INSPECTION',
+      entityId: inspectionId,
+      action: 'REQUEST',
+      newValue: 'PENDING',
+      blockchainTxId: result.transactionId || undefined,
+      metadata: { shipmentId, contractId, exporterId, blockchainTxId: result.transactionId || null },
+    }, `pre-shipment inspection ${inspectionId} request`);
+
 
     res.status(201).json({
       success: true,
@@ -331,6 +354,16 @@ router.post('/:id/schedule', authMiddleware,
     }
 
     logger.info(`[INSPECTION] ✅ Scheduled: ${id}`);
+    // Audit: this chain move never wrote an audit_trail row.
+    // Best-effort — a failed audit write must not fail the move.
+    await logAuditBestEffort(req, {
+      entityType: 'PRE_SHIPMENT_INSPECTION',
+      entityId: id,
+      action: 'SCHEDULE',
+      blockchainTxId: result.transactionId || undefined,
+      metadata: { inspectorName, inspectorLicense, inspectionDate, blockchainTxId: result.transactionId || null },
+    }, `pre-shipment inspection ${id} schedule`);
+
 
     res.json({
       success: true,
@@ -389,6 +422,16 @@ router.post('/:id/results', authMiddleware,
     }
 
     logger.info(`[INSPECTION] ✅ Results recorded: ${id} - ${overallResult}`);
+    // Audit: this chain move never wrote an audit_trail row.
+    // Best-effort — a failed audit write must not fail the move.
+    await logAuditBestEffort(req, {
+      entityType: 'PRE_SHIPMENT_INSPECTION',
+      entityId: id,
+      action: 'RECORD_RESULTS',
+      blockchainTxId: result.transactionId || undefined,
+      metadata: { overallResult, blockchainTxId: result.transactionId || null },
+    }, `pre-shipment inspection ${id} results`);
+
 
     res.json({
       success: true,
@@ -428,6 +471,16 @@ router.post('/:id/certificate', authMiddleware,
     }
 
     logger.info(`[INSPECTION] ✅ Certificate issued: ${id}`);
+    // Audit: this chain move never wrote an audit_trail row.
+    // Best-effort — a failed audit write must not fail the move.
+    await logAuditBestEffort(req, {
+      entityType: 'PRE_SHIPMENT_INSPECTION',
+      entityId: id,
+      action: 'ISSUE_CERTIFICATE',
+      blockchainTxId: result.transactionId || undefined,
+      metadata: { blockchainTxId: result.transactionId || null },
+    }, `pre-shipment inspection ${id} certificate`);
+
 
     res.json({
       success: true,
@@ -511,6 +564,17 @@ router.post('/:id/approve', authMiddleware, requireRole('ECTA', 'ECTA_ADMIN'), a
     } catch (mirrorErr: any) {
       logger.warn(`[INSPECTION] Could not mirror approval of ${id} into quality_inspections:`, mirrorErr.message);
     }
+    // Audit: this chain move never wrote an audit_trail row.
+    // Best-effort — a failed audit write must not fail the move.
+    await logAuditBestEffort(req, {
+      entityType: 'PRE_SHIPMENT_INSPECTION',
+      entityId: id,
+      action: 'APPROVE',
+      newValue: 'APPROVED',
+      blockchainTxId: result.transactionId || undefined,
+      metadata: { comments, blockchainTxId: result.transactionId || null },
+    }, `pre-shipment inspection ${id} approve`);
+
 
     res.json({
       success: true,
@@ -563,6 +627,17 @@ router.post('/:id/reject', authMiddleware, requireRole('ECTA', 'ECTA_ADMIN'), as
     }
 
     logger.info(`[INSPECTION] ✅ Rejected: ${id}`);
+    // Audit: this chain move never wrote an audit_trail row.
+    // Best-effort — a failed audit write must not fail the move.
+    await logAuditBestEffort(req, {
+      entityType: 'PRE_SHIPMENT_INSPECTION',
+      entityId: id,
+      action: 'REJECT',
+      newValue: 'REJECTED',
+      blockchainTxId: result.transactionId || undefined,
+      metadata: { blockchainTxId: result.transactionId || null },
+    }, `pre-shipment inspection ${id} reject`);
+
 
     res.json({
       success: true,

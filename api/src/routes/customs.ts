@@ -7,6 +7,7 @@ import { CustomsService } from '../services/customsService';
 import { ShipmentService } from '../services/shipmentService';
 import { ExchangeRateService } from '../services/exchangeRateService';
 import { logger } from '../utils/logger';
+import { logAuditBestEffort } from '../utils/auditBestEffort';
 import notificationService from '../services/notificationService';
 import { hsCodeValidator, isValidHsCode, normalizeHsCode, HS_CODE_MESSAGE } from '../utils/hsCode';
 
@@ -223,6 +224,18 @@ router.post('/',
       );
 
       logger.info(`✅ [CUSTOMS] Declaration submitted: ${declarationNumber}`);
+      // Audit: this inline chain move never called the audited
+      // customsService method, so it left no audit_trail row.
+      // Best-effort — a failed audit write must not fail the move.
+      await logAuditBestEffort(req, {
+        entityType: 'CUSTOMS_DECLARATION',
+        entityId: declarationNumber,
+        action: 'SUBMIT',
+        newValue: 'SUBMITTED',
+        blockchainTxId: blockchain_tx_id || undefined,
+        metadata: { shipmentId, contractId, exporterId, blockchainTxId: blockchain_tx_id || null },
+      }, `customs declaration ${declarationNumber} submit`);
+
 
       // The ledger cascade moves the shipment PERMIT_ISSUED (or
       // CUSTOMS_REJECTED on a resubmission) -> CUSTOMS_DECLARED on
@@ -410,7 +423,8 @@ router.post('/clearance',
       const clearanceID = `CLR-${Date.now()}`;
       const user = (req as any).user;
 
-      // ✅ Record clearance (skip audit for now - testing mode)
+      // Record clearance (PG-only step: no chain call, so the audit row
+      // honestly carries no blockchain txId).
       logger.info(`✅ Customs clearance created: ${clearanceID} for shipment ${shipmentID}`);
 
       // Persist to database
@@ -421,6 +435,17 @@ router.post('/clearance',
         [clearanceID, shipmentID, clearanceNumber, status || 'SUBMITTED',
          clearedBy || user?.username || 'system', clearedDate || new Date().toISOString()]
       );
+      // Audit: this inline chain move never called the audited
+      // customsService method, so it left no audit_trail row.
+      // Best-effort — a failed audit write must not fail the move.
+      await logAuditBestEffort(req, {
+        entityType: 'CUSTOMS_CLEARANCE',
+        entityId: clearanceID,
+        action: 'CREATE',
+        newValue: status || 'SUBMITTED',
+        metadata: { clearanceNumber, shipmentID },
+      }, `customs clearance ${clearanceID} create`);
+
 
       res.json({
         success: true,
@@ -1031,6 +1056,18 @@ router.post('/declaration/submit',
       );
 
       logger.info(`[CUSTOMS] Declaration ${declarationID} submitted successfully with status SUBMITTED`);
+      // Audit: this inline chain move never called the audited
+      // customsService method, so it left no audit_trail row.
+      // Best-effort — a failed audit write must not fail the move.
+      await logAuditBestEffort(req, {
+        entityType: 'CUSTOMS_DECLARATION',
+        entityId: declarationID,
+        action: 'SUBMIT',
+        newValue: 'SUBMITTED',
+        blockchainTxId: blockchain_tx_id || undefined,
+        metadata: { shipmentID, contractId: contractIdUpper || contractIdLower, exporterID, blockchainTxId: blockchain_tx_id || null },
+      }, `customs declaration ${declarationID} submit`);
+
       // In-app notification (persisted feed + live WS broadcast).
       await notificationService.emitWorkflowEvent({
         type: 'customs_submitted',
@@ -1125,6 +1162,19 @@ router.post('/test-shipment-update/:shipmentId',
       if (result.success) {
         await shipmentService.mirrorShipmentStatus(shipmentId, 'CUSTOMS_CLEARED');
       }
+      // Audit: this inline chain move never called the audited
+      // customsService method, so it left no audit_trail row.
+      // Best-effort — a failed audit write must not fail the move.
+      await logAuditBestEffort(req, {
+        entityType: 'SHIPMENT',
+        entityId: shipmentId,
+        action: 'UPDATE_STATUS',
+        oldValue: currentStatus,
+        newValue: 'CUSTOMS_CLEARED',
+        blockchainTxId: result.txId || undefined,
+        metadata: { status: 'CUSTOMS_CLEARED', blockchainTxId: result.txId || null },
+      }, `shipment ${shipmentId} customs-clear (test endpoint)`);
+
       
       logger.info(`[CUSTOMS TEST] Update result:`, result);
       
@@ -2105,6 +2155,18 @@ router.post('/declaration/:declarationId/review',
       );
 
       logger.info(`[CUSTOMS] Declaration ${declarationId} updated: officer=${officerName}, status=UNDER_INSPECTION`);
+      // Audit: this inline chain move never called the audited
+      // customsService method, so it left no audit_trail row.
+      // Best-effort — a failed audit write must not fail the move.
+      await logAuditBestEffort(req, {
+        entityType: 'CUSTOMS_DECLARATION',
+        entityId: declarationId,
+        action: 'REVIEW',
+        newValue: 'UNDER_INSPECTION',
+        blockchainTxId: blockchain_tx_id || undefined,
+        metadata: { officer: officerName, inspectionType, blockchainTxId: blockchain_tx_id || null },
+      }, `customs declaration ${declarationId} review`);
+
 
       res.json({
         success: true,
@@ -2199,6 +2261,17 @@ const inspectHandler = async (req: Request, res: Response) => {
       }
 
       logger.info(`[CUSTOMS] ✅ Declaration ${declId} inspection started: status=UNDER_INSPECTION`);
+      // Audit: this inline chain move never called the audited
+      // customsService method, so it left no audit_trail row.
+      // Best-effort — a failed audit write must not fail the move.
+      await logAuditBestEffort(req, {
+        entityType: 'CUSTOMS_DECLARATION',
+        entityId: declId,
+        action: 'INSPECT',
+        newValue: 'UNDER_INSPECTION',
+        metadata: { customsOfficer: user.username },
+      }, `customs declaration ${declId} inspect`);
+
       // In-app notification (persisted feed + live WS broadcast).
       await notificationService.emitWorkflowEvent({
         type: 'customs_inspection_started',
@@ -2332,6 +2405,19 @@ router.post('/declaration/:declarationId/complete-inspection',
       }
 
       logger.info(`[CUSTOMS] ✅ Declaration ${declarationId} inspection completed: status=UNDER_REVIEW`);
+      // Audit: this inline chain move never called the audited
+      // customsService method, so it left no audit_trail row.
+      // Best-effort — a failed audit write must not fail the move.
+      await logAuditBestEffort(req, {
+        entityType: 'CUSTOMS_DECLARATION',
+        entityId: declarationId,
+        action: 'COMPLETE_INSPECTION',
+        oldValue: 'UNDER_INSPECTION',
+        newValue: 'UNDER_REVIEW',
+        blockchainTxId: blockchain_tx_id || undefined,
+        metadata: { inspectionResult: inspectionResult || 'PASSED', blockchainTxId: blockchain_tx_id || null },
+      }, `customs declaration ${declarationId} complete-inspection`);
+
 
       res.json({
         success: true,
@@ -2425,6 +2511,17 @@ router.post('/declaration/:declarationId/reject',
         actionUrl: '/portals/exporter?tab=customs',
         actionUrls: { CUSTOMS: '/portals/customs?tab=customs' },
       });
+      // Audit: the manual reject route never calls customsService.rejectDeclaration
+      // (the only audited path), so a rejected declaration left no audit_trail row.
+      // Best-effort — a failed audit write must not fail the rejection.
+      await logAuditBestEffort(req, {
+        entityType: 'CUSTOMS_DECLARATION',
+        entityId: declarationId,
+        action: 'REJECT',
+        reason: rejectionReason,
+        blockchainTxId: result.txId || undefined,
+        metadata: { rejectedBy: officer, reason: rejectionReason, blockchainTxId: result.txId || null },
+      }, `customs declaration ${declarationId} reject`);
       try {
         await postgresDb.run(
           `UPDATE customs_declarations

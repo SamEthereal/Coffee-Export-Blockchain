@@ -6,6 +6,7 @@ import { FabricService } from '../services/fabricService';
 import { DatabaseService } from '../services/databaseService';
 import { PaymentService } from '../services/paymentService';
 import { logger } from '../utils/logger';
+import { logAuditBestEffort } from '../utils/auditBestEffort';
 import notificationService from '../services/notificationService';
 import { validateRequest } from '../middleware/validation';
 import { body, param } from 'express-validator';
@@ -378,6 +379,16 @@ router.post('/initiate',
         } catch (mirrorErr) {
           logger.warn(`[PAYMENT] Could not mirror initiation of ${paymentID} to Postgres:`, mirrorErr);
         }
+        // Audit: this chain move never wrote an audit_trail row.
+        // Best-effort — a failed audit write must not fail the move.
+        await logAuditBestEffort(req, {
+          entityType: 'PAYMENT',
+          entityId: paymentID,
+          action: 'INITIATE',
+          blockchainTxId: result.txId || undefined,
+          metadata: { lcID: lcID, contractID: finalContractID, exporterID: finalExporterID, amount: finalAmount, blockchainTxId: result.txId || null },
+        }, `payment ${paymentID} initiate`);
+
         res.status(201).json({
           success: true,
           message: 'Payment initiated successfully',
@@ -611,6 +622,17 @@ router.post('/:paymentID/documents',
         // M4: mirror the intermediate state to PG (ledger-first,
         // best-effort — the chain call above already succeeded).
         await mirrorPaymentStatus(paymentID, 'DOCUMENTS_SUBMITTED');
+        // Audit: this chain move never wrote an audit_trail row.
+        // Best-effort — a failed audit write must not fail the move.
+        await logAuditBestEffort(req, {
+          entityType: 'PAYMENT',
+          entityId: paymentID,
+          action: 'SUBMIT_DOCUMENTS',
+          newValue: 'DOCUMENTS_SUBMITTED',
+          blockchainTxId: result.txId || undefined,
+          metadata: { blockchainTxId: result.txId || null },
+        }, `payment ${paymentID} submit-documents`);
+
         res.json({
           success: true,
           message: 'Payment documents submitted successfully',
@@ -711,6 +733,17 @@ router.post('/:paymentID/verify',
         // M4: mirror the intermediate state to PG (ledger-first,
         // best-effort — the chain call above already succeeded).
         await mirrorPaymentStatus(paymentID, 'VERIFIED');
+        // Audit: this chain move never wrote an audit_trail row.
+        // Best-effort — a failed audit write must not fail the move.
+        await logAuditBestEffort(req, {
+          entityType: 'PAYMENT',
+          entityId: paymentID,
+          action: 'VERIFY_DOCUMENTS',
+          newValue: 'VERIFIED',
+          blockchainTxId: result.txId || undefined,
+          metadata: { verifiedBy, comments, blockchainTxId: result.txId || null },
+        }, `payment ${paymentID} verify-documents`);
+
         res.json({
           success: true,
           message: 'Payment documents verified successfully',
@@ -850,6 +883,17 @@ router.post('/:paymentID/swift/initiate',
         // point an initiate-path payment carries one (the initiate
         // mirror stores no swift_reference).
         await mirrorPaymentStatus(paymentID, 'SWIFT_INITIATED', swiftReference);
+        // Audit: this chain move never wrote an audit_trail row.
+        // Best-effort — a failed audit write must not fail the move.
+        await logAuditBestEffort(req, {
+          entityType: 'PAYMENT',
+          entityId: paymentID,
+          action: 'INITIATE_SWIFT_TRANSFER',
+          newValue: 'SWIFT_INITIATED',
+          blockchainTxId: result.txId || undefined,
+          metadata: { swiftReference, blockchainTxId: result.txId || null },
+        }, `payment ${paymentID} swift-initiate`);
+
         res.json({
           success: true,
           message: 'SWIFT transfer initiated successfully',
@@ -940,6 +984,17 @@ router.post('/:paymentID/swift/confirm',
         // M4: mirror the intermediate state to PG (ledger-first,
         // best-effort — the chain call above already succeeded).
         await mirrorPaymentStatus(paymentID, 'SWIFT_RECEIVED');
+        // Audit: this chain move never wrote an audit_trail row.
+        // Best-effort — a failed audit write must not fail the move.
+        await logAuditBestEffort(req, {
+          entityType: 'PAYMENT',
+          entityId: paymentID,
+          action: 'CONFIRM_SWIFT_RECEIPT',
+          newValue: 'SWIFT_RECEIVED',
+          blockchainTxId: result.txId || undefined,
+          metadata: { blockchainTxId: result.txId || null },
+        }, `payment ${paymentID} swift-confirm`);
+
         res.json({
           success: true,
           message: 'SWIFT receipt confirmed successfully',
@@ -1319,6 +1374,18 @@ router.put('/:paymentID/confirm',
           pgMirrorFailed = true;
           logger.error(`[PAYMENT] Confirm landed on-chain but the PG mirror failed for ${paymentID}:`, pgErr);
         }
+        // Audit: this chain move never wrote an audit_trail row.
+        // Best-effort — a failed audit write must not fail the move.
+        await logAuditBestEffort(req, {
+          entityType: 'PAYMENT',
+          entityId: paymentID,
+          action: 'CONFIRM',
+          oldValue: 'SETTLED',
+          newValue: 'CONFIRMED',
+          blockchainTxId: result.txId || undefined,
+          metadata: { confirmedBy, confirmationType, remarks, blockchainTxId: result.txId || null },
+        }, `payment ${paymentID} confirm`);
+
         res.json({
           success: true,
           message: 'Payment settlement confirmed',
@@ -1963,6 +2030,16 @@ router.post('/:paymentID/forex-repatriation',
 
       if (result.success) {
         logger.info(`✅ [PAYMENT] Forex repatriation recorded: ${paymentID}`);
+        // Audit: this chain move never wrote an audit_trail row.
+        // Best-effort — a failed audit write must not fail the move.
+        await logAuditBestEffort(req, {
+          entityType: 'PAYMENT',
+          entityId: paymentID,
+          action: 'RECORD_FOREX_REPATRIATION',
+          blockchainTxId: result.txId || undefined,
+          metadata: { blockchainTxId: result.txId || null },
+        }, `payment ${paymentID} forex-repatriation`);
+
         res.json({
           success: true,
           message: 'Forex repatriation recorded successfully',
@@ -2029,6 +2106,16 @@ router.post('/:paymentID/advance',
 
       if (result.success) {
         logger.info(`✅ [PAYMENT] Advance payment received: ${paymentID}`);
+        // Audit: this chain move never wrote an audit_trail row.
+        // Best-effort — a failed audit write must not fail the move.
+        await logAuditBestEffort(req, {
+          entityType: 'PAYMENT',
+          entityId: paymentID,
+          action: 'RECEIVE_ADVANCE_PAYMENT',
+          blockchainTxId: result.txId || undefined,
+          metadata: { blockchainTxId: result.txId || null },
+        }, `payment ${paymentID} advance`);
+
         res.json({
           success: true,
           message: 'Advance payment received successfully',
@@ -2091,6 +2178,16 @@ router.post('/:paymentID/balance',
 
       if (result.success) {
         logger.info(`✅ [PAYMENT] Balance payment received: ${paymentID}`);
+        // Audit: this chain move never wrote an audit_trail row.
+        // Best-effort — a failed audit write must not fail the move.
+        await logAuditBestEffort(req, {
+          entityType: 'PAYMENT',
+          entityId: paymentID,
+          action: 'RECEIVE_BALANCE_PAYMENT',
+          blockchainTxId: result.txId || undefined,
+          metadata: { blockchainTxId: result.txId || null },
+        }, `payment ${paymentID} balance`);
+
         res.json({
           success: true,
           message: 'Balance payment received successfully',
@@ -2153,6 +2250,17 @@ router.post('/:paymentID/status',
 
       if (result.success) {
         logger.info(`✅ [PAYMENT] Status updated: ${paymentID}`);
+        // Audit: this chain move never wrote an audit_trail row.
+        // Best-effort — a failed audit write must not fail the move.
+        await logAuditBestEffort(req, {
+          entityType: 'PAYMENT',
+          entityId: paymentID,
+          action: 'UPDATE_STATUS',
+          newValue: status,
+          blockchainTxId: result.txId || undefined,
+          metadata: { status, blockchainTxId: result.txId || null },
+        }, `payment ${paymentID} status ${status}`);
+
         res.json({
           success: true,
           message: 'Payment status updated successfully',
@@ -2249,6 +2357,16 @@ router.post('/',
         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
         [paymentID, lcNumber || null, contractID, req.body.shipmentID || null, exporterID, amount, currency, paymentMethod, paymentDate, blockchain_tx_id]
       );
+      // Audit: this chain move never wrote an audit_trail row.
+      // Best-effort — a failed audit write must not fail the move.
+      await logAuditBestEffort(req, {
+        entityType: 'PAYMENT',
+        entityId: paymentID,
+        action: 'INITIATE',
+        blockchainTxId: blockchain_tx_id || undefined,
+        metadata: { lcNumber, contractID, exporterID, amount, blockchainTxId: blockchain_tx_id || null },
+      }, `payment ${paymentID} initiate`);
+
 
       res.json({
         success: true,

@@ -3,6 +3,7 @@ import express from 'express';
 import { FabricService } from '../services/fabricService';
 import { DatabaseService } from '../services/databaseService';
 import { logger } from '../utils/logger';
+import { logAuditBestEffort } from '../utils/auditBestEffort';
 import { authMiddleware } from '../middleware/auth';
 import { requireRole } from '../middleware/rbac';
 import { body, param } from 'express-validator';
@@ -55,6 +56,16 @@ router.post('/policy',
       }
       
       logger.info(`✅ [NBE] Retention policy set: ${commodityType} = ${retentionRate}%`);
+      // Audit: this chain move never wrote an audit_trail row.
+      // Best-effort — a failed audit write must not fail the move.
+      await logAuditBestEffort(req, {
+        entityType: 'RETENTION_POLICY',
+        entityId: commodityType,
+        action: 'SET_RETENTION_POLICY',
+        blockchainTxId: result.txId || undefined,
+        metadata: { retentionRate, blockchainTxId: result.txId || null },
+      }, `retention policy ${commodityType}`);
+
       
       res.status(201).json({
         success: true,
@@ -247,6 +258,16 @@ router.post('/:forexId/retention',
       );
 
       logger.info(`Retention enforced: ${forexId}, ${retentionPercentage}%, ${retentionAmount} USD`);
+      // Audit: this chain move never wrote an audit_trail row.
+      // Best-effort — a failed audit write must not fail the move.
+      await logAuditBestEffort(req, {
+        entityType: 'FOREX',
+        entityId: forexId,
+        action: 'RECORD_FOREX_RETENTION',
+        blockchainTxId: result.txId || undefined,
+        metadata: { retentionPercentage, retentionAmount, fcyAccountNumber, complianceStatus, blockchainTxId: result.txId || null },
+      }, `forex ${forexId} retention`);
+
 
       res.json({
         success: true,

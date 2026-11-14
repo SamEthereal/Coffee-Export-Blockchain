@@ -4,6 +4,7 @@
 import express from 'express';
 import { FabricService } from '../services/fabricService';
 import { logger } from '../utils/logger';
+import { logAuditBestEffort } from '../utils/auditBestEffort';
 import { validateRequest } from '../middleware/validation';
 import { authMiddleware, requireRole } from '../middleware/auth';
 import { body, param } from 'express-validator';
@@ -87,6 +88,16 @@ router.post('/due-diligence',
 
       if (result.success) {
         logger.info(`✅ EUDR due diligence submitted: ${dueDiligenceID}`);
+        // Audit: this chain move never wrote an audit_trail row.
+        // Best-effort — a failed audit write must not fail the move.
+        await logAuditBestEffort(req, {
+          entityType: 'EUDR',
+          entityId: dueDiligenceID,
+          action: 'SUBMIT_DUE_DILIGENCE',
+          blockchainTxId: result.txId || undefined,
+          metadata: { blockchainTxId: result.txId || null },
+        }, `eudr ${dueDiligenceID} submit`);
+
         res.status(201).json({
           success: true,
           message: 'EUDR due diligence submitted successfully',
@@ -155,6 +166,16 @@ router.post('/:dueDiligenceID/verify',
 
       if (result.success) {
         logger.info(`✅ EUDR compliance verified: ${dueDiligenceID} - ${verified ? 'PASSED' : 'FAILED'}`);
+        // Audit: this chain move never wrote an audit_trail row.
+        // Best-effort — a failed audit write must not fail the move.
+        await logAuditBestEffort(req, {
+          entityType: 'EUDR',
+          entityId: dueDiligenceID,
+          action: 'VERIFY_COMPLIANCE',
+          blockchainTxId: result.txId || undefined,
+          metadata: { verified, blockchainTxId: result.txId || null },
+        }, `eudr ${dueDiligenceID} verify`);
+
         res.json({
           success: true,
           message: `EUDR compliance ${verified ? 'verified' : 'rejected'}`,

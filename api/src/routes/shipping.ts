@@ -8,6 +8,7 @@ import { DatabaseService } from '../services/databaseService';
 import { FabricService } from '../services/fabricService';
 import { ShipmentService } from '../services/shipmentService';
 import { logger } from '../utils/logger';
+import { logAuditBestEffort, logAuditBestEffortForUser } from '../utils/auditBestEffort';
 import { statusManager } from '../utils/statusManager';
 
 const router = Router();
@@ -42,6 +43,7 @@ async function mirrorBookingStatusToShipment(
   bookingId: string,
   status: string,
   extras: Array<[string, any]> = [],
+  auditBy?: { username?: string; email?: string; organization?: string },
 ): Promise<void> {
   try {
     const booking = await dbService.get(
@@ -73,14 +75,29 @@ async function mirrorBookingStatusToShipment(
       const { CacheInvalidation } = await import('../services/blockchainCacheService');
       CacheInvalidation.shipment(shipmentID);
     } catch { /* best-effort: invalidation never fails the request */ }
+    let chainTxId: string | null = null;
     try {
       const chainResult = await fabricService.updateShipmentStatus(shipmentID, status);
       if (!chainResult?.success) {
         logger.warn(`[SHIPPING] Chain mirror of ${shipmentID} -> ${status} did not succeed: ${chainResult?.error || 'unknown error'}`);
+      } else {
+        chainTxId = chainResult.txId || null;
       }
     } catch (chainError: any) {
       logger.warn(`[SHIPPING] Fabric unavailable, shipment ${shipmentID} status ${status} mirrored in PostgreSQL only: ${chainError.message}`);
     }
+    // Audit: the booking lifecycle move (and its best-effort chain
+    // mirror) never wrote an audit_trail row. Carry the chain txId
+    // when the mirror succeeded — honestly without one when Fabric
+    // was unreachable (the PG move still happened).
+    await logAuditBestEffortForUser(auditBy, {
+      entityType: 'SHIPMENT',
+      entityId: shipmentID,
+      action: `BOOKING_${status}`,
+      newValue: status,
+      blockchainTxId: chainTxId || undefined,
+      metadata: { bookingId, status, blockchainTxId: chainTxId || null },
+    }, `booking ${bookingId} ${status} for shipment ${shipmentID}`);
   } catch (mirrorError: any) {
     logger.warn(`[SHIPPING] Failed to mirror booking ${bookingId} status ${status} to its shipment: ${mirrorError.message}`);
   }
@@ -633,6 +650,18 @@ router.post('/bookings', authMiddleware,
     } else {
       blockchainWarning = 'No shipmentID was supplied, so no shipment status was updated';
     }
+    // Audit: this inline chain move never wrote an audit_trail row.
+    // Best-effort — a failed audit write must not fail the move.
+    await logAuditBestEffort(req, {
+      entityType: 'BOOKING',
+      entityId: bookingID,
+      action: 'CREATE',
+      newValue: 'BOOKED',
+      reason: `Booking created for shipment ${shipmentID}`,
+      blockchainTxId: bookingChainTxId || undefined,
+      metadata: { shipmentID, blockchainSynced, blockchainWarning, blockchainTxId: bookingChainTxId || null },
+    }, `booking ${bookingID} create`);
+
 
     res.json({
       success: true,
@@ -711,7 +740,7 @@ router.post('/bookings/:bookingId/load', authMiddleware,
     await mirrorBookingStatusToShipment(bookingId, 'LOADED', [
       ['container_number', Array.isArray(containerNumbers) ? containerNumbers.join(',') : containerNumbers],
       ['seal_number', Array.isArray(sealNumbers) ? sealNumbers.join(',') : sealNumbers],
-    ]);
+    ], (req as any).user);
 
     logger.info(`[SHIPPING] ✅ Cargo loaded for booking: ${bookingId}`);
 
@@ -779,7 +808,7 @@ router.post('/bookings/:bookingId/depart', authMiddleware,
     // Mirror onto the real shipment row (see mirrorBookingStatusToShipment).
     await mirrorBookingStatusToShipment(bookingId, 'IN_TRANSIT', [
       ['actual_departure', departureDate || new Date().toISOString().split('T')[0]],
-    ]);
+    ], (req as any).user);
 
     logger.info(`[SHIPPING] ✅ Vessel departed for booking: ${bookingId}`);
 
@@ -846,7 +875,7 @@ router.post('/bookings/:bookingId/arrive', authMiddleware,
     // Mirror onto the real shipment row (see mirrorBookingStatusToShipment).
     await mirrorBookingStatusToShipment(bookingId, 'ARRIVED', [
       ['actual_arrival', arrivalDate || new Date().toISOString().split('T')[0]],
-    ]);
+    ], (req as any).user);
 
     logger.info(`[SHIPPING] ✅ Vessel arrived for booking: ${bookingId}`);
 
@@ -913,7 +942,7 @@ router.post('/bookings/:bookingId/deliver', authMiddleware,
     // Mirror onto the real shipment row (see mirrorBookingStatusToShipment).
     await mirrorBookingStatusToShipment(bookingId, 'DELIVERED', [
       ['delivery_date', deliveryDate || new Date().toISOString().split('T')[0]],
-    ]);
+    ], (req as any).user);
 
     logger.info(`[SHIPPING] ✅ Cargo delivered for booking: ${bookingId}`);
 
@@ -1110,6 +1139,17 @@ router.post('/bookings/:bookingId/bill-of-lading/issue',
       ]);
 
       logger.info(`✅ [SHIPPING] Bill of Lading issued: ${blId} (${blType}), ledger tx ${chainTxId}`);
+      // Audit: this inline chain move never wrote an audit_trail row.
+      // Best-effort — a failed audit write must not fail the move.
+      await logAuditBestEffort(req, {
+        entityType: 'SHIPMENT',
+        entityId: shipmentId,
+        action: 'RECORD_BILL_OF_LADING',
+        newValue: 'LOADED',
+        blockchainTxId: chainTxId || undefined,
+        metadata: { blId, blNumber, bookingId, blockchainTxId: chainTxId || null },
+      }, `shipment ${shipmentId} bill-of-lading via booking ${bookingId}`);
+
 
       try {
         await dbService.run(

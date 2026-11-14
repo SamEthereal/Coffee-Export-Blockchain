@@ -5,6 +5,7 @@ import { DatabaseService } from '../services/databaseService';
 import { FabricService } from '../services/fabricService';
 import { ShipmentService } from '../services/shipmentService';
 import { logger } from '../utils/logger';
+import { logAuditBestEffort, logAuditBestEffortForUser } from '../utils/auditBestEffort';
 import notificationService from '../services/notificationService';
 import { resolveDocumentPath } from '../utils/fileUtils';
 
@@ -61,7 +62,7 @@ async function syncQualityDecision(
 async function decideQualityInspection(
   inspectionID: string,
   decision: 'APPROVED' | 'REJECTED',
-  opts: { certificateNumber?: string; grade?: string; remarks?: string; reason?: string; approvedBy?: string }
+  opts: { certificateNumber?: string; grade?: string; remarks?: string; reason?: string; approvedBy?: string; auditBy?: { username?: string; email?: string; organization?: string } }
 ): Promise<
   | { ok: true; chainSync: { blockchainSynced: boolean; blockchainWarning: string | null; blockchain_tx_id: string | null }; certificateNumber: string; grade: string }
   | { ok: false; status: number; error: { code: string; message: string } }
@@ -160,6 +161,22 @@ async function decideQualityInspection(
     actionUrl: '/portals/exporter?tab=quality',
     actionUrls: { ECTA: '/portals/ecta?tab=quality' },
   });
+  // Audit: approve/reject previously left no audit_trail row — the
+  // live routes inline the chain call via this shared core and no
+  // audited service method runs on this path. One row here covers all
+  // four approve/reject routes. Best-effort.
+  await logAuditBestEffortForUser(opts.auditBy, {
+    entityType: 'QUALITY_INSPECTION',
+    entityId: inspectionID,
+    action: decision,
+    oldValue: 'INSPECTED',
+    newValue: decision === 'APPROVED' ? 'APPROVED' : 'REJECTED',
+    reason: decision === 'APPROVED'
+      ? `Inspection approved (certificate ${certificateNumber}, ${grade})`
+      : `Inspection rejected: ${opts.reason || 'quality requirements not met'}`,
+    blockchainTxId: chainSync.blockchain_tx_id || undefined,
+    metadata: { certificateNumber, grade, reason: opts.reason || null, blockchainTxId: chainSync.blockchain_tx_id || null },
+  }, `inspection ${inspectionID} ${decision.toLowerCase()}`);
   return { ok: true, chainSync, certificateNumber, grade };
 }
 
@@ -531,6 +548,15 @@ router.post('/inspections',
             [inspectionID, exporterID, contractID || null, shipmentID || null, coffeeType,
              quantity, sampleSize || null, scheduledDate, 'PENDING', null]
           );
+          // Audit: this inline chain move never wrote an audit_trail row.
+          // Best-effort — a failed audit write must not fail the move.
+          await logAuditBestEffort(req, {
+            entityType: 'QUALITY_INSPECTION',
+            entityId: inspectionID,
+            action: 'REQUEST',
+            newValue: 'PENDING',
+            metadata: { shipmentID, recoveredFromLedger: true, blockchainTxId: null },
+          }, `inspection ${inspectionID} request (recovered from ledger)`);
           return res.json({
             success: true,
             data: { inspectionID, status: 'PENDING', blockchain_tx_id: null, blockchainSynced: true, recoveredFromLedger: true },
@@ -570,6 +596,17 @@ router.post('/inspections',
       );
 
       logger.info(`Quality inspection requested: ${inspectionID}`);
+      // Audit: this inline chain move never wrote an audit_trail row.
+      // Best-effort — a failed audit write must not fail the move.
+      await logAuditBestEffort(req, {
+        entityType: 'QUALITY_INSPECTION',
+        entityId: inspectionID,
+        action: 'REQUEST',
+        newValue: 'PENDING',
+        blockchainTxId: blockchain_tx_id || undefined,
+        metadata: { shipmentID, contractID, exporterID, blockchainTxId: blockchain_tx_id || null },
+      }, `inspection ${inspectionID} request`);
+
       // In-app notification (persisted feed + live WS broadcast).
       await notificationService.emitWorkflowEvent({
         type: 'inspection_required',
@@ -912,6 +949,18 @@ ${remarks || 'No additional remarks'}
       );
 
       logger.info(`Quality inspection performed: ${inspectionID}, Overall: ${resolvedOverall}, Grade: ${grade}`);
+      // Audit: this inline chain move never wrote an audit_trail row.
+      // Best-effort — a failed audit write must not fail the move.
+      await logAuditBestEffort(req, {
+        entityType: 'QUALITY_INSPECTION',
+        entityId: inspectionID,
+        action: 'PERFORM',
+        oldValue: 'PENDING',
+        newValue: 'INSPECTED',
+        blockchainTxId: blockchain_tx_id || undefined,
+        metadata: { grade, overall: resolvedOverall, moistureContent: moistureNum, blockchainTxId: blockchain_tx_id || null },
+      }, `inspection ${inspectionID} perform`);
+
       // In-app notification (persisted feed + live WS broadcast).
       await notificationService.emitWorkflowEvent({
         type: 'inspection_completed',
@@ -984,6 +1033,7 @@ router.post('/inspections/:inspectionID/approve',
       const decision = await decideQualityInspection(inspectionID, 'APPROVED', {
         certificateNumber: certificateNo,
         approvedBy,
+        auditBy: (req as any).user,
       });
       if (!decision.ok) {
         return res.status(decision.status).json({
@@ -1185,6 +1235,7 @@ router.put('/inspections/:inspectionID/approve',
         grade,
         remarks,
         approvedBy,
+        auditBy: (req as any).user,
       });
       if (!decision.ok) {
         return res.status(decision.status).json({
@@ -1265,6 +1316,7 @@ router.post('/inspections/:inspectionID/reject',
       // rejection never happened.)
       const decision = await decideQualityInspection(inspectionID, 'REJECTED', {
         reason,
+        auditBy: (req as any).user,
       });
       if (!decision.ok) {
         return res.status(decision.status).json({
@@ -1377,6 +1429,17 @@ router.post('/issue',
       );
 
       logger.info(`Quality certificate issued: ${certId} for inspection ${inspectionId}`);
+      // Audit: this inline chain move never wrote an audit_trail row.
+      // Best-effort — a failed audit write must not fail the move.
+      await logAuditBestEffort(req, {
+        entityType: 'QUALITY_INSPECTION',
+        entityId: inspectionId,
+        action: 'ISSUE_CERTIFICATE',
+        newValue: 'CERTIFICATE_ISSUED',
+        blockchainTxId: blockchain_tx_id || undefined,
+        metadata: { certificateId: certId, shipmentId, blockchainTxId: blockchain_tx_id || null },
+      }, `inspection ${inspectionId} issue-certificate ${certId}`);
+
 
       res.status(201).json({
         success: true,
@@ -1712,6 +1775,17 @@ router.post('/inspections/:inspectionID/issue-permit',
       );
 
       logger.info(`Export permit issued: ${permitNumber} for inspection ${inspectionID}, shipment ${inspection.shipment_id}, TX: ${blockchain_tx_id}`);
+      // Audit: this inline chain move never wrote an audit_trail row.
+      // Best-effort — a failed audit write must not fail the move.
+      await logAuditBestEffort(req, {
+        entityType: 'PERMIT',
+        entityId: permitId,
+        action: 'ISSUE',
+        newValue: 'ISSUED',
+        blockchainTxId: blockchain_tx_id || undefined,
+        metadata: { permitNumber, inspectionID, shipmentID: inspection.shipment_id, contractId, blockchainTxId: blockchain_tx_id || null },
+      }, `permit ${permitId} issue for inspection ${inspectionID}`);
+
       // In-app notification (persisted feed + live WS broadcast).
       await notificationService.emitWorkflowEvent({
         type: 'permit_issued',
@@ -2322,6 +2396,17 @@ router.post('/inspections/:inspectionID/lab-results',
       );
 
       logger.info(`Lab results recorded for inspection ${inspectionID}`);
+      // Audit: this inline chain move never wrote an audit_trail row.
+      // Best-effort — a failed audit write must not fail the move.
+      await logAuditBestEffort(req, {
+        entityType: 'QUALITY_INSPECTION',
+        entityId: inspectionID,
+        action: 'RECORD_LAB_RESULTS',
+        newValue: 'INSPECTED',
+        blockchainTxId: labTxId || undefined,
+        metadata: { moistureContent, defectCount, cupScore, blockchainTxId: labTxId || null },
+      }, `inspection ${inspectionID} lab-results`);
+
 
       res.json({
         success: true,
@@ -2376,6 +2461,7 @@ router.put('/inspections/:inspectionID/reject',
       // the core also sets passed=false and remarks.)
       const decision = await decideQualityInspection(inspectionID, 'REJECTED', {
         reason: rejectionReason,
+        auditBy: (req as any).user,
       });
       if (!decision.ok) {
         return res.status(decision.status).json({

@@ -4,6 +4,7 @@
 import express, { Request, Response } from 'express';
 import { FabricService } from '../services/fabricService';
 import { logger } from '../utils/logger';
+import { logAuditBestEffort } from '../utils/auditBestEffort';
 import notificationService from '../services/notificationService';
 import { validateRequest } from '../middleware/validation';
 import { authMiddleware, requireRole } from '../middleware/auth';
@@ -257,6 +258,17 @@ router.post('/messages',
 
       if (result.success) {
         logger.info(`✅ SWIFT message created: ${messageID} (${messageType})`);
+        // Audit: no SWIFT route wrote an audit_trail row — the
+        // messages live on the ledger only (no PG mirror).
+        // Best-effort — a failed audit write must not fail the move.
+        await logAuditBestEffort(req, {
+          entityType: 'SWIFT_MESSAGE',
+          entityId: messageID,
+          action: 'CREATE',
+          blockchainTxId: result.txId || undefined,
+          metadata: { messageType, swiftReference, linkedLcId, linkedPaymentId, blockchainTxId: result.txId || null },
+        }, `swift message ${messageID} create ${messageType}`);
+
         // In-app notification (persisted feed + live WS broadcast).
         // The linked LC / payment ids resolve the exporter audience
         // (notificationService.resolveExporterIdForEntity, 'swift'):
@@ -339,6 +351,17 @@ router.post('/messages/mt700',
 
       if (result.success) {
         logger.info(`✅ MT700 created for LC: ${lcID}`);
+        // Audit: no SWIFT route wrote an audit_trail row — the
+        // messages live on the ledger only (no PG mirror).
+        // Best-effort — a failed audit write must not fail the move.
+        await logAuditBestEffort(req, {
+          entityType: 'SWIFT_MESSAGE',
+          entityId: messageID,
+          action: 'CREATE',
+          blockchainTxId: result.txId || undefined,
+          metadata: { messageType: 'MT700', lcID, swiftReference, blockchainTxId: result.txId || null },
+        }, `swift message ${messageID} create MT700`);
+
         // In-app notification (persisted feed + live WS broadcast).
         // This route previously emitted nothing, so an MT700 created
         // here notified nobody; lcId resolves the exporter audience.
@@ -407,6 +430,17 @@ router.post('/messages/mt707',
 
       if (result.success) {
         logger.info(`✅ MT707 created for LC: ${lcID}`);
+        // Audit: no SWIFT route wrote an audit_trail row — the
+        // messages live on the ledger only (no PG mirror).
+        // Best-effort — a failed audit write must not fail the move.
+        await logAuditBestEffort(req, {
+          entityType: 'SWIFT_MESSAGE',
+          entityId: messageID,
+          action: 'CREATE',
+          blockchainTxId: result.txId || undefined,
+          metadata: { messageType: 'MT707', lcID, swiftReference, blockchainTxId: result.txId || null },
+        }, `swift message ${messageID} create MT707`);
+
         res.status(201).json({
           success: true,
           data: { messageID, lcID, messageType: 'MT707' },
@@ -462,6 +496,17 @@ router.post('/messages/mt103',
 
       if (result.success) {
         logger.info(`✅ MT103 created for payment: ${paymentID}`);
+        // Audit: no SWIFT route wrote an audit_trail row — the
+        // messages live on the ledger only (no PG mirror).
+        // Best-effort — a failed audit write must not fail the move.
+        await logAuditBestEffort(req, {
+          entityType: 'SWIFT_MESSAGE',
+          entityId: messageID,
+          action: 'CREATE',
+          blockchainTxId: result.txId || undefined,
+          metadata: { messageType: 'MT103', paymentID, swiftReference, blockchainTxId: result.txId || null },
+        }, `swift message ${messageID} create MT103`);
+
         res.status(201).json({
           success: true,
           data: { messageID, paymentID, messageType: 'MT103' },
@@ -513,6 +558,17 @@ router.post('/messages/mt750',
 
       if (result.success) {
         logger.info(`✅ MT750 created for LC: ${lcID}`);
+        // Audit: no SWIFT route wrote an audit_trail row — the
+        // messages live on the ledger only (no PG mirror).
+        // Best-effort — a failed audit write must not fail the move.
+        await logAuditBestEffort(req, {
+          entityType: 'SWIFT_MESSAGE',
+          entityId: messageID,
+          action: 'CREATE',
+          blockchainTxId: result.txId || undefined,
+          metadata: { messageType: 'MT750', lcID, swiftReference, blockchainTxId: result.txId || null },
+        }, `swift message ${messageID} create MT750`);
+
         res.status(201).json({
           success: true,
           data: { messageID, lcID, messageType: 'MT750' },
@@ -565,6 +621,17 @@ router.post('/messages/mt752',
 
       if (result.success) {
         logger.info(`✅ MT752 created for LC: ${lcID}`);
+        // Audit: no SWIFT route wrote an audit_trail row — the
+        // messages live on the ledger only (no PG mirror).
+        // Best-effort — a failed audit write must not fail the move.
+        await logAuditBestEffort(req, {
+          entityType: 'SWIFT_MESSAGE',
+          entityId: messageID,
+          action: 'CREATE',
+          blockchainTxId: result.txId || undefined,
+          metadata: { messageType: 'MT752', lcID, swiftReference, blockchainTxId: result.txId || null },
+        }, `swift message ${messageID} create MT752`);
+
         res.status(201).json({
           success: true,
           data: { messageID, lcID, messageType: 'MT752' },
@@ -615,6 +682,18 @@ router.post('/messages/:messageID/approve',
 
       if (result.success) {
         logger.info(`✅ SWIFT message approved: ${messageID}`);
+        // Audit: no SWIFT route wrote an audit_trail row — the
+        // messages live on the ledger only (no PG mirror).
+        // Best-effort — a failed audit write must not fail the move.
+        await logAuditBestEffort(req, {
+          entityType: 'SWIFT_MESSAGE',
+          entityId: messageID,
+          action: 'APPROVE',
+          newValue: 'APPROVED',
+          blockchainTxId: result.txId || undefined,
+          metadata: { approvedBy, blockchainTxId: result.txId || null },
+        }, `swift message ${messageID} approve`);
+
         res.json({
           success: true,
           data: { messageID, status: 'APPROVED' },
@@ -667,6 +746,17 @@ router.post('/messages/:messageID/documents',
 
       if (result.success) {
         logger.info(`✅ SWIFT documents attached to message: ${messageID}`);
+        // Audit: no SWIFT route wrote an audit_trail row — the
+        // messages live on the ledger only (no PG mirror).
+        // Best-effort — a failed audit write must not fail the move.
+        await logAuditBestEffort(req, {
+          entityType: 'SWIFT_MESSAGE',
+          entityId: messageID,
+          action: 'ADD_DOCUMENTS',
+          blockchainTxId: result.txId || undefined,
+          metadata: { attachedCount: documents.length, blockchainTxId: result.txId || null },
+        }, `swift message ${messageID} add-documents`);
+
         res.status(201).json({
           success: true,
           data: { messageID, attachedCount: documents.length },
@@ -752,6 +842,18 @@ router.post('/messages/:messageID/nbe-approve',
 
       if (result.success) {
         logger.info(`✅ NBE approved SWIFT message: ${messageID}`);
+        // Audit: no SWIFT route wrote an audit_trail row — the
+        // messages live on the ledger only (no PG mirror).
+        // Best-effort — a failed audit write must not fail the move.
+        await logAuditBestEffort(req, {
+          entityType: 'SWIFT_MESSAGE',
+          entityId: messageID,
+          action: 'NBE_APPROVE',
+          newValue: 'NBE_APPROVED',
+          blockchainTxId: result.txId || undefined,
+          metadata: { approvedBy, amlCheck, sanctionScreening, blockchainTxId: result.txId || null },
+        }, `swift message ${messageID} nbe-approve`);
+
         res.json({
           success: true,
           data: { 
@@ -803,6 +905,18 @@ router.post('/messages/:messageID/send',
 
       if (result.success) {
         logger.info(`✅ SWIFT message sent: ${messageID}`);
+        // Audit: no SWIFT route wrote an audit_trail row — the
+        // messages live on the ledger only (no PG mirror).
+        // Best-effort — a failed audit write must not fail the move.
+        await logAuditBestEffort(req, {
+          entityType: 'SWIFT_MESSAGE',
+          entityId: messageID,
+          action: 'SEND',
+          newValue: 'SENT',
+          blockchainTxId: result.txId || undefined,
+          metadata: { sentBy, blockchainTxId: result.txId || null },
+        }, `swift message ${messageID} send`);
+
         res.json({
           success: true,
           data: { messageID, status: 'SENT' },
@@ -848,6 +962,18 @@ router.post('/messages/:messageID/receive',
 
       if (result.success) {
         logger.info(`✅ SWIFT message received: ${messageID}`);
+        // Audit: no SWIFT route wrote an audit_trail row — the
+        // messages live on the ledger only (no PG mirror).
+        // Best-effort — a failed audit write must not fail the move.
+        await logAuditBestEffort(req, {
+          entityType: 'SWIFT_MESSAGE',
+          entityId: messageID,
+          action: 'RECEIVE',
+          newValue: 'RECEIVED',
+          blockchainTxId: result.txId || undefined,
+          metadata: { receivedBy, blockchainTxId: result.txId || null },
+        }, `swift message ${messageID} receive`);
+
         // In-app notification (persisted feed + live WS broadcast).
         // SWIFT rows are not mirrored in Postgres, so resolve the
         // exporter audience from the ledger message itself (its
@@ -919,6 +1045,18 @@ router.post('/messages/:messageID/process',
 
       if (result.success) {
         logger.info(`✅ SWIFT message processed: ${messageID}`);
+        // Audit: no SWIFT route wrote an audit_trail row — the
+        // messages live on the ledger only (no PG mirror).
+        // Best-effort — a failed audit write must not fail the move.
+        await logAuditBestEffort(req, {
+          entityType: 'SWIFT_MESSAGE',
+          entityId: messageID,
+          action: 'PROCESS',
+          newValue: 'PROCESSING',
+          blockchainTxId: result.txId || undefined,
+          metadata: { processedBy, blockchainTxId: result.txId || null },
+        }, `swift message ${messageID} process`);
+
         res.json({
           success: true,
           data: { messageID, status: 'PROCESSING' },
@@ -957,6 +1095,18 @@ router.post('/messages/:messageID/settle',
 
       if (result.success) {
         logger.info(`✅ SWIFT message settled: ${messageID}`);
+        // Audit: no SWIFT route wrote an audit_trail row — the
+        // messages live on the ledger only (no PG mirror).
+        // Best-effort — a failed audit write must not fail the move.
+        await logAuditBestEffort(req, {
+          entityType: 'SWIFT_MESSAGE',
+          entityId: messageID,
+          action: 'SETTLE',
+          newValue: 'SETTLED',
+          blockchainTxId: result.txId || undefined,
+          metadata: { blockchainTxId: result.txId || null },
+        }, `swift message ${messageID} settle`);
+
         res.json({
           success: true,
           data: { messageID, status: 'SETTLED' },
@@ -1003,6 +1153,18 @@ router.post('/messages/:messageID/reject',
 
       if (result.success) {
         logger.info(`✅ SWIFT message rejected: ${messageID}`);
+        // Audit: no SWIFT route wrote an audit_trail row — the
+        // messages live on the ledger only (no PG mirror).
+        // Best-effort — a failed audit write must not fail the move.
+        await logAuditBestEffort(req, {
+          entityType: 'SWIFT_MESSAGE',
+          entityId: messageID,
+          action: 'REJECT',
+          newValue: 'REJECTED',
+          blockchainTxId: result.txId || undefined,
+          metadata: { reason, errorCode, blockchainTxId: result.txId || null },
+        }, `swift message ${messageID} reject`);
+
         res.json({
           success: true,
           data: { messageID, status: 'REJECTED', reason },

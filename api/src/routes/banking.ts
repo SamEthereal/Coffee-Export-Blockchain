@@ -8,6 +8,7 @@ import { ForexService } from '../services/forexService';
 import { BlockchainSignatureService } from '../services/blockchainSignatureService';
 import { DatabaseService } from '../services/databaseService';
 import { logger } from '../utils/logger';
+import { logAuditBestEffort } from '../utils/auditBestEffort';
 import notificationService from '../services/notificationService';
 import { validateRequest } from '../middleware/validation';
 import { authMiddleware } from '../middleware/auth';
@@ -374,6 +375,18 @@ router.post('/lc/request',
              expiryDate, new Date().toISOString()]
           );
           logger.info(`✅ LC ${lcID} synced to PostgreSQL`);
+          // Audit: this chain move never wrote an audit_trail row — the
+          // audited lcService/forexService methods are never called here.
+          // Best-effort — a failed audit write must not fail the move.
+          await logAuditBestEffort(req, {
+            entityType: 'LC',
+            entityId: lcID,
+            action: 'REQUEST',
+            newValue: 'REQUESTED',
+            blockchainTxId: result.txId || undefined,
+            metadata: { contractID, exporterID: finalExporterID, amount: finalAmount, blockchainTxId: result.txId || null },
+          }, `lc ${lcID} request`);
+
         } catch (syncErr) {
           logger.warn(`⚠️  Failed to sync LC to PostgreSQL:`, syncErr);
           // Non-fatal - blockchain is source of truth
@@ -677,6 +690,19 @@ router.post('/lc/:lcID/approve',
             ['APPROVED', new Date().toISOString(), user.username, 'BanksMSP', lcID]
           );
           logger.info(`✅ LC ${lcID} approval synced to PostgreSQL`);
+          // Audit: this chain move never wrote an audit_trail row — the
+          // audited lcService/forexService methods are never called here.
+          // Best-effort — a failed audit write must not fail the move.
+          await logAuditBestEffort(req, {
+            entityType: 'LC',
+            entityId: lcID,
+            action: 'APPROVE',
+            oldValue: 'REQUESTED',
+            newValue: 'APPROVED',
+            blockchainTxId: result.txId || undefined,
+            metadata: { issuingBank, advisingBank, beneficiary, blockchainTxId: result.txId || null },
+          }, `lc ${lcID} approve`);
+
         } catch (syncErr) {
           logger.warn(`⚠️  Failed to sync LC approval to PostgreSQL:`, syncErr);
         }
@@ -752,6 +778,18 @@ router.post('/lc/:lcID/reject',
 
       if (result.success) {
         logger.info(`LC rejected: ${lcID} by ${user.org}`);
+        // Audit: this chain move never wrote an audit_trail row — the
+        // audited lcService/forexService methods are never called here.
+        // Best-effort — a failed audit write must not fail the move.
+        await logAuditBestEffort(req, {
+          entityType: 'LC',
+          entityId: lcID,
+          action: 'REJECT',
+          newValue: 'REJECTED',
+          blockchainTxId: result.txId || undefined,
+          metadata: { rejectionReason, blockchainTxId: result.txId || null },
+        }, `lc ${lcID} reject`);
+
         try {
           await dbService.run(
             `UPDATE letters_of_credit
@@ -843,6 +881,7 @@ router.post('/forex/:forexID/reject',
       // rejected-on-paper forex is a phantom.
       let blockchainSynced = false;
       let blockchainWarning: string | undefined;
+      let chainTxId: string | null = null;
       try {
         const chainResult = await fabricService.invokeChaincode('RejectForex', [
           forexID,
@@ -851,6 +890,7 @@ router.post('/forex/:forexID/reject',
         ], user.org);
         if (chainResult.success) {
           blockchainSynced = true;
+          chainTxId = chainResult.txId || null;
         } else {
           blockchainWarning = `Chaincode RejectForex did not reject ${forexID}: ${chainResult.error || 'unknown error'}`;
           logger.warn(`[BANKING] ${blockchainWarning}`);
@@ -886,6 +926,18 @@ router.post('/forex/:forexID/reject',
       }
 
       logger.info(`Forex request rejected: ${forexID} by ${user.org}. Reason: ${rejectionReason} (blockchainSynced: ${blockchainSynced})`);
+      // Audit: this chain move never wrote an audit_trail row — the
+      // audited lcService/forexService methods are never called here.
+      // Best-effort — a failed audit write must not fail the move.
+      await logAuditBestEffort(req, {
+        entityType: 'FOREX',
+        entityId: forexID,
+        action: 'REJECT',
+        newValue: 'REJECTED',
+        blockchainTxId: chainTxId || undefined,
+        metadata: { rejectionReason, blockchainSynced, blockchainTxId: chainTxId || null },
+      }, `forex ${forexID} reject`);
+
       res.json({
         success: true,
         data: {
@@ -1242,6 +1294,18 @@ router.post('/lc/standby/issue',
       ]);
 
       logger.info(`✅ [BANKING] Standby LC issued: ${standbyId} (tx ${chainResult.txId})`);
+      // Audit: this chain move never wrote an audit_trail row — the
+      // audited lcService/forexService methods are never called here.
+      // Best-effort — a failed audit write must not fail the move.
+      await logAuditBestEffort(req, {
+        entityType: 'LC',
+        entityId: standbyId,
+        action: 'ISSUE_STANDBY_LC',
+        newValue: 'ISSUED',
+        blockchainTxId: chainResult.txId || undefined,
+        metadata: { standbyLCNumber, blockchainTxId: chainResult.txId || null },
+      }, `standby lc ${standbyId} issue`);
+
 
       res.status(201).json({
         success: true,
@@ -1519,6 +1583,18 @@ router.post('/lc/:lcID/issue',
             ['ISSUED', new Date().toISOString(), user?.username || 'Bank', 'BanksMSP', terms, lcID]
           );
           logger.info(`✅ LC ${lcID} issuance synced to PostgreSQL`);
+          // Audit: this chain move never wrote an audit_trail row — the
+          // audited lcService/forexService methods are never called here.
+          // Best-effort — a failed audit write must not fail the move.
+          await logAuditBestEffort(req, {
+            entityType: 'LC',
+            entityId: lcID,
+            action: 'ISSUE',
+            newValue: 'ISSUED',
+            blockchainTxId: result.txId || undefined,
+            metadata: { terms, blockchainTxId: result.txId || null },
+          }, `lc ${lcID} issue`);
+
         } catch (syncErr) {
           logger.warn(`⚠️  Failed to sync LC issuance to PostgreSQL:`, syncErr);
         }
@@ -1871,6 +1947,17 @@ router.post('/lc/:lcID/amend',
 
       if (result.success) {
         logger.info(`✅ LC amended successfully: ${lcID}`);
+        // Audit: this chain move never wrote an audit_trail row — the
+        // audited lcService/forexService methods are never called here.
+        // Best-effort — a failed audit write must not fail the move.
+        await logAuditBestEffort(req, {
+          entityType: 'LC',
+          entityId: lcID,
+          action: 'AMEND',
+          blockchainTxId: result.txId || undefined,
+          metadata: { blockchainTxId: result.txId || null },
+        }, `lc ${lcID} amend`);
+
         res.json({
           success: true,
           data: result.data,
@@ -2665,6 +2752,18 @@ router.post('/payment/:paymentID/submit-documents',
 
       if (result.success) {
         logger.info(`Payment documents submitted: ${paymentID}`);
+        // Audit: this chain move never wrote an audit_trail row — the
+        // audited lcService/forexService methods are never called here.
+        // Best-effort — a failed audit write must not fail the move.
+        await logAuditBestEffort(req, {
+          entityType: 'PAYMENT',
+          entityId: paymentID,
+          action: 'SUBMIT_DOCUMENTS',
+          newValue: 'DOCUMENTS_SUBMITTED',
+          blockchainTxId: result.txId || undefined,
+          metadata: { blockchainTxId: result.txId || null },
+        }, `payment ${paymentID} submit-documents`);
+
         res.json({
           success: true,
           data: result.data,
@@ -2721,6 +2820,18 @@ router.post('/payment/:paymentID/verify-documents',
 
       if (result.success) {
         logger.info(`Payment documents verified: ${paymentID} by ${verifiedBy}`);
+        // Audit: this chain move never wrote an audit_trail row — the
+        // audited lcService/forexService methods are never called here.
+        // Best-effort — a failed audit write must not fail the move.
+        await logAuditBestEffort(req, {
+          entityType: 'PAYMENT',
+          entityId: paymentID,
+          action: 'VERIFY_DOCUMENTS',
+          newValue: 'VERIFIED',
+          blockchainTxId: result.txId || undefined,
+          metadata: { verifiedBy, blockchainTxId: result.txId || null },
+        }, `payment ${paymentID} verify-documents`);
+
         res.json({
           success: true,
           data: result.data,
@@ -2849,6 +2960,17 @@ router.post('/payment/initiate',
 
       if (result.success) {
         logger.info(`✅ Payment initiated: ${paymentID} (method: ${finalPaymentMethod}) with auto-mapped data`);
+        // Audit: this chain move never wrote an audit_trail row — the
+        // audited lcService/forexService methods are never called here.
+        // Best-effort — a failed audit write must not fail the move.
+        await logAuditBestEffort(req, {
+          entityType: 'PAYMENT',
+          entityId: paymentID,
+          action: 'INITIATE',
+          blockchainTxId: result.txId || undefined,
+          metadata: { contractID, exporterID, amount, blockchainTxId: result.txId || null },
+        }, `payment ${paymentID} initiate`);
+
         res.status(201).json({
           success: true,
           data: result.data,
@@ -2909,6 +3031,17 @@ router.post('/payment/:paymentID/release-documents',
 
       if (result.success) {
         logger.info(`Documents released to buyer for payment: ${paymentID}`);
+        // Audit: this chain move never wrote an audit_trail row — the
+        // audited lcService/forexService methods are never called here.
+        // Best-effort — a failed audit write must not fail the move.
+        await logAuditBestEffort(req, {
+          entityType: 'PAYMENT',
+          entityId: paymentID,
+          action: 'RELEASE_DOCUMENTS',
+          blockchainTxId: result.txId || undefined,
+          metadata: { blockchainTxId: result.txId || null },
+        }, `payment ${paymentID} release-documents`);
+
         res.json({
           success: true,
           data: result.data,
@@ -2968,6 +3101,17 @@ router.post('/payment/:paymentID/receive-advance',
 
       if (result.success) {
         logger.info(`Advance payment received: ${paymentID} (${advancePercentage}%)`);
+        // Audit: this chain move never wrote an audit_trail row — the
+        // audited lcService/forexService methods are never called here.
+        // Best-effort — a failed audit write must not fail the move.
+        await logAuditBestEffort(req, {
+          entityType: 'PAYMENT',
+          entityId: paymentID,
+          action: 'RECEIVE_ADVANCE_PAYMENT',
+          blockchainTxId: result.txId || undefined,
+          metadata: { advancePercentage, blockchainTxId: result.txId || null },
+        }, `payment ${paymentID} advance`);
+
         res.json({
           success: true,
           data: result.data,
@@ -3024,6 +3168,17 @@ router.post('/payment/:paymentID/receive-balance',
 
       if (result.success) {
         logger.info(`Balance payment received: ${paymentID}`);
+        // Audit: this chain move never wrote an audit_trail row — the
+        // audited lcService/forexService methods are never called here.
+        // Best-effort — a failed audit write must not fail the move.
+        await logAuditBestEffort(req, {
+          entityType: 'PAYMENT',
+          entityId: paymentID,
+          action: 'RECEIVE_BALANCE_PAYMENT',
+          blockchainTxId: result.txId || undefined,
+          metadata: { blockchainTxId: result.txId || null },
+        }, `payment ${paymentID} balance`);
+
         res.json({
           success: true,
           data: result.data,
@@ -3076,6 +3231,18 @@ router.put('/payment/:paymentID/status',
 
       if (result.success) {
         logger.info(`Payment status updated: ${paymentID} → ${status}`);
+        // Audit: this chain move never wrote an audit_trail row — the
+        // audited lcService/forexService methods are never called here.
+        // Best-effort — a failed audit write must not fail the move.
+        await logAuditBestEffort(req, {
+          entityType: 'PAYMENT',
+          entityId: paymentID,
+          action: 'UPDATE_STATUS',
+          newValue: status,
+          blockchainTxId: result.txId || undefined,
+          metadata: { status, blockchainTxId: result.txId || null },
+        }, `payment ${paymentID} status ${status}`);
+
         res.json({
           success: true,
           data: result.data,
@@ -3275,6 +3442,18 @@ router.post('/payment/:paymentID/settle',
 
       if (result.success) {
         logger.info(`Payment settled: ${paymentID} (SWIFT: ${swiftReference})`);
+        // Audit: this chain move never wrote an audit_trail row — the
+        // audited lcService/forexService methods are never called here.
+        // Best-effort — a failed audit write must not fail the move.
+        await logAuditBestEffort(req, {
+          entityType: 'PAYMENT',
+          entityId: paymentID,
+          action: 'SETTLE',
+          newValue: 'SETTLED',
+          blockchainTxId: result.txId || undefined,
+          metadata: { exchangeRate, retentionRate, payingBank, swiftReference, nbeApprovalRef, blockchainTxId: result.txId || null },
+        }, `payment ${paymentID} settle`);
+
         res.json({
           success: true,
           data: result.data,
@@ -3347,6 +3526,17 @@ router.post('/cad',
 
       if (result.success) {
         logger.info(`✅ Documentary collection registered: ${collectionID} (${paymentTerm})`);
+        // Audit: this chain move never wrote an audit_trail row — the
+        // audited lcService/forexService methods are never called here.
+        // Best-effort — a failed audit write must not fail the move.
+        await logAuditBestEffort(req, {
+          entityType: 'CAD',
+          entityId: collectionID,
+          action: 'REGISTER',
+          blockchainTxId: result.txId || undefined,
+          metadata: { paymentTerm, blockchainTxId: result.txId || null },
+        }, `cad ${collectionID} register`);
+
         res.status(201).json({
           success: true,
           data: result.data,
@@ -3402,6 +3592,18 @@ router.put('/cad/:collectionID/status',
 
       if (result.success) {
         logger.info(`CAD status updated: ${collectionID} → ${status}`);
+        // Audit: this chain move never wrote an audit_trail row — the
+        // audited lcService/forexService methods are never called here.
+        // Best-effort — a failed audit write must not fail the move.
+        await logAuditBestEffort(req, {
+          entityType: 'CAD',
+          entityId: collectionID,
+          action: 'UPDATE_STATUS',
+          newValue: status,
+          blockchainTxId: result.txId || undefined,
+          metadata: { status, notes, blockchainTxId: result.txId || null },
+        }, `cad ${collectionID} status ${status}`);
+
         res.json({
           success: true,
           data: result.data,
@@ -3457,6 +3659,17 @@ router.post('/cad/:collectionID/payment',
 
       if (result.success) {
         logger.info(`✅ CAD payment recorded: ${collectionID} (${amountReceived})`);
+        // Audit: this chain move never wrote an audit_trail row — the
+        // audited lcService/forexService methods are never called here.
+        // Best-effort — a failed audit write must not fail the move.
+        await logAuditBestEffort(req, {
+          entityType: 'CAD',
+          entityId: collectionID,
+          action: 'RECORD_PAYMENT',
+          blockchainTxId: result.txId || undefined,
+          metadata: { amountReceived, paymentReference, blockchainTxId: result.txId || null },
+        }, `cad ${collectionID} payment`);
+
         res.json({
           success: true,
           data: result.data,
@@ -3635,6 +3848,17 @@ router.post('/consignment/register',
 
       if (result.success) {
         logger.info(`✅ Consignment permit issued: ${consignmentID} (${commodityType})`);
+        // Audit: this chain move never wrote an audit_trail row — the
+        // audited lcService/forexService methods are never called here.
+        // Best-effort — a failed audit write must not fail the move.
+        await logAuditBestEffort(req, {
+          entityType: 'CONSIGNMENT',
+          entityId: consignmentID,
+          action: 'ISSUE_PERMIT',
+          blockchainTxId: result.txId || undefined,
+          metadata: { commodityType, blockchainTxId: result.txId || null },
+        }, `consignment ${consignmentID} register`);
+
         res.status(201).json({
           success: true,
           data: result.data,
@@ -3691,6 +3915,18 @@ router.put('/consignment/:consignmentID/status',
 
       if (result.success) {
         logger.info(`Consignment status updated: ${consignmentID} → ${status}`);
+        // Audit: this chain move never wrote an audit_trail row — the
+        // audited lcService/forexService methods are never called here.
+        // Best-effort — a failed audit write must not fail the move.
+        await logAuditBestEffort(req, {
+          entityType: 'CONSIGNMENT',
+          entityId: consignmentID,
+          action: 'UPDATE_STATUS',
+          newValue: status,
+          blockchainTxId: result.txId || undefined,
+          metadata: { status, notes, blockchainTxId: result.txId || null },
+        }, `consignment ${consignmentID} status ${status}`);
+
         res.json({
           success: true,
           data: result.data,
@@ -3746,6 +3982,17 @@ router.post('/consignment/:consignmentID/payment',
 
       if (result.success) {
         logger.info(`✅ Consignment payment recorded: ${consignmentID} (${amountReceived})`);
+        // Audit: this chain move never wrote an audit_trail row — the
+        // audited lcService/forexService methods are never called here.
+        // Best-effort — a failed audit write must not fail the move.
+        await logAuditBestEffort(req, {
+          entityType: 'CONSIGNMENT',
+          entityId: consignmentID,
+          action: 'RECORD_PAYMENT',
+          blockchainTxId: result.txId || undefined,
+          metadata: { amountReceived, paymentReference, blockchainTxId: result.txId || null },
+        }, `consignment ${consignmentID} payment`);
+
         res.json({
           success: true,
           data: result.data,
@@ -4301,6 +4548,18 @@ router.post('/lc/:lcID/release-payment',
             [lcID]
           );
           logger.info(`✅ PostgreSQL updated: LC ${lcID} status set to PAYMENT_RELEASED`);
+          // Audit: this chain move never wrote an audit_trail row — the
+          // audited lcService/forexService methods are never called here.
+          // Best-effort — a failed audit write must not fail the move.
+          await logAuditBestEffort(req, {
+            entityType: 'LC',
+            entityId: lcID,
+            action: 'RELEASE_PAYMENT',
+            newValue: 'PAYMENT_RELEASED',
+            blockchainTxId: result.txId || undefined,
+            metadata: { amount, currency, examinationTxId, blockchainTxId: result.txId || null },
+          }, `lc ${lcID} release-payment`);
+
         } catch (pgErr) {
           pgMirrorFailed = true;
           logger.error(`Payment release landed on-chain but the PG mirror failed for LC ${lcID}:`, pgErr);
@@ -4399,6 +4658,17 @@ router.post('/lc/:lcId/discrepancy/report', authMiddleware, requireRole(['BANKS'
     }
 
     logger.info(`[BANKING] ✅ Discrepancy reported: ${discrepancyId}`);
+    // Audit: this chain move never wrote an audit_trail row — the
+    // audited lcService/forexService methods are never called here.
+    // Best-effort — a failed audit write must not fail the move.
+    await logAuditBestEffort(req, {
+      entityType: 'LC_DISCREPANCY',
+      entityId: discrepancyId,
+      action: 'REPORT',
+      blockchainTxId: result.transactionId || undefined,
+      metadata: { lcId, blockchainTxId: result.transactionId || null },
+    }, `lc ${lcId} discrepancy ${discrepancyId} report`);
+
 
     res.status(201).json({
       success: true,
@@ -4509,6 +4779,17 @@ router.post('/lc/:lcId/discrepancy/:discrepancyId/resolve', authMiddleware, requ
     }
 
     logger.info(`[BANKING] ✅ Discrepancy resolved: ${discrepancyId}`);
+    // Audit: this chain move never wrote an audit_trail row — the
+    // audited lcService/forexService methods are never called here.
+    // Best-effort — a failed audit write must not fail the move.
+    await logAuditBestEffort(req, {
+      entityType: 'LC_DISCREPANCY',
+      entityId: discrepancyId,
+      action: 'RESOLVE',
+      blockchainTxId: result.transactionId || undefined,
+      metadata: { lcId, blockchainTxId: result.transactionId || null },
+    }, `lc ${lcId} discrepancy ${discrepancyId} resolve`);
+
 
     res.json({
       success: true,
@@ -4585,6 +4866,17 @@ router.post('/lc/:lcId/discrepancy/:discrepancyId/waive', authMiddleware, requir
     }
 
     logger.info(`[BANKING] ✅ Discrepancy waived: ${discrepancyId}`);
+    // Audit: this chain move never wrote an audit_trail row — the
+    // audited lcService/forexService methods are never called here.
+    // Best-effort — a failed audit write must not fail the move.
+    await logAuditBestEffort(req, {
+      entityType: 'LC_DISCREPANCY',
+      entityId: discrepancyId,
+      action: 'WAIVE',
+      blockchainTxId: result.transactionId || undefined,
+      metadata: { lcId, blockchainTxId: result.transactionId || null },
+    }, `lc ${lcId} discrepancy ${discrepancyId} waive`);
+
 
     res.json({
       success: true,
@@ -4627,6 +4919,17 @@ router.post('/lc/:lcId/documents/reject', authMiddleware, requireRole(['BANKS', 
     }
 
     logger.info(`[BANKING] ✅ LC documents rejected: ${lcId}`);
+    // Audit: this chain move never wrote an audit_trail row — the
+    // audited lcService/forexService methods are never called here.
+    // Best-effort — a failed audit write must not fail the move.
+    await logAuditBestEffort(req, {
+      entityType: 'LC',
+      entityId: lcId,
+      action: 'REJECT_DOCUMENTS',
+      blockchainTxId: result.transactionId || undefined,
+      metadata: { blockchainTxId: result.transactionId || null },
+    }, `lc ${lcId} reject-documents`);
+
     try {
       await dbService.run(
         `UPDATE letters_of_credit

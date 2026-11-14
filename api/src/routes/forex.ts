@@ -10,6 +10,7 @@ import { requireRole } from '../middleware/rbac';
 import { body, param } from 'express-validator';
 import { validateRequest } from '../middleware/validation';
 import { logger } from '../utils/logger';
+import { logAuditBestEffort } from '../utils/auditBestEffort';
 import notificationService from '../services/notificationService';
 import { dedupeById, isValidForex } from '../utils/dataFilters';
 import { BlockchainSignatureService } from '../services/blockchainSignatureService';
@@ -365,6 +366,17 @@ router.post('/retention-policy', authMiddleware, requireRole(['NBE', 'NBE_ADMIN'
 
     if (result.success) {
       logger.info(`✅ Retention policy set: ${policyID} - ${commodityType} @ ${retentionRate}%`);
+      // Audit: this inline chain move never called the audited
+      // forexService method, so it left no audit_trail row.
+      // Best-effort — a failed audit write must not fail the move.
+      await logAuditBestEffort(req, {
+        entityType: 'FOREX',
+        entityId: policyID,
+        action: 'SET_RETENTION_POLICY',
+        blockchainTxId: result.txId || undefined,
+        metadata: { commodityType, retentionRate, blockchainTxId: result.txId || null },
+      }, `retention policy ${policyID} set`);
+
       // The active-policy read is cached (60s) — a newly set policy
       // must be visible immediately.
       CacheInvalidation.retentionPolicy(String(commodityType).toUpperCase());
@@ -434,6 +446,17 @@ router.post('/exchange-rate', authMiddleware, requireRole(['NBE', 'NBE_ADMIN', '
 
     if (result.success) {
       logger.info(`✅ Exchange rate set: ${rateID} - ${currency} @ ${buyingRate}/${sellingRate}`);
+      // Audit: this inline chain move never called the audited
+      // forexService method, so it left no audit_trail row.
+      // Best-effort — a failed audit write must not fail the move.
+      await logAuditBestEffort(req, {
+        entityType: 'EXCHANGE_RATE',
+        entityId: rateID,
+        action: 'SET_EXCHANGE_RATE',
+        blockchainTxId: result.txId || undefined,
+        metadata: { currency, buyingRate, sellingRate, blockchainTxId: result.txId || null },
+      }, `exchange rate ${rateID} set`);
+
       // The active-rate read is cached (60s) — invalidate it so the
       // newly set rate is visible immediately.
       CacheInvalidation.forexRate(String(currency).toUpperCase());
@@ -590,6 +613,17 @@ router.post('/rates', authMiddleware, requireRole(['NBE', 'NBE_ADMIN', 'NBE OFFI
     if (result.success) {
       const midRate = (parseFloat(buyingRate) + parseFloat(sellingRate)) / 2;
       logger.info(`✅ Exchange rate set: ${currency} = ${buyingRate}/${sellingRate} ETB by ${setBy}`);
+      // Audit: this inline chain move never called the audited
+      // forexService method, so it left no audit_trail row.
+      // Best-effort — a failed audit write must not fail the move.
+      await logAuditBestEffort(req, {
+        entityType: 'EXCHANGE_RATE',
+        entityId: rateId,
+        action: 'SET_EXCHANGE_RATE',
+        blockchainTxId: result.txId || undefined,
+        metadata: { currency, buyingRate, sellingRate, setBy, blockchainTxId: result.txId || null },
+      }, `exchange rate ${rateId} set`);
+
       // The active-rate read is cached (60s) — a newly set rate must
       // be visible immediately.
       CacheInvalidation.forexRate(String(currency).toUpperCase());
@@ -746,6 +780,18 @@ router.post('/request', authMiddleware, requireRole(['BANKS', 'BANK_ADMIN', 'BAN
               [forexId, contractId, requestLcId || null, finalExporterId, finalAmount, finalCurrency, 'REQUESTED', result.txId]
             );
             logger.info(`✅ Stored blockchain metadata for forex ${forexId}: txId=${result.txId}`);
+            // Audit: this inline chain move never called the audited
+            // forexService method, so it left no audit_trail row.
+            // Best-effort — a failed audit write must not fail the move.
+            await logAuditBestEffort(req, {
+              entityType: 'FOREX',
+              entityId: forexId,
+              action: 'REQUEST',
+              newValue: 'REQUESTED',
+              blockchainTxId: result.txId || undefined,
+              metadata: { contractId, exporterId: finalExporterId, amount: finalAmount, currency: finalCurrency, blockchainTxId: result.txId || null },
+            }, `forex ${forexId} request`);
+
           } catch (dbError) {
             logger.error(`Failed to store blockchain metadata for ${forexId}:`, dbError);
           }
@@ -910,6 +956,19 @@ router.post('/:forexId/confirm', authMiddleware, requireRole(['NBE', 'NBE_ADMIN'
       } catch (pgErr) {
         logger.warn('[FOREX] Could not update PostgreSQL, but blockchain succeeded:', pgErr);
       }
+      // Audit: this inline chain move never called the audited
+      // forexService method, so it left no audit_trail row.
+      // Best-effort — a failed audit write must not fail the move.
+      await logAuditBestEffort(req, {
+        entityType: 'FOREX',
+        entityId: forexId,
+        action: 'CONFIRM',
+        oldValue: 'REQUESTED',
+        newValue: 'CONFIRMED',
+        blockchainTxId: result.txId || undefined,
+        metadata: { confirmedBy, mirrorUpdated, blockchainTxId: result.txId || null },
+      }, `forex ${forexId} confirm`);
+
 
       return res.json({
         success: true,
@@ -1257,6 +1316,16 @@ router.post('/utilize', authMiddleware, requireRole(['BANKS', 'BANK_ADMIN', 'BAN
         logger.error('Failed to record blockchain signature:', sigError);
       }
       
+      // Audit: this inline chain move never called the audited
+      // forexService method, so it left no audit_trail row.
+      // Best-effort — a failed audit write must not fail the move.
+      await logAuditBestEffort(req, {
+        entityType: 'FOREX',
+        entityId: forexId,
+        action: 'UTILIZE',
+        blockchainTxId: result.txId || undefined,
+        metadata: { utilizedAmount, blockchainTxId: result.txId || null },
+      }, `forex ${forexId} utilize`);
       res.json({ success: true, txId: result.txId, timestamp: new Date().toISOString() });
     } else {
       res.status(400).json({ success: false, error: { code: 'UTILIZE_FAILED', message: result.error }, timestamp: new Date().toISOString() });
