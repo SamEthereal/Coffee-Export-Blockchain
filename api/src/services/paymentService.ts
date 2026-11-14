@@ -340,6 +340,35 @@ export class PaymentService {
         conversionData.conversionDate
       );
 
+      // N7 (F11 pattern, mirroring releasePayment): keep the
+      // ConvertRetention txId. The old code dropped it here, so the
+      // convert response carried no txId, no blockchain_signatures row
+      // existed for the conversion, and the chain tx had to be recovered
+      // via a block scan. submitTransaction returns txId (and
+      // transactionId as an alias); extract defensively, the same way
+      // the audit metadata below does.
+      const convertTxId =
+        typeof blockchainResult === 'string'
+          ? JSON.parse(blockchainResult).transactionId || null
+          : (blockchainResult as any).txId || (blockchainResult as any).transactionId || null;
+
+      // N7: signature row for the ConvertRetention call so the signer
+      // and tx are findable without a block scan, exactly as
+      // releasePayment records SettlePayment / RecordRetentionRelease.
+      // Best-effort (recordChainSignature catches internally): the
+      // ledger write already committed, so a failed PG write must not
+      // turn the conversion into a 500.
+      if (convertTxId) {
+        await this.recordChainSignature({
+          paymentID: conversionData.paymentID,
+          txId: convertTxId,
+          chaincodeFunction: 'ConvertRetention',
+          signerOrg: 'NBEMSP',
+          signerUsername: conversionData.convertedBy,
+          actionType: 'RETENTION_CONVERSION',
+        });
+      }
+
       // Update database — retention machine only (status stays VERIFIED;
       // the settlement machine does not move on a retention conversion).
       await this.dbService.run(
@@ -372,12 +401,16 @@ export class PaymentService {
           exchangeRate: conversionData.exchangeRate,
           amountBirr: conversionData.amountBirr,
           retentionUSD: payment.retention_amount,
-          blockchainTxId: typeof blockchainResult === 'string' ? JSON.parse(blockchainResult).transactionId : blockchainResult.txId
+          blockchainTxId: convertTxId
         }
       });
 
       logger.info(`[PaymentService] ✅ Retention converted: ${payment.retention_amount} USD → ${conversionData.amountBirr} Birr @ ${conversionData.exchangeRate}`);
 
+      // N7: return the chain txId(s) — the convert response used to
+      // carry none, so the chain tx had to be recovered via a block
+      // scan. txId/blockchainTxId is the ConvertRetention tx, mirroring
+      // the release response (releasePayment returns the same pair).
       return {
         success: true,
         paymentID: conversionData.paymentID,
@@ -385,7 +418,9 @@ export class PaymentService {
         retentionStatus: 'RETENTION_CONVERTED',
         retentionUSD: payment.retention_amount,
         amountBirr: conversionData.amountBirr,
-        exchangeRate: conversionData.exchangeRate
+        exchangeRate: conversionData.exchangeRate,
+        txId: convertTxId,
+        blockchainTxId: convertTxId
       };
 
     } catch (error) {
@@ -462,12 +497,14 @@ export class PaymentService {
   }
 
   /**
-   * N7 (F11 pattern): record a release chain call where it can be found
+   * N7 (F11 pattern): record a payment chain call where it can be found
    * without a block scan — a blockchain_signatures row (signer + tx).
-   * Best-effort: the ledger write already committed, so a failed PG
-   * write must not turn the release into a 500.
+   * Used by releasePayment (SettlePayment / RecordRetentionRelease) and
+   * convertRetention (ConvertRetention). Best-effort: the ledger write
+   * already committed, so a failed PG write must not turn the operation
+   * into a 500.
    */
-  private async recordReleaseSignature(params: {
+  private async recordChainSignature(params: {
     paymentID: string;
     txId: string | null;
     chaincodeFunction: string;
@@ -496,7 +533,7 @@ export class PaymentService {
         ]
       );
     } catch (sigErr: any) {
-      logger.warn(`[PaymentService] Failed to store release signature for ${params.paymentID} (${params.chaincodeFunction}): ${sigErr?.message}`);
+      logger.warn(`[PaymentService] Failed to store chain signature for ${params.paymentID} (${params.chaincodeFunction}): ${sigErr?.message}`);
     }
   }
 
@@ -645,7 +682,7 @@ export class PaymentService {
       // signer and tx are findable without a block scan. Best-effort:
       // the ledger writes already committed.
       if (settleTxId) {
-        await this.recordReleaseSignature({
+        await this.recordChainSignature({
           paymentID: releaseData.paymentID,
           txId: settleTxId,
           chaincodeFunction: 'SettlePayment',
@@ -655,7 +692,7 @@ export class PaymentService {
         });
       }
       if (releaseTxId) {
-        await this.recordReleaseSignature({
+        await this.recordChainSignature({
           paymentID: releaseData.paymentID,
           txId: releaseTxId,
           chaincodeFunction: 'RecordRetentionRelease',

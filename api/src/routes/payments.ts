@@ -1320,6 +1320,10 @@ router.post('/:paymentID/convert-retention',
         success: true,
         message: 'Retention converted successfully',
         data: result,
+        // N7: top-level txId, mirroring the release route — the convert
+        // response used to carry no txId at all (the NBE portal's
+        // "Blockchain TX" suffix was always empty for conversions).
+        txId: (result as any).txId || null,
         timestamp: new Date().toISOString(),
       });
     } catch (error: any) {
