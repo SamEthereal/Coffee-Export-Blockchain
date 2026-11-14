@@ -367,13 +367,18 @@ router.get('/', authMiddleware, async (req: AuthenticatedRequest, res: Response)
 
     // ---- Exporter applications ---------------------------------------
     {
-      const where = `(company_name ILIKE $2 OR license_number ILIKE $2 OR contact_person ILIKE $2 OR email ILIKE $2 OR status ILIKE $2 OR CAST(id AS TEXT) ILIKE $2)`;
+      // application_id (APP-...) is the public identifier users see
+      // on the application and the ECTA tab; the old WHERE matched
+      // only company/license/contact/email/status/numeric id, so an
+      // exact APP-... search returned nothing (found live 2026-11-14:
+      // APP-1794678167628-F1EAXM → empty groups, row id 203 exists).
+      const where = `(company_name ILIKE $2 OR license_number ILIKE $2 OR contact_person ILIKE $2 OR email ILIKE $2 OR status ILIKE $2 OR CAST(id AS TEXT) ILIKE $2 OR application_id ILIKE $2)`;
       // Organisation roles see all applications (ECTA reviews them);
       // exporters / applicants see only the application on their token.
       const scope = isExporter || role === 'APPLICANT' ? ` AND id = $4` : '';
       const rows = await db.all(
-        `SELECT id, company_name, license_number, contact_person, email, status, created_at
-         FROM exporter_applications WHERE ${where}${scope} ORDER BY CASE WHEN CAST(id AS TEXT) = $1 THEN 0 WHEN company_name ILIKE $3 THEN 1 ELSE 2 END, created_at DESC NULLS LAST LIMIT ${PER_GROUP_LIMIT}`,
+        `SELECT id, application_id, company_name, license_number, contact_person, email, status, created_at
+         FROM exporter_applications WHERE ${where}${scope} ORDER BY CASE WHEN application_id = $1 THEN 0 WHEN CAST(id AS TEXT) = $1 THEN 0 WHEN company_name ILIKE $3 THEN 1 ELSE 2 END, created_at DESC NULLS LAST LIMIT ${PER_GROUP_LIMIT}`,
         [q, contains, prefix, ...(isExporter || role === 'APPLICANT' ? [applicationIdNum] : [])],
       );
       if (rows.length > 0) {
@@ -381,9 +386,10 @@ router.get('/', authMiddleware, async (req: AuthenticatedRequest, res: Response)
           type: 'application',
           label: 'Exporter Applications',
           items: rows.map((r: any) => ({
-            id: String(r.id),
+            id: String(r.application_id || r.id),
             title: String(r.company_name || `Application ${r.id}`),
             subtitle: joinParts([
+              r.application_id ? String(r.application_id) : null,
               r.license_number ? `Licence ${r.license_number}` : null,
               r.contact_person ? String(r.contact_person) : null,
             ]),

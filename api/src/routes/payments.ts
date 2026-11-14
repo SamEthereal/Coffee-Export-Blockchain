@@ -1144,6 +1144,40 @@ router.post('/:paymentID/settle',
           txId: result.txId || null,
           signerUsername: (req as any).user?.username || 'bank_admin',
         });
+        // Step 15: the settle route also never left an audit_trail row
+        // (release/convert/initiate all log theirs), so a settled
+        // payment had no audit row carrying the SettlePayment txId.
+        // Best-effort like the signature above — auditService.log()
+        // never throws, so a failed audit write cannot turn a
+        // committed settlement into a 500.
+        try {
+          const { AuditService } = await import('../services/auditService');
+          await AuditService.getInstance().log({
+            entityType: 'PAYMENT',
+            entityId: paymentID,
+            action: 'SETTLE',
+            performedBy: (req as any).user?.username || 'bank_admin',
+            organization: (req as any).user?.organization || 'BANKS',
+            performedByOrg: (req as any).user?.organization || 'BANKS',
+            oldValue: currentStatus,
+            newValue: 'SETTLED',
+            reason: `Payment settled (${currentStatus} → SETTLED)`,
+            // Shared audit contract: top-level operation txId — the
+            // SettlePayment tx (metadata already carries it).
+            blockchainTxId: result.txId || undefined,
+            metadata: {
+              status: 'SETTLED',
+              exchangeRate,
+              retentionRate,
+              payingBank,
+              payingBankBIC,
+              swiftReference,
+              blockchainTxId: result.txId || null,
+            },
+          });
+        } catch (auditErr) {
+          logger.warn(`[PAYMENT] Could not write settle audit row for ${paymentID}:`, auditErr);
+        }
         // In-app notification (persisted feed + live WS broadcast).
         await notificationService.emitWorkflowEvent({
           type: 'payment_settled',
@@ -1674,16 +1708,26 @@ router.get('/pending-release', authMiddleware, async (req: Request, res: Respons
     // settled — the normal NBE order (settle, then release the 60%)
     // made the payment invisible in the Payment Release tab. A payment
     // is pending release while its ledger status is VERIFIED, SETTLED
-    // or CONFIRMED and its PG retention machine has not recorded the
-    // release yet. The ledger carries no release flag, so already
-    // released payments are excluded via the PG retention_status
-    // mirror; if that lookup fails, fall back to the ledger-only
-    // filter rather than 500ing the tab.
+    // or CONFIRMED and its retention has not been released yet.
+    //
+    // Released payments are excluded two ways, because either source
+    // alone misses a state:
+    //  - PG retention_status IN ('RELEASED', 'RETENTION_CONVERTED'):
+    //    convert overwrites RELEASED with RETENTION_CONVERTED
+    //    (paymentService.convertRetention), so the old '= RELEASED'
+    //    check let every released+converted payment back into the
+    //    list (found live 2026-11-14: PAY_LC-CONT-E2E-FULL-20261114,
+    //    CONFIRMED + RETENTION_CONVERTED, still listed at index 3).
+    //  - the ledger retentionReleased flag on the row itself: the
+    //    source of truth (releasePayment's own guard reads it), so a
+    //    PG-mirror lag cannot re-list a released payment either.
+    // If the PG lookup fails, fall back to the ledger-only filter
+    // rather than 500ing the tab.
     const releasableStatuses = new Set(['VERIFIED', 'SETTLED', 'CONFIRMED']);
     let releasedIds = new Set<string>();
     try {
       const releasedRows: any[] = await postgresDb.all(
-        `SELECT payment_id FROM payments WHERE retention_status = 'RELEASED'`
+        `SELECT payment_id FROM payments WHERE retention_status IN ('RELEASED', 'RETENTION_CONVERTED')`
       );
       releasedIds = new Set(releasedRows.map((r: any) => r.payment_id));
     } catch (pgErr) {
@@ -1691,7 +1735,8 @@ router.get('/pending-release', authMiddleware, async (req: Request, res: Respons
     }
     payments = payments.filter((p: any) =>
       releasableStatuses.has(p.status || p.Status) &&
-      !releasedIds.has(p.paymentId || p.PaymentID || p.payment_id || p.PaymentId)
+      !releasedIds.has(p.paymentId || p.PaymentID || p.payment_id || p.PaymentId) &&
+      (p.retentionReleased ?? p.RetentionReleased) !== true
     );
 
     // Apply exporter filter if provided
