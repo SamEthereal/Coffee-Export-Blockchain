@@ -82,7 +82,16 @@ func (c *CoffeeContract) RegisterECXLot(ctx contractapi.TransactionContextInterf
 	if err != nil {
 		return fmt.Errorf("invalid quantity: %v", err)
 	}
-	bags, _ := strconv.Atoi(bagsStr)
+	if err := ValidateQuantity(quantity, "quantity"); err != nil {
+		return fmt.Errorf("RegisterECXLot: %w", err)
+	}
+	bags, err := strconv.Atoi(bagsStr)
+	if err != nil && bagsStr != "" {
+		return fmt.Errorf("invalid bags: %v", err)
+	}
+	if bags < 0 {
+		return fmt.Errorf("RegisterECXLot: bags must not be negative, got: %d", bags)
+	}
 	if bags == 0 {
 		bags = int(quantity/60) + 1
 	}
@@ -184,6 +193,12 @@ func (c *CoffeeContract) GradeECXLot(ctx contractapi.TransactionContextInterface
 	if err != nil {
 		return fmt.Errorf("invalid moisture: %v", err)
 	}
+	// Physical 0–100% range (same bounds the API enforces). NaN/Inf,
+	// negatives and >100% are rejected here; moisture > 12% is NOT an
+	// input error — it flows into the REJECTED branch below.
+	if err := ValidatePercentage(moisture, "moistureContent"); err != nil {
+		return fmt.Errorf("GradeECXLot: %w", err)
+	}
 	if moisture > 12.0 {
 		// Mark as rejected — not export eligible
 		lot.Status = "REJECTED"
@@ -194,8 +209,20 @@ func (c *CoffeeContract) GradeECXLot(ctx contractapi.TransactionContextInterface
 		lot.GradedBy = graderID     // ✅ RECORD WHO GRADED
 		lot.GradedByMSP = graderMSP // ✅ RECORD ORGANIZATION
 	} else {
-		qualityScore, _ := strconv.ParseFloat(qualityScoreStr, 64)
-		defectCount, _ := strconv.Atoi(defectCountStr)
+		qualityScore, err := strconv.ParseFloat(qualityScoreStr, 64)
+		if err != nil {
+			return fmt.Errorf("invalid qualityScore: %v", err)
+		}
+		if err := ValidateCuppingScore(qualityScore); err != nil {
+			return fmt.Errorf("GradeECXLot: %w", err)
+		}
+		defectCount, err := strconv.Atoi(defectCountStr)
+		if err != nil {
+			return fmt.Errorf("invalid defectCount: %v", err)
+		}
+		if err := ValidateDefectCount(defectCount); err != nil {
+			return fmt.Errorf("GradeECXLot: %w", err)
+		}
 		lot.Grade = grade
 		lot.QualityScore = qualityScore
 		lot.MoistureContent = moisture
