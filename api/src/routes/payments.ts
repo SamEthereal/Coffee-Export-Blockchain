@@ -1604,7 +1604,7 @@ router.get('/', authMiddleware, async (req: Request, res: Response) => {
 // ✅ NEW: Convenience endpoint for pending payment releases
 router.get('/pending-release', authMiddleware, async (req: Request, res: Response) => {
   try {
-    const { exporterID, limit = '50' } = req.query;
+    const { exporterID, limit = '200' } = req.query;
 
     logger.info('[PAYMENT] Fetching pending release payments from blockchain');
 
@@ -1677,8 +1677,34 @@ router.get('/pending-release', authMiddleware, async (req: Request, res: Respons
       );
     }
 
-    // Apply limit
-    const limitNum = parseInt(limit as string) || 50;
+    // Pending-release is a work queue: newest settlements first, so a
+    // payment settled moments ago appears at the top immediately.
+    // Before this, the list came back in CouchDB key order (oldest
+    // first) and was sliced to 50, so a new settlement was invisible
+    // once 50+ older unreleased payments existed. Sort key is the
+    // ledger createdAt (RFC3339), falling back to paymentDate /
+    // updatedAt; rows with no parseable timestamp sink to the bottom.
+    // Tiebreak on paymentId for a deterministic order.
+    const sortTime = (p: any): number => {
+      for (const k of ['createdAt', 'paymentDate', 'updatedAt']) {
+        const v = p[k] ?? p[k.charAt(0).toUpperCase() + k.slice(1)];
+        if (v) {
+          const t = Date.parse(String(v));
+          if (!Number.isNaN(t)) return t;
+        }
+      }
+      return 0;
+    };
+    const sortId = (p: any): string => String(p.paymentId || p.PaymentID || p.payment_id || '');
+    payments.sort((a: any, b: any) => {
+      const dt = sortTime(b) - sortTime(a);
+      if (dt !== 0) return dt;
+      return sortId(b).localeCompare(sortId(a));
+    });
+
+    // Apply limit (default 200, honoured from the query, capped at 500
+    // so a work-queue tab cannot ask for an unbounded ledger dump).
+    const limitNum = Math.min(Math.max(parseInt(limit as string) || 200, 1), 500);
     payments = payments.slice(0, limitNum);
 
     logger.info(`[PAYMENT] Found ${payments.length} pending release payments`);
