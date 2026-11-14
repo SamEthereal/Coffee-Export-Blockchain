@@ -1406,6 +1406,24 @@ router.delete('/bookings/:bookingId/cancel',
         bookingId
       ]);
 
+      // Audit: the booking cancel is PG-only (no chain call) and never
+      // wrote an audit_trail row — the CREATE rows exist, the cancel
+      // of a BOOKED booking wrote none (fix/audit-gaps-4, gap 1).
+      // Best-effort — a failed audit write must not fail the cancel.
+      // No operation txId exists, so none is passed: the column falls
+      // back to the audit log's own CreateAuditLog txId, as on the
+      // CREATE rows when the chain mirror was unavailable. Never an
+      // invented txId.
+      await logAuditBestEffort(req, {
+        entityType: 'BOOKING',
+        entityId: bookingId,
+        action: 'CANCEL',
+        oldValue: booking.status,
+        newValue: 'CANCELLED',
+        reason: cancellationReason,
+        metadata: { shipmentId: booking.shipment_id, cancellationReason, cancelledBy: cancelledBy || user.username, blockchainTxId: null },
+      }, `booking ${bookingId} cancel`);
+
       logger.info(`✅ [SHIPPING] Booking cancelled: ${bookingId}`);
 
       res.json({

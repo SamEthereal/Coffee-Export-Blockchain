@@ -1644,6 +1644,23 @@ router.post('/:contractID/approve',
                 logger.warn(`[LC HANDOFF] PostgreSQL sync failed for ${generatedLcId}; blockchain request is committed:`, syncError);
               }
 
+              // Audit: the LC auto-handoff (RequestLC above) never wrote
+              // an audit_trail row — the REQUEST call added in the
+              // manual banking route does not run on this path, and no
+              // LC/REQUEST row exists for either handoff LC in the
+              // verification chain (fix/audit-gaps-4, gap 4).
+              // Best-effort — a failed audit write must not fail the
+              // approval. Carries the handoff's own RequestLC txId
+              // (requestResult.txId), never the audit txId.
+              await logAuditBestEffort(req, {
+                entityType: 'LC',
+                entityId: generatedLcId,
+                action: 'REQUEST',
+                newValue: 'REQUESTED',
+                blockchainTxId: requestResult.txId || undefined,
+                metadata: { contractID, exporterId, amount, currency, blockchainTxId: requestResult.txId || null },
+              }, `lc ${generatedLcId} handoff request`);
+
               lcHandoff = {
                 status: 'created',
                 lcId: generatedLcId,
