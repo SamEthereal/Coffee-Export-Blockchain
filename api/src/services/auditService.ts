@@ -18,6 +18,7 @@ export interface AuditLogEntry {
   reason?: string;
   metadata?: any;
   ipAddress?: string;
+  blockchainTxId?: string;  // operation chain txId, when the caller already has one
 }
 
 interface FieldChange {
