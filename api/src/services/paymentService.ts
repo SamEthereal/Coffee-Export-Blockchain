@@ -585,6 +585,17 @@ export class PaymentService {
         throw new Error(`Cannot release payment ${releaseData.paymentID}: on-chain status is ${onChainStatus || 'unknown'} — only VERIFIED or SWIFT_RECEIVED payments can be settled`);
       }
 
+      // The PG guard above misses a released+converted payment: convert
+      // overwrites PG retention_status to 'RETENTION_CONVERTED', so the
+      // chaincode was the backstop and the rejection came back as a raw
+      // 6-peer error dump. The ledger flag is the source of truth, and
+      // it is already fetched above, so no extra read: a converted-but-
+      // not-released payment (retentionReleased false) still falls
+      // through and releases normally.
+      if (onChain.data.retentionReleased === true) {
+        throw new Error(`Payment already released: ${releaseData.paymentID}`);
+      }
+
       // Connect as Banks MSP
       await this.fabricService.connectAsOrg('BanksMSP');
 
