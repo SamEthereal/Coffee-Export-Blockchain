@@ -430,23 +430,6 @@ class CECBSApi {
     return response.data;
   }
 
-  // NBE Portal Operations
-  // NOTE: kept only because NBEPortal.tsx:552 still calls it. The route
-  // POST /contracts/:id/nbe-approve always returns 400 ENDPOINT_DEPRECATED
-  // (api/src/routes/contracts.ts:1823) — NBE contract approval does not
-  // exist; contract approval is ECTA-only and forex goes through
-  // POST /forex/allocate. The NBE portal caller must be removed/replaced
-  // (NBE worker's item), then this helper can be deleted.
-  async approveContractForForex(contractId: string, nbeOfficer: string): Promise<ApiResponse<any>> {
-    // DEPRECATED: NBE should not approve contracts, only allocate forex
-    console.warn('approveContractForForex is deprecated. NBE should use forex allocation.');
-    const response = await this.client.post(`/contracts/${contractId}/nbe-approve`, {
-      approvedBy: nbeOfficer,
-      approvalType: 'FOREX_ELIGIBILITY'
-    });
-    return response.data;
-  }
-
   // ECTA Portal Operations
   async approveContract(contractId: string): Promise<ApiResponse<any>> {
     const response = await this.client.post(`/contracts/${contractId}/approve`);
