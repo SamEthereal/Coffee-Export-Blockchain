@@ -199,7 +199,12 @@ router.post('/forex/:forexId/approve', authMiddleware, requireRole('NBE'), async
         [
           signatureId,
           confirmTxId || null,
-          'FOREX',
+          // fix/forex-signature-trail: was 'FOREX', but the portal's
+          // BlockchainSignatureVerification queries FOREX_ALLOCATION, so
+          // every ConfirmForex row was invisible there. The audit_trail
+          // row below keeps 'FOREX' (its own convention, read by
+          // analyticsService) — only the signatures table is unified.
+          'FOREX_ALLOCATION',
           forexId,
           'ConfirmForex',
           'NBEMSP',

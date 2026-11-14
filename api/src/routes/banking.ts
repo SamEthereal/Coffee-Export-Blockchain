@@ -1420,12 +1420,19 @@ router.post('/lc/:lcID/issue',
                 // Generate a unique allocation_id
                 const allocationId = `${forexId}-ALLOC`;
 
+                // fix/forex-signature-trail: the INSERT used to omit
+                // blockchain_tx_id, and neither an audit row nor a
+                // signature row was written — so an LC-issue auto-created
+                // forex had no REQUEST trail anywhere in PG (the txId
+                // existed only on the ledger / in the API log). Persist
+                // the operation txId and write both trail rows,
+                // best-effort: a trail failure must not fail the issue.
                 await dbService.run(
                   `INSERT INTO forex_allocations (
                     allocation_id, forex_id, lc_id, contract_id, exporter_id,
-                    amount_usd, currency, status,
+                    amount_usd, currency, status, blockchain_tx_id,
                     created_at, updated_at
-                  ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), NOW())
+                  ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), NOW())
                   ON CONFLICT (forex_id) DO NOTHING`,
                   [
                     allocationId,
@@ -1435,10 +1442,52 @@ router.post('/lc/:lcID/issue',
                     lcExporterID,
                     parseFloat(lcAmount.toString()),
                     lcCurrency,
-                    'REQUESTED'
+                    'REQUESTED',
+                    forexResult.txId || null
                   ]
                 );
                 logger.info(`✅ Forex request synced to PostgreSQL: ${forexId}`);
+                try {
+                  await dbService.run(
+                    `INSERT INTO audit_trail (
+                      entity_type, entity_id, action, performed_by,
+                      performed_by_org, old_value, new_value, reason,
+                      metadata, ip_address, blockchain_tx_id
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+                    [
+                      'FOREX',
+                      forexId,
+                      'REQUEST',
+                      user?.username || 'SYSTEM',
+                      'BanksMSP',
+                      JSON.stringify({ status: '' }),
+                      JSON.stringify({ status: 'REQUESTED' }),
+                      'Forex auto-requested on LC issue',
+                      JSON.stringify({ contractId: lcContractID, exporterId: lcExporterID, amount: lcAmount, currency: lcCurrency, lcId: lcID }),
+                      '127.0.0.1',
+                      forexResult.txId || null
+                    ]
+                  );
+                } catch (auditErr: any) {
+                  logger.warn(`⚠️ Failed to audit forex auto-request ${forexId}:`, auditErr?.message);
+                }
+                try {
+                  await signatureService.recordSignature({
+                    entityType: 'FOREX_ALLOCATION',
+                    entityId: forexId,
+                    actionType: 'REQUEST',
+                    signerUsername: user?.username || 'SYSTEM',
+                    signerOrg: 'BanksMSP',
+                    blockchainTxId: forexResult.txId || undefined,
+                    blockchainTimestamp: new Date(),
+                    chaincodeName: 'coffee',
+                    chaincodeFunction: 'RequestForex',
+                    transactionArgs: [forexId, lcContractID, lcExporterID, lcAmount.toString(), lcCurrency],
+                    metadata: { contractId: lcContractID, exporterId: lcExporterID, amount: lcAmount, currency: lcCurrency, lcId: lcID, autoCreatedOnLcIssue: true },
+                  });
+                } catch (sigErr: any) {
+                  logger.warn(`⚠️ Failed to record forex auto-request signature ${forexId}:`, sigErr?.message);
+                }
               } catch (syncErr) {
                 logger.warn(`⚠️ Failed to sync forex request to PostgreSQL:`, syncErr);
               }

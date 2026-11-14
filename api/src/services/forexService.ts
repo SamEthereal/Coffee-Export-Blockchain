@@ -4,6 +4,7 @@
 import { FabricService } from './fabricService';
 import { DatabaseService } from './databaseService';
 import { AuditService } from './auditService';
+import { BlockchainSignatureService } from './blockchainSignatureService';
 import { statusManager } from '../utils/statusManager';
 import { logger } from '../utils/logger';
 
@@ -12,11 +13,13 @@ export class ForexService {
   private fabricService: FabricService;
   private dbService: DatabaseService;
   private auditService: AuditService;
+  private signatureService: BlockchainSignatureService;
 
   private constructor() {
     this.fabricService = FabricService.getInstance();
     this.dbService = DatabaseService.getInstance();
     this.auditService = AuditService.getInstance();
+    this.signatureService = BlockchainSignatureService.getInstance();
   }
 
   public static getInstance(): ForexService {
@@ -86,6 +89,32 @@ export class ForexService {
         metadata: { contractId: forexData.contractId, amount: forexData.amount },
         blockchainTxId: result.txId,
       });
+
+      // Forex signature trail (fix/forex-signature-trail): the portal's
+      // BlockchainSignatureVerification queries entityType
+      // FOREX_ALLOCATION, but RequestForex recorded no signature row when
+      // called through this service (POST /forex and the LC-issue
+      // auto-request) — only the POST /forex/request route recorded one.
+      // So the verification panel showed nothing even though the request
+      // landed on-chain. Record it here, best-effort: a signature
+      // failure must not fail the request.
+      try {
+        await this.signatureService.recordSignature({
+          entityType: 'FOREX_ALLOCATION',
+          entityId: forexData.forexId,
+          actionType: 'REQUEST',
+          signerUsername: forexData.userId,
+          signerOrg: forexData.userOrg,
+          blockchainTxId: result.txId,
+          blockchainTimestamp: new Date(),
+          chaincodeName: 'coffee',
+          chaincodeFunction: 'RequestForex',
+          transactionArgs: [forexData.forexId, forexData.contractId, forexData.exporterId, forexData.amount.toString(), forexData.currency],
+          metadata: { contractId: forexData.contractId, exporterId: forexData.exporterId, amount: forexData.amount, currency: forexData.currency },
+        });
+      } catch (sigErr: any) {
+        logger.error('Failed to record forex-request signature:', sigErr?.message);
+      }
 
       logger.info(`✅ [ForexService] Forex requested: ${forexData.forexId}`);
       return { success: true, forexId: forexData.forexId, txId: result.txId };
@@ -285,6 +314,30 @@ export class ForexService {
         },
         blockchainTxId: blockchainTxId ?? undefined,
       });
+
+      // Forex signature trail (fix/forex-signature-trail): AllocateForex
+      // recorded no blockchain_signatures row at all — the PG mirror and
+      // the audit row carried the txId, but the portal's
+      // BlockchainSignatureVerification (entityType FOREX_ALLOCATION)
+      // showed nothing for the allocation. Same pattern as the settle
+      // fix: record the signature best-effort after the chain write.
+      try {
+        await this.signatureService.recordSignature({
+          entityType: 'FOREX_ALLOCATION',
+          entityId: forexId,
+          actionType: 'ALLOCATE',
+          signerUsername: allocationData.userId,
+          signerOrg: allocationData.userOrg,
+          blockchainTxId: blockchainTxId ?? undefined,
+          blockchainTimestamp: new Date(),
+          chaincodeName: 'coffee',
+          chaincodeFunction: 'AllocateForex',
+          transactionArgs: [forexId, lcId, String(allocationData.amount), String(allocationData.exchangeRate), String(allocationData.retentionRate), allocationData.officer, allocationData.approvalRef, allocationData.expiryDate || ''],
+          metadata: { lcId, allocatedAmount, retentionAmount, releaseAmount, retentionRate: allocationData.retentionRate },
+        });
+      } catch (sigErr: any) {
+        logger.error('Failed to record forex-allocate signature:', sigErr?.message);
+      }
 
       logger.info(`✅ [ForexService] Forex allocated: ${forexId} (Retention: ${retentionAmount} ${forex?.currency || 'USD'})`);
       return { success: true, forexId: forexId, txId: blockchainTxId, retentionAmount, releaseAmount, blockchainSynced: true };
