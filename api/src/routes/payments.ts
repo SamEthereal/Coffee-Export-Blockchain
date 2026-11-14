@@ -2314,9 +2314,12 @@ router.post('/:paymentID/release',
         });
       }
       if (/already released/i.test(message)) {
+        // Plain message, not the raw chaincode error: the backstop
+        // rejection (e.g. a race past the service guard) arrives as a
+        // 6-peer Fabric dump, which is not a usable client error.
         return res.status(400).json({
           success: false,
-          error: { code: 'ALREADY_RELEASED', message },
+          error: { code: 'ALREADY_RELEASED', message: `Payment ${req.params.paymentID} has already been released` },
           timestamp: new Date().toISOString(),
         });
       }
