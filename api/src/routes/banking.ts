@@ -158,10 +158,17 @@ router.post('/lc/request',
 
       // AUTO-MAPPING: Fetch contract data to auto-populate LC fields
       let autoMappedData: any = {};
+      // FAST-REJECT (fix/lc-fast-reject): the contract status read here
+      // also drives the pre-invoke APPROVED check below. Null means the
+      // read failed — then we proceed as before and let the chaincode
+      // decide, instead of turning a transient query failure into a
+      // false rejection.
+      let contractStatus: string | null = null;
       try {
         const contractResult = await fabricService.queryChaincode('ReadSalesContract', [contractID]);
         if (contractResult.success && contractResult.data) {
           const contract = contractResult.data;
+          contractStatus = String(contract.ContractStatus || contract.contractStatus || contract.status || '').toUpperCase() || null;
           autoMappedData.exporterID = contract.ExporterID || contract.exporterID || exporterID;
           autoMappedData.currency = contract.Currency || contract.currency || 'USD';
           // LEG 1 (F6a): the ledger auto-maps the banks from the
@@ -208,6 +215,27 @@ router.post('/lc/request',
       } catch (error) {
         logger.warn('[LC] Could not check for duplicate LCs:', error);
         // Continue anyway - if check fails, let chaincode handle it
+      }
+
+      // FAST REJECT (fix/lc-fast-reject): RequestLC requires an APPROVED
+      // contract, and approval auto-creates the LC, so a manual request
+      // for a non-APPROVED contract can never succeed. Reject here — two
+      // cheap ledger queries in, before any invoke — instead of paying
+      // the ~19 s endorse round-trip and surfacing a raw 6-peer error
+      // dump (LC_REQUEST_FAILED) in the UI. The chaincode rule is
+      // unchanged; this only surfaces it early. An unknown status
+      // (contract read failed above) still falls through to the
+      // chaincode, as before.
+      if (contractStatus && contractStatus !== 'APPROVED') {
+        logger.warn(`[LC] Fast-reject LC request for contract ${contractID}: status ${contractStatus}, must be APPROVED`);
+        return res.status(400).json({
+          success: false,
+          error: {
+            code: 'LC_CONTRACT_NOT_APPROVED',
+            message: `Contract ${contractID} must be APPROVED before an LC can be requested (current status: ${contractStatus}). The LC is created automatically when ECTA approves the contract.`,
+          },
+          timestamp: new Date().toISOString(),
+        });
       }
 
       // Use provided values or auto-mapped values
