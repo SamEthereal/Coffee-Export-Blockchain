@@ -1110,6 +1110,16 @@ router.post('/:paymentID/settle',
         }
         
         logger.info(`✅ [PAYMENT] Payment settled: ${paymentID} (${currentStatus} → SETTLED)`);
+        // Leftover 2: the settle route's SettlePayment call never left
+        // a blockchain_signatures row, unlike release/convert.
+        // Record it best-effort (recordChainSignature catches
+        // internally and dedupes by txId) so a failed PG write cannot
+        // turn a committed settlement into a 500.
+        await paymentService.recordSettleSignature({
+          paymentID,
+          txId: result.txId || null,
+          signerUsername: (req as any).user?.username || 'bank_admin',
+        });
         // In-app notification (persisted feed + live WS broadcast).
         await notificationService.emitWorkflowEvent({
           type: 'payment_settled',
@@ -1124,11 +1134,19 @@ router.post('/:paymentID/settle',
         // drop the cached full payment list — otherwise the tab misses
         // it for up to 30s (same invalidation as the release path).
         CacheInvalidation.paymentsAll();
+        // Leftover 2: carry blockchainTxId alongside txId, top-level
+        // and under data, the way convert/release do — the old settle
+        // response had no blockchainTxId anywhere.
+        const settleData: any = withTxId(result.data, result.txId);
+        if (settleData && typeof settleData === 'object' && !Array.isArray(settleData)) {
+          settleData.blockchainTxId = result.txId || null;
+        }
         res.json({
           success: true,
           message: 'Payment settled successfully',
-          data: withTxId(result.data, result.txId),
+          data: settleData,
           txId: result.txId,
+          blockchainTxId: result.txId || null,
           timestamp: new Date().toISOString(),
         });
       } else {
@@ -2192,6 +2210,7 @@ router.post('/',
  *                 type: string
  *               amount:
  *                 type: number
+ *                 description: The payment total in USD. Must equal the stored payment total — the release itself is 60% of this total. A mismatch is rejected with 400 AMOUNT_MISMATCH.
  *               releaseDate:
  *                 type: string
  *     responses:
@@ -2248,6 +2267,33 @@ router.post('/:paymentID/release',
           error: {
             code: 'ALREADY_RELEASED',
             message: `Payment ${paymentID} has already been released`,
+          },
+          timestamp: new Date().toISOString(),
+        });
+      }
+
+      // Leftover 3: `amount` used to be validated as numeric only and
+      // then ignored — releasePayment always released 60% of the
+      // stored total. The contract is now explicit: `amount` is the
+      // PAYMENT TOTAL (what the NBE portal sends from its
+      // pending-release rows, which are ledger docs carrying only the
+      // total — there is no release-amount field on the ledger doc),
+      // and it must equal the stored total. The release itself is
+      // still 60% of that total. A mismatch 400s here, before any
+      // chain write, with the expected total named.
+      const storedTotal = payment.amount_usd != null
+        ? Number(payment.amount_usd)
+        : (payment.amount != null ? Number(payment.amount) : NaN);
+      const storedRelease = payment.release_amount != null
+        ? Number(payment.release_amount)
+        : (Number.isFinite(storedTotal) ? Math.round(storedTotal * 0.6 * 100) / 100 : NaN);
+      const toCents = (n: number) => Math.round(n * 100) / 100;
+      if (!Number.isFinite(storedTotal) || !Number.isFinite(Number(amount)) || toCents(Number(amount)) !== toCents(storedTotal)) {
+        return res.status(400).json({
+          success: false,
+          error: {
+            code: 'AMOUNT_MISMATCH',
+            message: `Release amount ${amount} does not match the payment total of ${Number.isFinite(storedTotal) ? storedTotal : 'unknown'} USD — the release is 60% of the payment total (${Number.isFinite(storedRelease) ? storedRelease : 'unknown'} USD)`,
           },
           timestamp: new Date().toISOString(),
         });

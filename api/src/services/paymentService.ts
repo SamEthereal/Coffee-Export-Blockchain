@@ -164,6 +164,10 @@ export class PaymentService {
         organization: paymentData.userOrg,
         performedByOrg: paymentData.userOrg,
         newValue: 'VERIFIED',
+        // Shared audit contract: top-level operation txId — the
+        // InitiatePayment tx that recorded this payment (metadata
+        // already carries it; this is the persisted field).
+        blockchainTxId: typeof blockchainResult === 'string' ? JSON.parse(blockchainResult).transactionId : blockchainResult.txId,
         metadata: {
           status: 'VERIFIED',
           retentionStatus: 'SPLIT',
@@ -396,6 +400,9 @@ export class PaymentService {
         organization: conversionData.userOrg,
         performedByOrg: conversionData.userOrg,
         newValue: 'RETENTION_CONVERTED',
+        // Shared audit contract: top-level operation txId — the
+        // ConvertRetention tx (metadata already carries it).
+        blockchainTxId: convertTxId ?? undefined,
         metadata: {
           retentionStatus: 'RETENTION_CONVERTED',
           exchangeRate: conversionData.exchangeRate,
@@ -499,10 +506,18 @@ export class PaymentService {
   /**
    * N7 (F11 pattern): record a payment chain call where it can be found
    * without a block scan — a blockchain_signatures row (signer + tx).
-   * Used by releasePayment (SettlePayment / RecordRetentionRelease) and
-   * convertRetention (ConvertRetention). Best-effort: the ledger write
-   * already committed, so a failed PG write must not turn the operation
-   * into a 500.
+   * Used by releasePayment (SettlePayment / RecordRetentionRelease),
+   * convertRetention (ConvertRetention) and the settle route
+   * (SettlePayment, via recordSettleSignature below). Best-effort: the
+   * ledger write already committed, so a failed PG write must not turn
+   * the operation into a 500.
+   *
+   * Leftover 2 dedupe: blockchain_tx_id has no UNIQUE constraint
+   * (migration 046 only indexes it), and the same chain tx can reach
+   * here twice — the settle route records SettlePayment and
+   * releasePayment records its own SettlePayment call on the settleable
+   * path — so a re-recorded tx must not leave a second row. One row
+   * per chain tx, keyed on the txId itself.
    */
   private async recordChainSignature(params: {
     paymentID: string;
@@ -513,6 +528,16 @@ export class PaymentService {
     actionType: string;
   }): Promise<void> {
     try {
+      if (params.txId) {
+        const existing = await this.dbService.get(
+          `SELECT signature_id FROM blockchain_signatures WHERE blockchain_tx_id = $1 LIMIT 1`,
+          [params.txId]
+        );
+        if (existing) {
+          logger.info(`[PaymentService] Chain signature already recorded for tx ${params.txId} (${params.chaincodeFunction}) — skipping duplicate`);
+          return;
+        }
+      }
       const signatureId = `SIG-${Date.now()}-${require('crypto').randomBytes(8).toString('hex')}`;
       await this.dbService.run(
         `INSERT INTO blockchain_signatures (
@@ -535,6 +560,31 @@ export class PaymentService {
     } catch (sigErr: any) {
       logger.warn(`[PaymentService] Failed to store chain signature for ${params.paymentID} (${params.chaincodeFunction}): ${sigErr?.message}`);
     }
+  }
+
+  /**
+   * Leftover 2: the settle route's SettlePayment call never left a
+   * blockchain_signatures row, unlike release/convert, which record
+   * theirs in-service. Public so the route can record it with the
+   * route's own signer; same BanksMSP / PAYMENT_SETTLEMENT convention
+   * releasePayment uses for its SettlePayment row. Best-effort
+   * (recordChainSignature catches internally) and deduped by txId,
+   * so a release that re-records the same settle tx cannot double it.
+   */
+  async recordSettleSignature(params: {
+    paymentID: string;
+    txId: string | null;
+    signerUsername: string;
+  }): Promise<void> {
+    if (!params.txId) return;
+    await this.recordChainSignature({
+      paymentID: params.paymentID,
+      txId: params.txId,
+      chaincodeFunction: 'SettlePayment',
+      signerOrg: 'BanksMSP',
+      signerUsername: params.signerUsername,
+      actionType: 'PAYMENT_SETTLEMENT',
+    });
   }
 
   /**
@@ -750,6 +800,10 @@ export class PaymentService {
         organization: releaseData.userOrg,
         performedByOrg: releaseData.userOrg,
         newValue: 'SETTLED',
+        // Shared audit contract: top-level operation txId — the
+        // retention-release tx (metadata already carries it, plus the
+        // settle tx separately as settleTxId).
+        blockchainTxId: blockchainTxId ?? undefined,
         metadata: {
           status: 'SETTLED',
           retentionStatus: 'RELEASED',
