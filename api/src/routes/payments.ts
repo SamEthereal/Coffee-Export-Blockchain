@@ -1108,6 +1108,30 @@ router.post('/:paymentID/settle',
         } catch (mirrorErr) {
           logger.warn(`[PAYMENT] Could not mirror settlement of ${paymentID} to Postgres:`, mirrorErr);
         }
+
+        // Mirror the LC cascade: SettlePayment advances a PAYMENT_RELEASED
+        // LC to SETTLED on-chain, but nothing mirrored that into PG, so
+        // letters_of_credit stayed PAYMENT_RELEASED while the ledger said
+        // SETTLED (found live 2026-11-14 on PAY_LC-CONT-E2E-FULL-20261114).
+        // Ledger-first: read the LC's actual status and mirror it, so a
+        // settle that did NOT cascade (LC not PAYMENT_RELEASED) changes
+        // nothing. Best-effort — the settlement already committed.
+        try {
+          const lcId = (paymentData.data as any)?.lcId || (paymentData.data as any)?.LCID || (paymentData.data as any)?.lcID;
+          if (lcId) {
+            const lcRead = await fabricService.queryChaincode('ReadLC', [lcId]);
+            const lcStatus = lcRead.success && lcRead.data ? ((lcRead.data as any).status || (lcRead.data as any).Status) : null;
+            if (lcStatus === 'SETTLED') {
+              await postgresDb.run(
+                `UPDATE letters_of_credit SET status = 'SETTLED', updated_at = NOW() WHERE lc_id = $1`,
+                [lcId]
+              );
+              logger.info(`✅ [PAYMENT] Mirrored LC cascade: ${lcId} → SETTLED in Postgres`);
+            }
+          }
+        } catch (lcMirrorErr) {
+          logger.warn(`[PAYMENT] Could not mirror LC cascade for settlement of ${paymentID}:`, lcMirrorErr);
+        }
         
         logger.info(`✅ [PAYMENT] Payment settled: ${paymentID} (${currentStatus} → SETTLED)`);
         // Leftover 2: the settle route's SettlePayment call never left
