@@ -8,6 +8,7 @@ import { ShipmentService } from '../services/shipmentService';
 import { ExchangeRateService } from '../services/exchangeRateService';
 import { logger } from '../utils/logger';
 import notificationService from '../services/notificationService';
+import { hsCodeValidator, isValidHsCode, normalizeHsCode, HS_CODE_MESSAGE } from '../utils/hsCode';
 
 const router = Router();
 const postgresDb = DatabaseService.getInstance();
@@ -70,6 +71,21 @@ router.post('/',
           timestamp: new Date().toISOString(),
         });
       }
+
+      // HS-code format (utils/hsCode): 6-10 digits, optionally dotted
+      // after the 4th digit. A malformed code is a 400 here, before any
+      // chain call; dotted input is normalized to plain digits so the
+      // ledger and Postgres hold one canonical form.
+      if (hsCode != null && String(hsCode).trim() !== '' && !isValidHsCode(hsCode)) {
+        return res.status(400).json({
+          success: false,
+          error: { code: 'VALIDATION_ERROR', message: HS_CODE_MESSAGE },
+          timestamp: new Date().toISOString(),
+        });
+      }
+      const normalizedHsCode = hsCode != null && String(hsCode).trim() !== ''
+        ? normalizeHsCode(String(hsCode))
+        : '090111';
 
       // Same shipment-existence gate as /declaration/submit: the
       // declaration must name a shipment that exists in Postgres AND on
@@ -159,7 +175,7 @@ router.post('/',
             shipmentId,
             exporterId,
             declarationType,
-            hsCode || '090111',
+            normalizedHsCode,
             String(resolvedQuantity),
             String(resolvedValue),
             currency || 'USD',
@@ -201,7 +217,7 @@ router.post('/',
         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
         ON CONFLICT (declaration_id) DO NOTHING`,
         [declarationNumber, declarationNumber, shipmentId, contractId, exporterId,
-         hsCode || '090111', resolvedQuantity, resolvedValue, currency || 'USD',
+         normalizedHsCode, resolvedQuantity, resolvedValue, currency || 'USD',
          resolvedDestination, new Date().toISOString().split('T')[0], 'SUBMITTED',
          blockchain_tx_id]
       );
@@ -794,6 +810,11 @@ router.post('/declaration/submit',
     // -5 kg on the ledger (SubmitCustomsDeclaration has no range check).
     body('quantity').optional().isFloat({ gt: 0 }).withMessage('Quantity must be a number greater than 0'),
     body('declarationType').optional().isIn(['STANDARD', 'SIMPLIFIED', 'EUDR_ENHANCED']).withMessage('Declaration type must be STANDARD, SIMPLIFIED or EUDR_ENHANCED'),
+    // HS-code format (utils/hsCode): 6-10 digits, optionally dotted
+    // after the 4th digit. No HS rule existed anywhere; a malformed code
+    // used to be stored on the ledger verbatim. Rejected as 400 by
+    // validateRequest, like the other validators on this route.
+    body('hsCode').optional().custom(hsCodeValidator),
   ],
   validateRequest,
   async (req: Request, res: Response) => {
@@ -814,6 +835,13 @@ router.post('/declaration/submit',
         eudrCompliant,
         additionalNotes
       } = req.body;
+
+      // HS-code normalization (validated by the route's express-validator
+      // chain above): dotted input is stored as plain digits; omitted
+      // stays the '090111' default.
+      const normalizedHsCode = hsCode != null && String(hsCode).trim() !== ''
+        ? normalizeHsCode(String(hsCode))
+        : '090111';
 
       logger.info(`[CUSTOMS] Submitting declaration ${declarationID} for shipment ${shipmentID}`);
 
@@ -940,7 +968,7 @@ router.post('/declaration/submit',
             shipmentID,
             exporterID,
             declarationType || 'STANDARD',
-            hsCode || '090111',
+            normalizedHsCode,
             String(quantity || 0),
             String(resolvedSubmitValue),
             currency || 'USD',
@@ -988,7 +1016,7 @@ router.post('/declaration/submit',
           contractIdUpper || contractIdLower || null,
           exporterID,
           declarationType || 'STANDARD',
-          hsCode || '090111',
+          normalizedHsCode,
           quantity || 0,
           resolvedSubmitValue,
           currency || 'USD',
@@ -1361,6 +1389,10 @@ router.put('/declaration/:declarationId/amend',
     // form in the portals — this is the API backstop for direct callers.
     body('newQuantity').optional().isFloat({ gt: 0 }).withMessage('New quantity must be a number greater than 0'),
     body('newCustomsValueUSD').optional().isFloat({ gt: 0 }).withMessage('New customs value must be a number greater than 0'),
+    // HS-code format (utils/hsCode): same rule as the submit routes —
+    // 6-10 digits, optionally dotted after the 4th digit. Rejected as
+    // 400 by validateRequest; dotted input is normalized below.
+    body('newHsCode').optional().custom(hsCodeValidator),
   ],
   validateRequest,
   async (req: Request, res: Response) => {
@@ -1376,6 +1408,12 @@ router.put('/declaration/:declarationId/amend',
         additionalDocuments
       } = req.body;
       const user = (req as any).user;
+
+      // HS-code normalization (validated by the route's express-validator
+      // chain above): dotted input is stored as plain digits.
+      const normalizedNewHsCode = newHsCode != null && String(newHsCode).trim() !== ''
+        ? normalizeHsCode(String(newHsCode))
+        : undefined;
 
       logger.info(`[CUSTOMS] Amending declaration: ${declarationId}`);
 
@@ -1423,7 +1461,7 @@ router.put('/declaration/:declarationId/amend',
       };
       trackChange('quantity', currentDeclaration.quantity, newQuantity);
       trackChange('customsValueUSD', currentDeclaration.customs_value_usd, newCustomsValueUSD);
-      trackChange('hsCode', currentDeclaration.hs_code, newHsCode);
+      trackChange('hsCode', currentDeclaration.hs_code, normalizedNewHsCode);
       trackChange('description', currentDeclaration.description, newDescription);
       trackChange('destination', currentDeclaration.destination, newDestination);
       // customs_officer_id REFERENCES users(id); req.user.userId is a
@@ -1468,9 +1506,9 @@ router.put('/declaration/:declarationId/amend',
         updates.push(`customs_value_usd = $${paramIndex++}`);
         values.push(newCustomsValueUSD);
       }
-      if (newHsCode) {
+      if (normalizedNewHsCode) {
         updates.push(`hs_code = $${paramIndex++}`);
-        values.push(newHsCode);
+        values.push(normalizedNewHsCode);
       }
       if (newDescription) {
         updates.push(`description = $${paramIndex++}`);
@@ -1504,7 +1542,7 @@ router.put('/declaration/:declarationId/amend',
           amendedFields: {
             quantity: newQuantity,
             customsValueUSD: newCustomsValueUSD,
-            hsCode: newHsCode,
+            hsCode: normalizedNewHsCode,
             description: newDescription,
             destination: newDestination
           }

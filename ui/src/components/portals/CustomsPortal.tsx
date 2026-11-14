@@ -1776,6 +1776,10 @@ ${rejectionForm.officerNotes ? '\n[INTERNAL NOTES - NOT VISIBLE TO EXPORTER]:\n'
     
     if (!newDeclarationForm.hsCode || newDeclarationForm.hsCode.trim() === '') {
       validationErrors.push('• HS Code is required');
+    } else if (!/^(?:\d{6,10}|\d{4}\.\d{2,6})$/.test(newDeclarationForm.hsCode.trim())) {
+      // Same rule as the API (api/src/utils/hsCode.ts): 6-10 digits,
+      // optionally dotted after the 4th digit (090111 / 0901.11).
+      validationErrors.push('• HS Code must be 6-10 digits (e.g. 090111), optionally written with a dot after the first four digits (e.g. 0901.11)');
     }
     
     if (!newDeclarationForm.portOfExit || newDeclarationForm.portOfExit.trim() === '') {
@@ -4015,7 +4019,7 @@ ${rejectionForm.officerNotes ? '\n[INTERNAL NOTES - NOT VISIBLE TO EXPORTER]:\n'
                 label="HS Code"
                 value={newDeclarationForm.hsCode}
                 onChange={(e) => setNewDeclarationForm({ ...newDeclarationForm, hsCode: e.target.value })}
-                helperText="Coffee, not roasted, not decaffeinated"
+                helperText="6-10 digits, e.g. 090111 (coffee, not roasted, not decaffeinated)"
               />
             </Grid>
             <Grid item xs={12} sm={6}>

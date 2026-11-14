@@ -125,6 +125,58 @@ export class DualSourceDataService {
   }
 
   /**
+   * Fetch Payments (all settlements) from BOTH sources.
+   * The generic payments list the stats endpoints need: unlike
+   * getAdvancePayments / getConsignmentPayments, which cover one payment
+   * method each, this merges every payment settlement — ledger rows via
+   * QueryAllPayments and the `payments` Postgres mirror — keyed on
+   * paymentId / payment_id, like every other dual-source list.
+   */
+  public async getPayments(): Promise<DataSourceStats> {
+    const couchdbData: any[] = [];
+    const postgresData: any[] = [];
+
+    // 1. Fetch from CouchDB (blockchain state)
+    try {
+      const result = await this.fabricService.queryChaincode('QueryAllPayments', []);
+      if (result.success && result.data) {
+        if (Array.isArray(result.data)) {
+          couchdbData.push(...result.data);
+        } else {
+          couchdbData.push(result.data);
+        }
+      }
+      logger.info(`[DUAL-SOURCE] CouchDB Payments: ${couchdbData.length}`);
+    } catch (error) {
+      logger.warn('[DUAL-SOURCE] Failed to fetch payments from CouchDB:', error);
+    }
+
+    // 2. Fetch from PostgreSQL (application database)
+    try {
+      const rows = await this.dbService.all(`
+        SELECT * FROM payments 
+        ORDER BY created_at DESC
+      `);
+      postgresData.push(...rows);
+      logger.info(`[DUAL-SOURCE] PostgreSQL Payments: ${postgresData.length}`);
+    } catch (error) {
+      logger.warn('[DUAL-SOURCE] Failed to fetch payments from PostgreSQL:', error);
+    }
+
+    // 3. Merge and deduplicate
+    const merged = this.mergeByKey(couchdbData, postgresData, 'paymentId', 'payment_id');
+
+    return {
+      couchdbCount: couchdbData.length,
+      postgresCount: postgresData.length,
+      totalCount: merged.length,
+      source: couchdbData.length > 0 && postgresData.length > 0 ? 'both' : 
+              couchdbData.length > 0 ? 'couchdb' : 'postgres',
+      mergedData: merged
+    };
+  }
+
+  /**
    * Fetch Consignment Payments from BOTH sources
    */
   public async getConsignmentPayments(): Promise<DataSourceStats> {
