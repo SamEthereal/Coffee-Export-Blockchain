@@ -1579,6 +1579,23 @@ router.put('/declaration/:declarationId/amend',
         );
       }
 
+      // Audit: the declaration amend is PG-only (no chain call) and
+      // never wrote an audit_trail row (fix/audit-gaps-4, gap 3).
+      // Best-effort — a failed audit write must not fail the amend.
+      // No operation txId exists, so none is passed: the column falls
+      // back to the audit log's own CreateAuditLog txId. Never an
+      // invented txId. The amend leaves the declaration status
+      // unchanged, so old/newValue both carry it.
+      await logAuditBestEffort(req, {
+        entityType: 'CUSTOMS_DECLARATION',
+        entityId: currentDeclaration.declaration_id || declarationId,
+        action: 'AMEND',
+        oldValue: currentDeclaration.status,
+        newValue: currentDeclaration.status,
+        reason: amendmentReason,
+        metadata: { amendmentId, amendmentNumber, originalValues: changedOriginal, amendedValues: changedAmended, blockchainTxId: null },
+      }, `customs declaration ${declarationId} amend`);
+
       logger.info(`✅ [CUSTOMS] Declaration amended: ${declarationId} - ${amendmentId}`);
 
       res.json({
@@ -1678,6 +1695,25 @@ router.delete('/declaration/:declarationId/cancel',
         cancelledById,
         declarationId
       ]);
+
+      // Audit: the declaration cancel is PG-only (no chain call) and
+      // never wrote an audit_trail row — proven twice live (auto-decl
+      // and manual CD-...-B, both CANCELLED with zero CANCEL rows;
+      // fix/audit-gaps-4, gap 2). The fix's customs diff added
+      // SUBMIT/REVIEW/INSPECT/COMPLETE_INSPECTION/REJECT but no
+      // CANCEL. Best-effort — a failed audit write must not fail the
+      // cancel. No operation txId exists, so none is passed: the
+      // column falls back to the audit log's own CreateAuditLog txId.
+      // Never an invented txId.
+      await logAuditBestEffort(req, {
+        entityType: 'CUSTOMS_DECLARATION',
+        entityId: declaration.declaration_id || declarationId,
+        action: 'CANCEL',
+        oldValue: declaration.status,
+        newValue: 'CANCELLED',
+        reason: cancellationReason,
+        metadata: { cancellationReason, cancelledBy: cancelledBy || user.username, blockchainTxId: null },
+      }, `customs declaration ${declarationId} cancel`);
 
       logger.info(`✅ [CUSTOMS] Declaration cancelled: ${declarationId}`);
 
