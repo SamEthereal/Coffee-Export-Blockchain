@@ -23,7 +23,6 @@ import {
 import {
   Add,
   CheckCircle,
-  Cancel,
   TrendingUp,
   AccountBalance,
   CurrencyExchange,
@@ -179,7 +178,6 @@ const NBEPortal: React.FC = () => {
     organizationsInvolved: 0,
   });
   const [selectedForex, setSelectedForex] = useState<ForexAllocation | null>(null);
-  const [approvalDialogOpen, setApprovalDialogOpen] = useState(false);
   const [detailsDialogOpen, setDetailsDialogOpen] = useState(false);
   const [forexDialogOpen, setForexDialogOpen] = useState(false);
   const [rateDialogOpen, setRateDialogOpen] = useState(false);
@@ -708,93 +706,16 @@ const NBEPortal: React.FC = () => {
     }
   };
 
-  const handleApproveContract = async (contract: ContractWithTransport) => {
-    if (!contract) return;
-    
-    try {
-      setLoading(true);
-      const user = JSON.parse(localStorage.getItem('user') || '{}');
-      const nbeOfficer = user.username || 'NBE Officer';
-
-      const result = await api.approveContractForForex(contract.contractId, nbeOfficer);
-      
-      if (result.success) {
-        setApprovalNotification({
-          open: true,
-          success: true,
-          message: `Contract ${contract.contractId} approved for forex allocation. Banks can now issue the LC and allocate forex under the active NBE ledger policy.`
-        });
-        await loadData();
-      } else {
-        setApprovalNotification({
-          open: true,
-          success: false,
-          message: result.error?.message || 'Failed to approve contract'
-        });
-      }
-    } catch (error: any) {
-      console.error('Error approving contract:', error);
-      setApprovalNotification({
-        open: true,
-        success: false,
-        message: error.response?.data?.error?.message || 'Failed to approve contract'
-      });
-    } finally {
-      setLoading(false);
-      setApprovalDialogOpen(false);
-      setSelectedContract(null);
-    }
-  };
-
-  // ==================== NBE CONTRACT APPROVAL WORKFLOW ====================
-  
-  // Reject Contract (REGISTERED → REJECTED)
-  const handleRejectContract = async (contract: ContractWithTransport, rejectionReason: string) => {
-    if (!rejectionReason) {
-      setApprovalNotification({
-        open: true,
-        success: false,
-        message: 'Please provide a reason for rejection'
-      });
-      return;
-    }
-    
-    try {
-      setLoading(true);
-      const user = JSON.parse(localStorage.getItem('user') || '{}');
-      const nbeOfficer = user.username || 'NBE Officer';
-
-      const result = await api.rejectContract(contract.contractId, rejectionReason, nbeOfficer);
-      
-      if (result.success) {
-        setApprovalNotification({
-          open: true,
-          success: true,
-          message: `Contract ${contract.contractId} rejected. Exporter will be notified. Reason: ${rejectionReason}`
-        });
-        await loadData();
-      } else {
-        setApprovalNotification({
-          open: true,
-          success: false,
-          message: result.error?.message || 'Failed to reject contract'
-        });
-      }
-    } catch (error: any) {
-      console.error('Error rejecting contract:', error);
-      setApprovalNotification({
-        open: true,
-        success: false,
-        message: error.response?.data?.error?.message || 'Failed to reject contract'
-      });
-    } finally {
-      setLoading(false);
-      setSelectedContract(null);
-    }
-  };
-
   // ==================== NBE FOREX MONITORING (READ-ONLY) ====================
   // Note: Banks allocate forex per NBE policy, NBE monitors compliance
+  //
+  // REMOVED 2026-11-14 (fix/remaining-ui, Issue 5): the NBE contract
+  // approval dialog + handlers are gone. POST /contracts/:id/nbe-approve
+  // always returns 400 ENDPOINT_DEPRECATED — contract approval is
+  // ECTA-only, and the reject endpoint is ECTA-only too (403 for NBE).
+  // The grid's reject button never even called the API: it showed a
+  // prompt() + alert() claiming the contract was rejected. NBE keeps its
+  // real levers: forex allocation, exchange rates, retention policy.
   
   // Set Exchange Rate (NBE Authority)
   const handleSetExchangeRate = async (currency: string, buyingRate: number, sellingRate: number) => {
@@ -1193,51 +1114,6 @@ const NBEPortal: React.FC = () => {
               <Visibility />
             </IconButton>
           </Tooltip>
-          {params.row.contractStatus === 'REGISTERED' && (
-            <>
-              <Tooltip title="Approve for Forex Allocation">
-                <IconButton 
-                  size="small"
-                  color="success"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setSelectedContract(params.row);
-                    setApprovalDialogOpen(true);
-                  }}
-                >
-                  <CheckCircle />
-                </IconButton>
-              </Tooltip>
-              <Tooltip title="Reject Contract">
-                <IconButton 
-                  size="small"
-                  color="error"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    const reason = prompt(
-                      `Reject Contract ${params.row.contractId}?\n\n` +
-                      `Reasons:\n` +
-                      `- Insufficient documentation\n` +
-                      `- Value exceeds exporter capacity\n` +
-                      `- Buyer country restrictions\n` +
-                      `- Regulatory non-compliance\n` +
-                      `- Incorrect contract terms\n\n` +
-                      `Enter rejection reason:`
-                    );
-                    if (reason) {
-                      alert(
-                        `Contract ${params.row.contractId} rejected.\n\n` +
-                        `Reason: ${reason}\n\n` +
-                        `Exporter and bank will be notified.`
-                      );
-                    }
-                  }}
-                >
-                  <Cancel />
-                </IconButton>
-              </Tooltip>
-            </>
-          )}
         </Box>
       ),
     },
@@ -2431,141 +2307,6 @@ const NBEPortal: React.FC = () => {
             </Grid>
           </Grid>
         </Box>
-      </PortalDialog>
-
-      {/* Contract Approval Dialog */}
-      <PortalDialog
-        brand="NBE"
-        open={approvalDialogOpen}
-        onClose={() => setApprovalDialogOpen(false)}
-        maxWidth="sm"
-        title="Approve Contract for Forex Allocation"
-        actions={
-          <>
-            <SecondaryButton brand="NBE" onClick={() => setApprovalDialogOpen(false)}>
-            Cancel
-            </SecondaryButton>
-            <PrimaryButton
-            brand="NBE"
-            disabled={!selectedContract?.minimumPriceCompliant}
-            onClick={() => handleApproveContract(selectedContract!)}
-            >
-            Approve for Forex
-            </PrimaryButton>
-          </>
-        }
-      >
-          {selectedContract && (
-            <Box sx={{ pt: 2 }}>
-              <Alert severity="info" sx={{ mb: 3 }}>
-                <Typography variant="body2">
-                  <strong>NBE Approval:</strong> This will approve the contract for foreign exchange allocation eligibility.
-                  Only contracts meeting minimum price requirements should be approved.
-                </Typography>
-              </Alert>
-              
-              <Grid container spacing={2}>
-                <Grid item xs={12} md={6}>
-                  <PortalField
-                    fullWidth
-                    label="Contract ID"
-                    value={selectedContract.contractId}
-                    disabled
-                  />
-                </Grid>
-                <Grid item xs={12} md={6}>
-                  <PortalField
-                    fullWidth
-                    label="Exporter ID"
-                    value={selectedContract.exporterId}
-                    disabled
-                  />
-                </Grid>
-                <Grid item xs={12} md={6}>
-                  <PortalField
-                    fullWidth
-                    label="Contract Value"
-                    value={formatCurrency(selectedContract.totalValue)}
-                    disabled
-                  />
-                </Grid>
-                <Grid item xs={12} md={6}>
-                  <PortalField
-                    fullWidth
-                    label="Min Price Compliant"
-                    value={selectedContract.minimumPriceCompliant ? 'Yes' : 'No'}
-                    disabled
-                    sx={{
-                      '& .MuiInputBase-input': {
-                        color: selectedContract.minimumPriceCompliant ? '#4caf50' : '#f44336'
-                      }
-                    }}
-                  />
-                </Grid>
-                <Grid item xs={12}>
-                  <PortalField
-                    fullWidth
-                    label="Coffee Type & Quality"
-                    value={`${selectedContract.coffeeType} - ${selectedContract.quantity} kg`}
-                    disabled
-                  />
-                </Grid>
-                
-                {/* Transport Mode Display */}
-                {selectedContract?.transportMode && (
-                  <Grid item xs={12} md={6}>
-                    <Typography variant="body2" color="textSecondary" gutterBottom>
-                      Transport Method & Timeline
-                    </Typography>
-                    <Box>
-                      <Chip 
-                        icon={selectedContract.transportMode === 'AIR' ? 
-                          <FlightTakeoff /> : <DirectionsBoat />}
-                        label={selectedContract.transportMode === 'AIR' ? 
-                          'Air Freight' : 'Sea Freight'}
-                        size="small"
-                        color={selectedContract.transportMode === 'AIR' ? 
-                          'secondary' : 'primary'}
-                        sx={{ fontWeight: 600 }}
-                      />
-                      <Typography variant="caption" sx={{ 
-                        display: 'block', 
-                        mt: 0.5,
-                        color: 'text.secondary'
-                      }}>
-                        Expected export completion: {
-                          selectedContract.transportMode === 'AIR' ? 
-                          '5-10 days' : '35-45 days'
-                        }
-                      </Typography>
-                    </Box>
-                  </Grid>
-                )}
-                
-                {/* Air Freight Forex Realization Alert */}
-                {selectedContract?.transportMode === 'AIR' && (
-                  <Grid item xs={12}>
-                    <Alert severity="success">
-                      <Typography variant="body2">
-                        <strong>Faster Forex Realization:</strong> Air freight enables rapid export completion and payment 
-                        receipt, improving forex retention timeline and exporter liquidity (typically 12-15 days vs 40-45 days for sea freight).
-                      </Typography>
-                    </Alert>
-                  </Grid>
-                )}
-                
-                <Grid item xs={12}>
-                  <PortalField
-                    fullWidth
-                    label="Approval Comments"
-                    multiline
-                    rows={3}
-                    placeholder="NBE approval comments and justification"
-                  />
-                </Grid>
-              </Grid>
-            </Box>
-          )}
       </PortalDialog>
 
       {/* Contract Details Dialog */}

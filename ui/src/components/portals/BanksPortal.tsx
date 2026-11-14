@@ -295,6 +295,28 @@ const BanksPortal: React.FC = () => {
   });
   const [selectedForex, setSelectedForex] = useState<ForexAllocation | null>(null);
   const [selectedPaymentForDetails, setSelectedPaymentForDetails] = useState<any | null>(null);
+  // Standby LC issuance (Issue 6, 2026-11-14): POST /banking/lc/standby/issue
+  // was API-only. The form lives on the All LCs tab (tab 10); the chaincode
+  // (IssueStandbyLC) only accepts an APPROVED or COMPLETED contract, so the
+  // contract picker offers the already-loaded APPROVED contracts.
+  const [standbyDialogOpen, setStandbyDialogOpen] = useState(false);
+  const [issuingStandby, setIssuingStandby] = useState(false);
+  const [standbyError, setStandbyError] = useState('');
+  const [standbyResult, setStandbyResult] = useState<{ standbyLCId: string; standbyLCNumber: string; txId: string } | null>(null);
+  const [standbyForm, setStandbyForm] = useState({
+    standbyLCNumber: '',
+    contractId: '',
+    amount: '',
+    currency: 'USD',
+    expiryDate: '',
+    type: 'PERFORMANCE',
+    purpose: '',
+    beneficiary: '',
+    applicant: '',
+    terms: '',
+    issuingBank: 'Commercial Bank of Ethiopia',
+    advisingBank: '',
+  });
   const [allocationDialogOpen, setAllocationDialogOpen] = useState(false);
   const [allocationPolicyReady, setAllocationPolicyReady] = useState(false);
   const [allocationForm, setAllocationForm] = useState({
@@ -1567,6 +1589,77 @@ const BanksPortal: React.FC = () => {
     } catch (error: any) {
       console.error('Error approving LC:', error);
       showError('Network Error', 'Failed to approve LC', error.message);
+    }
+  };
+
+  // Issue Standby LC — POST /banking/lc/standby/issue (BANKS). Verified
+  // live 2026-11-14: 201 with a real ledger txId (SBLC-1794647078469,
+  // tx 6d946161…). The chaincode writes the ledger document FIRST and
+  // the API mirrors it to Postgres only after the chain write succeeds,
+  // so a failure here leaves no orphan row. Required fields are exactly
+  // the route's validators (banking.ts): standbyLCNumber, contractId,
+  // amount, currency, expiryDate, type (PERFORMANCE / ADVANCE_PAYMENT /
+  // BID_BOND / FINANCIAL), purpose, beneficiary, applicant; terms,
+  // issuingBank and advisingBank are optional.
+  const handleIssueStandbyLC = async () => {
+    const token = localStorage.getItem('authToken');
+    if (!token) {
+      showError('Authentication Required', 'You are not authenticated', 'Please login again to continue');
+      return;
+    }
+
+    setIssuingStandby(true);
+    setStandbyError('');
+    try {
+      const response = await apiFetch('/banking/lc/standby/issue', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          standbyLCNumber: standbyForm.standbyLCNumber.trim(),
+          contractId: standbyForm.contractId,
+          amount: Number(standbyForm.amount),
+          currency: standbyForm.currency.trim(),
+          expiryDate: standbyForm.expiryDate,
+          type: standbyForm.type,
+          purpose: standbyForm.purpose.trim(),
+          beneficiary: standbyForm.beneficiary.trim(),
+          applicant: standbyForm.applicant.trim(),
+          terms: standbyForm.terms.trim(),
+          issuingBank: standbyForm.issuingBank.trim(),
+          advisingBank: standbyForm.advisingBank.trim(),
+        }),
+      });
+
+      const result = await response.json();
+
+      if (result.success) {
+        const txId = extractTxId(result);
+        setStandbyResult({
+          standbyLCId: result.data?.standbyLCId || '',
+          standbyLCNumber: standbyForm.standbyLCNumber.trim(),
+          txId: txId || '',
+        });
+        showSuccess(
+          'Standby Letter of Credit Issued',
+          `Standby LC ${standbyForm.standbyLCNumber.trim()} issued successfully`,
+          'The standby LC is now ISSUED on the ledger.',
+          txId,
+        );
+        loadBankingData();
+      } else {
+        const errorMsg = result.error?.message || 'Unknown error';
+        setStandbyError(errorMsg);
+        showError('Standby LC Issue Failed', errorMsg, 'Please try again or contact support');
+      }
+    } catch (error: any) {
+      console.error('Error issuing standby LC:', error);
+      setStandbyError(error.message);
+      showError('Network Error', 'Failed to issue standby LC', error.message);
+    } finally {
+      setIssuingStandby(false);
     }
   };
 
@@ -4986,6 +5079,204 @@ const BanksPortal: React.FC = () => {
         
       </PortalDialog>
 
+      {/* Issue Standby LC Dialog — Issue 6 (2026-11-14): standby-LC issuance
+          was API-only (POST /banking/lc/standby/issue). Fields are exactly
+          the route's validators; the contract must be APPROVED or COMPLETED
+          on the ledger (chaincode IssueStandbyLC enforces it). */}
+      <PortalDialog brand="BANKS" open={standbyDialogOpen} onClose={() => setStandbyDialogOpen(false)} maxWidth="md" title="Issue Standby Letter of Credit" actions={<>
+        <GhostButton brand="BANKS" onClick={() => setStandbyDialogOpen(false)}>Cancel</GhostButton>
+        <PrimaryButton brand="BANKS"
+          variant="contained"
+          onClick={handleIssueStandbyLC}
+          loading={issuingStandby}
+          loadingLabel="Issuing…"
+          ledgerWrite
+          disabled={issuingStandby || !standbyForm.standbyLCNumber.trim() || !standbyForm.contractId || !(Number(standbyForm.amount) > 0) || !standbyForm.currency.trim() || !standbyForm.expiryDate || !standbyForm.type || !standbyForm.purpose.trim() || !standbyForm.beneficiary.trim() || !standbyForm.applicant.trim()}
+        >
+          Issue Standby LC
+        </PrimaryButton>
+      </>}>
+        <Box sx={{ pt: 2 }}>
+          <Alert severity="info" sx={{ mb: 3 }}>
+            <Typography variant="body2">
+              <strong>Standby LC (UCP 600 / ISP98):</strong> a bank guarantee — performance, advance payment, bid bond or financial — issued against an ECTA-approved contract. The guarantee is written to the ledger first; the issue is confirmed only when the ledger transaction succeeds.
+            </Typography>
+          </Alert>
+          {standbyResult && (
+            <Alert severity="success" sx={{ mb: 3 }}>
+              <Typography variant="body2">
+                <strong>Issued:</strong> {standbyResult.standbyLCNumber} ({standbyResult.standbyLCId}) — status ISSUED.
+              </Typography>
+              <Typography variant="body2" sx={{ wordBreak: 'break-all' }}>
+                <strong>Ledger txId:</strong> {standbyResult.txId}
+              </Typography>
+            </Alert>
+          )}
+          {standbyError && (
+            <Alert severity="error" sx={{ mb: 3 }}>
+              <Typography variant="body2">
+                <strong>Issue failed:</strong> {standbyError}
+              </Typography>
+            </Alert>
+          )}
+          <Grid container spacing={2}>
+            <Grid item xs={12} md={6}>
+              <PortalField
+                label="Standby LC Number *"
+                value={standbyForm.standbyLCNumber}
+                onChange={(e) => setStandbyForm({ ...standbyForm, standbyLCNumber: e.target.value })}
+                fullWidth
+                required
+                helperText="Must be unique — a duplicate number is rejected with 409."
+              />
+            </Grid>
+            <Grid item xs={12} md={6}>
+              {contracts.length > 0 ? (
+                <PortalField
+                  label="Contract *"
+                  select
+                  value={standbyForm.contractId}
+                  onChange={(e) => {
+                    const selected = contracts.find(c => c.contractId === e.target.value);
+                    setStandbyForm(prev => ({
+                      ...prev,
+                      contractId: e.target.value,
+                      beneficiary: selected?.exporterId || prev.beneficiary,
+                      applicant: selected?.exporterId || prev.applicant,
+                    }));
+                  }}
+                  fullWidth
+                  required
+                  helperText="Only ECTA-approved contracts can carry a standby LC."
+                >
+                  {contracts.map((c) => (
+                    <MenuItem key={c.contractId} value={c.contractId}>
+                      {c.contractId} — {c.exporterId} ({c.totalValue?.toLocaleString()} {c.currency})
+                    </MenuItem>
+                  ))}
+                </PortalField>
+              ) : (
+                <PortalField
+                  label="Contract ID *"
+                  value={standbyForm.contractId}
+                  onChange={(e) => setStandbyForm({ ...standbyForm, contractId: e.target.value })}
+                  fullWidth
+                  required
+                  helperText="Contract must exist and be APPROVED or COMPLETED."
+                />
+              )}
+            </Grid>
+            <Grid item xs={12} md={6}>
+              <PortalField
+                label="Amount *"
+                type="number"
+                value={standbyForm.amount}
+                onChange={(e) => setStandbyForm({ ...standbyForm, amount: e.target.value })}
+                fullWidth
+                required
+                error={standbyForm.amount !== '' && !(Number(standbyForm.amount) > 0)}
+                helperText={standbyForm.amount !== '' && !(Number(standbyForm.amount) > 0) ? 'Amount must be greater than 0.' : undefined}
+                inputProps={{ step: '0.01', min: 0 }}
+              />
+            </Grid>
+            <Grid item xs={12} md={6}>
+              <PortalField
+                label="Currency *"
+                value={standbyForm.currency}
+                onChange={(e) => setStandbyForm({ ...standbyForm, currency: e.target.value })}
+                fullWidth
+                required
+              />
+            </Grid>
+            <Grid item xs={12} md={6}>
+              <PortalField
+                label="Expiry Date *"
+                type="date"
+                value={standbyForm.expiryDate}
+                onChange={(e) => setStandbyForm({ ...standbyForm, expiryDate: e.target.value })}
+                fullWidth
+                required
+                InputLabelProps={{ shrink: true }}
+              />
+            </Grid>
+            <Grid item xs={12} md={6}>
+              <PortalField
+                label="Type *"
+                select
+                value={standbyForm.type}
+                onChange={(e) => setStandbyForm({ ...standbyForm, type: e.target.value })}
+                fullWidth
+                required
+              >
+                <MenuItem value="PERFORMANCE">Performance Guarantee</MenuItem>
+                <MenuItem value="ADVANCE_PAYMENT">Advance Payment Guarantee</MenuItem>
+                <MenuItem value="BID_BOND">Bid Bond</MenuItem>
+                <MenuItem value="FINANCIAL">Financial Guarantee</MenuItem>
+              </PortalField>
+            </Grid>
+            <Grid item xs={12}>
+              <PortalField
+                label="Purpose *"
+                value={standbyForm.purpose}
+                onChange={(e) => setStandbyForm({ ...standbyForm, purpose: e.target.value })}
+                fullWidth
+                required
+                placeholder="e.g. Performance guarantee for coffee export contract"
+              />
+            </Grid>
+            <Grid item xs={12} md={6}>
+              <PortalField
+                label="Beneficiary *"
+                value={standbyForm.beneficiary}
+                onChange={(e) => setStandbyForm({ ...standbyForm, beneficiary: e.target.value })}
+                fullWidth
+                required
+                helperText="Defaults to the selected contract's exporter."
+              />
+            </Grid>
+            <Grid item xs={12} md={6}>
+              <PortalField
+                label="Applicant *"
+                value={standbyForm.applicant}
+                onChange={(e) => setStandbyForm({ ...standbyForm, applicant: e.target.value })}
+                fullWidth
+                required
+              />
+            </Grid>
+            <Grid item xs={12}>
+              <PortalField
+                label="Terms"
+                value={standbyForm.terms}
+                onChange={(e) => setStandbyForm({ ...standbyForm, terms: e.target.value })}
+                fullWidth
+                multiline
+                rows={2}
+                placeholder="Payable on first written demand with beneficiary statement"
+                helperText="Optional — defaults to payable on first written demand."
+              />
+            </Grid>
+            <Grid item xs={12} md={6}>
+              <PortalField
+                label="Issuing Bank"
+                value={standbyForm.issuingBank}
+                onChange={(e) => setStandbyForm({ ...standbyForm, issuingBank: e.target.value })}
+                fullWidth
+                helperText="Optional — defaults to the contract's buyer bank."
+              />
+            </Grid>
+            <Grid item xs={12} md={6}>
+              <PortalField
+                label="Advising Bank"
+                value={standbyForm.advisingBank}
+                onChange={(e) => setStandbyForm({ ...standbyForm, advisingBank: e.target.value })}
+                fullWidth
+                helperText="Optional — defaults to the contract's exporter bank."
+              />
+            </Grid>
+          </Grid>
+        </Box>
+      </PortalDialog>
+
       {/* LC Details Dialog */}
             <PortalDialog brand="BANKS" open={dialogOpen && dialogType === 'lcDetails'} onClose={handleCloseDialog} maxWidth="md" title={<>Letter of Credit Details
           {lcDetailsLoading && (
@@ -6367,6 +6658,24 @@ const BanksPortal: React.FC = () => {
               onClick={() => handleBulkApproveLC()}
             >
               Bulk Approve ({selectedLCIds.length})
+            </PrimaryButton>
+            <PrimaryButton brand="BANKS"
+              size="small"
+              onClick={() => {
+                const firstContract = contracts[0];
+                setStandbyResult(null);
+                setStandbyError('');
+                setStandbyForm(prev => ({
+                  ...prev,
+                  standbyLCNumber: `SBLC-${new Date().getFullYear()}-${Date.now().toString().slice(-6)}`,
+                  contractId: firstContract?.contractId || '',
+                  beneficiary: firstContract?.exporterId || '',
+                  applicant: firstContract?.exporterId || '',
+                }));
+                setStandbyDialogOpen(true);
+              }}
+            >
+              Issue Standby LC
             </PrimaryButton>
           </Box>
           <Box sx={{ mb: 3 }}>
