@@ -210,6 +210,37 @@ router.post('/initiate', authMiddleware,
 
     logger.info(`[BORDERCROSSING] 📝 Initiating crossing: ${crossingId}`);
 
+    // Shipment must exist on the ledger and belong to the supplied
+    // contract/exporter. InitiateBorderCrossing stores whatever IDs it
+    // is given with no existence check, so without this gate a crossing
+    // could be initiated for a shipment that does not exist (proven
+    // live 2026-11-14: SHIP-FAKE-999 → 201, crossing BC-PROBE-…
+    // written PENDING on-chain). Read-only check before any write.
+    const shipmentRead = await fabricService.queryChaincode('ReadShipment', [shipmentId]);
+    if (!shipmentRead.success || !shipmentRead.data) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'SHIPMENT_NOT_FOUND',
+          message: `Cannot initiate border crossing: shipment ${shipmentId} does not exist`,
+        },
+        timestamp: new Date().toISOString(),
+      });
+    }
+    const sh = shipmentRead.data as any;
+    const shContract = sh.contractId || sh.ContractID || sh.contractID;
+    const shExporter = sh.exporterId || sh.ExporterID || sh.exporterID;
+    if ((shContract && shContract !== contractId) || (shExporter && shExporter !== exporterId)) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'SHIPMENT_MISMATCH',
+          message: `Cannot initiate border crossing: shipment ${shipmentId} belongs to contract ${shContract || 'unknown'} / exporter ${shExporter || 'unknown'}, not ${contractId} / ${exporterId}`,
+        },
+        timestamp: new Date().toISOString(),
+      });
+    }
+
     const result = await fabricService.submitTransaction('InitiateBorderCrossing',
       crossingId,
       shipmentId,
