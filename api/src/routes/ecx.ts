@@ -6,6 +6,7 @@ import { FabricService } from '../services/fabricService';
 import { DatabaseService } from '../services/databaseService';
 import { authMiddleware, requireRole } from '../middleware/auth';
 import { logger } from '../utils/logger';
+import { logAuditBestEffort } from '../utils/auditBestEffort';
 import { body, param } from 'express-validator';
 import { validateRequest } from '../middleware/validation';
 
@@ -342,6 +343,16 @@ router.post('/lots', authMiddleware, requireRole('ECX', 'ECX_ADMIN'),
         } catch (mirrorError: any) {
           logger.warn(`ECX lot ${lotId} intake succeeded on-chain but the PostgreSQL mirror failed:`, mirrorError.message);
         }
+        // Audit: this chain move never wrote an audit_trail row.
+        // Best-effort — a failed audit write must not fail the move.
+        await logAuditBestEffort(req, {
+          entityType: 'ECX_LOT',
+          entityId: lotId,
+          action: 'REGISTER',
+          newValue: 'REGISTERED',
+          blockchainTxId: result.txId || undefined,
+          metadata: { ecxLotNumber: lotNumber, exporterId, blockchainTxId: result.txId || null },
+        }, `ecx lot ${lotId} register`);
         res.status(201).json({ success: true, data: { lotId, ecxLotNumber: lotNumber }, txId: result.txId, timestamp: new Date().toISOString() });
       } else if (isPendingDeploy(result.error)) {
         res.status(503).json({ success: false, error: { code: 'CHAINCODE_UPGRADING', message: 'ECX chaincode functions are being deployed. Run scripts/run-upgrade-seq2.bat and retry in a few minutes.' }, timestamp: new Date().toISOString() });
@@ -389,9 +400,30 @@ router.post('/lots/:lotId/grade', authMiddleware, requireRole('ECX', 'ECX_ADMIN'
         if (parseFloat(moistureContent) > 12) {
           const rejectionReason = `Moisture content ${moistureContent}% exceeds 12% export limit`;
           await mirrorLotStatusPG(lotId, 'REJECTED', { rejection_reason: rejectionReason });
+          // Audit: this chain move never wrote an audit_trail row.
+          // Best-effort — a failed audit write must not fail the move.
+          await logAuditBestEffort(req, {
+            entityType: 'ECX_LOT',
+            entityId: lotId,
+            action: 'GRADE',
+            newValue: 'REJECTED',
+            reason: rejectionReason,
+            blockchainTxId: result.txId || undefined,
+            metadata: { moistureContent, defectCount, qualityScore, blockchainTxId: result.txId || null },
+          }, `ecx lot ${lotId} grade-rejected`);
           return res.json({ success: true, data: { lotId, status: 'REJECTED', rejectionReason, moistureContent: Number(moistureContent), defectCount: Number(defectCount) }, txId: result.txId, timestamp: new Date().toISOString() });
         }
         await mirrorLotStatusPG(lotId, 'GRADED', { grade, quality_score: qualityScore != null ? Number(qualityScore) : null });
+        // Audit: this chain move never wrote an audit_trail row.
+        // Best-effort — a failed audit write must not fail the move.
+        await logAuditBestEffort(req, {
+          entityType: 'ECX_LOT',
+          entityId: lotId,
+          action: 'GRADE',
+          newValue: 'GRADED',
+          blockchainTxId: result.txId || undefined,
+          metadata: { grade, qualityScore, moistureContent, defectCount, blockchainTxId: result.txId || null },
+        }, `ecx lot ${lotId} grade`);
         res.json({ success: true, data: { lotId, status: 'GRADED', grade, qualityScore: Number(qualityScore || 0), moistureContent: Number(moistureContent), defectCount: Number(defectCount) }, txId: result.txId, timestamp: new Date().toISOString() });
       } else if (isPendingDeploy(result.error)) {
         res.status(503).json({ success: false, error: { code: 'CHAINCODE_UPGRADING', message: 'ECX chaincode functions are being deployed. Run scripts/run-upgrade-seq2.bat and retry.' }, timestamp: new Date().toISOString() });
@@ -428,6 +460,17 @@ router.post('/lots/:lotId/reject', authMiddleware,
       ]);
       if (result.success) {
         await mirrorLotStatusPG(lotId, 'REJECTED', { rejection_reason: rejectionReason });
+        // Audit: this chain move never wrote an audit_trail row.
+        // Best-effort — a failed audit write must not fail the move.
+        await logAuditBestEffort(req, {
+          entityType: 'ECX_LOT',
+          entityId: lotId,
+          action: 'REJECT',
+          newValue: 'REJECTED',
+          reason: rejectionReason,
+          blockchainTxId: result.txId || undefined,
+          metadata: { rejectionReason, blockchainTxId: result.txId || null },
+        }, `ecx lot ${lotId} reject`);
         res.json({ success: true, data: { lotId, status: 'REJECTED', rejectionReason }, txId: result.txId, timestamp: new Date().toISOString() });
       } else if (isPendingDeploy(result.error)) {
         res.status(503).json({ success: false, error: { code: 'CHAINCODE_UPGRADING', message: 'ECX chaincode functions are being deployed. Run scripts/run-upgrade-seq2.bat and retry.' }, timestamp: new Date().toISOString() });
@@ -456,6 +499,16 @@ router.post('/lots/:lotId/assign', authMiddleware, requireRole('ECX', 'ECX_ADMIN
       ]);
       if (result.success) {
         await mirrorLotStatusPG(lotId, 'ASSIGNED', { contract_id: contractId });
+        // Audit: this chain move never wrote an audit_trail row.
+        // Best-effort — a failed audit write must not fail the move.
+        await logAuditBestEffort(req, {
+          entityType: 'ECX_LOT',
+          entityId: lotId,
+          action: 'ASSIGN',
+          newValue: 'ASSIGNED',
+          blockchainTxId: result.txId || undefined,
+          metadata: { contractId, blockchainTxId: result.txId || null },
+        }, `ecx lot ${lotId} assign`);
         res.json({ success: true, data: { lotId, contractId }, txId: result.txId, timestamp: new Date().toISOString() });
       } else if (isPendingDeploy(result.error)) {
         res.status(503).json({ success: false, error: { code: 'CHAINCODE_UPGRADING', message: 'ECX chaincode functions are being deployed. Run scripts/run-upgrade-seq2.bat and retry.' }, timestamp: new Date().toISOString() });
@@ -481,6 +534,16 @@ router.post('/lots/:lotId/release', authMiddleware, requireRole('ECX', 'ECX_ADMI
       ]);
       if (result.success) {
         await mirrorLotStatusPG(lotId, 'RELEASED');
+        // Audit: this chain move never wrote an audit_trail row.
+        // Best-effort — a failed audit write must not fail the move.
+        await logAuditBestEffort(req, {
+          entityType: 'ECX_LOT',
+          entityId: lotId,
+          action: 'RELEASE',
+          newValue: 'RELEASED',
+          blockchainTxId: result.txId || undefined,
+          metadata: { blockchainTxId: result.txId || null },
+        }, `ecx lot ${lotId} release`);
         res.json({ success: true, data: { lotId }, txId: result.txId, timestamp: new Date().toISOString() });
       } else if (isPendingDeploy(result.error)) {
         res.status(503).json({ success: false, error: { code: 'CHAINCODE_UPGRADING', message: 'ECX chaincode functions are being deployed. Run scripts/run-upgrade-seq2.bat and retry.' }, timestamp: new Date().toISOString() });
@@ -536,6 +599,16 @@ router.post('/lots/:lotId/auto-release', authMiddleware, requireRole('ECX', 'ECX
       }
 
       await mirrorLotStatusPG(lotId, 'RELEASED');
+      // Audit: this chain move never wrote an audit_trail row.
+      // Best-effort — a failed audit write must not fail the move.
+      await logAuditBestEffort(req, {
+        entityType: 'ECX_LOT',
+        entityId: lotId,
+        action: 'RELEASE',
+        newValue: 'RELEASED',
+        blockchainTxId: result.txId || undefined,
+        metadata: { ecxLotNumber, shipmentID, blockchainTxId: result.txId || null },
+      }, `ecx lot ${lotId} auto-release`);
       return res.json({
         success: true,
         data: { lotId, ecxLotNumber, shipmentID },

@@ -412,6 +412,31 @@ export class PostDeliveryWorkflowService {
             if (settleResult.success) {
               blockchainSettled = true;
               logger.info(`✅ Blockchain: Payment ${paymentID} settled, LC ${lcReference} cascaded to SETTLED`);
+              // Audit: this SettlePayment chain write in the close flow
+              // never wrote an audit_trail row. Best-effort — a failed
+              // audit write must not fail the settlement.
+              try {
+                const auditService = require('./auditService').default;
+                await auditService.recordAudit({
+                  entityType: 'PAYMENT',
+                  entityId: paymentID,
+                  actionType: 'SETTLE',
+                  actionBy: userId,
+                  organizationMSP: 'BanksMSP',
+                  details: {
+                    lcReference,
+                    shipmentId,
+                    payingBank,
+                    payingBankBIC,
+                    swiftReference,
+                    blockchainTxId: (settleResult as any)?.txId || null
+                  },
+                  blockchainTxId: (settleResult as any)?.txId,
+                  timestamp: new Date()
+                });
+              } catch (auditErr) {
+                logger.warn(`⚠️ Failed to audit LC settlement for ${paymentID} (non-fatal):`, auditErr);
+              }
             } else {
               logger.warn(`⚠️ Blockchain SettlePayment failed for ${paymentID}: ${settleResult.error}`);
             }

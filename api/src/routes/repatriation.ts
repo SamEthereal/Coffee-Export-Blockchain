@@ -9,6 +9,7 @@ import { DatabaseService } from '../services/databaseService';
 import { authMiddleware } from '../middleware/auth';
 import { requireRole } from '../middleware/rbac';
 import { logger } from '../utils/logger';
+import { logAuditBestEffort } from '../utils/auditBestEffort';
 
 const router = express.Router();
 const fabricService = FabricService.getInstance();
@@ -313,6 +314,17 @@ router.post('/initiate', authMiddleware, requireRole(['BANKS', 'BANK', 'BANK_ADM
     } catch (mirrorErr) {
       logger.warn(`[REPATRIATION] Could not mirror initiation of ${repatriationId} to Postgres:`, mirrorErr);
     }
+    // Audit: this chain move never wrote an audit_trail row.
+    // Best-effort — a failed audit write must not fail the move.
+    await logAuditBestEffort(req, {
+      entityType: 'REPATRIATION',
+      entityId: repatriationId,
+      action: 'INITIATE',
+      newValue: 'PENDING',
+      blockchainTxId: result.transactionId || undefined,
+      metadata: { paymentId, contractId, shipmentId, exporterId, blockchainTxId: result.transactionId || null },
+    }, `repatriation ${repatriationId} initiate`);
+
 
     res.status(201).json({
       success: true,
@@ -406,6 +418,16 @@ router.post('/:id/record', authMiddleware, requireRole(['BANKS', 'BANK', 'BANK_A
     }
 
     logger.info(`[REPATRIATION] ✅ Recorded: ${id}`);
+    // Audit: this chain move never wrote an audit_trail row.
+    // Best-effort — a failed audit write must not fail the move.
+    await logAuditBestEffort(req, {
+      entityType: 'REPATRIATION',
+      entityId: id,
+      action: 'RECORD',
+      blockchainTxId: result.transactionId || undefined,
+      metadata: { repatriatedAmount, convertedAmount, exchangeRate, swiftReference, blockchainTxId: result.transactionId || null },
+    }, `repatriation ${id} record`);
+
 
     res.json({
       success: true,
@@ -500,6 +522,16 @@ router.post('/:id/verify', authMiddleware, requireRole(['NBE', 'NBE_ADMIN', 'NBE
     } catch (mirrorErr) {
       logger.warn(`[REPATRIATION] Could not mirror verification of ${id} to Postgres:`, mirrorErr);
     }
+    // Audit: this chain move never wrote an audit_trail row.
+    // Best-effort — a failed audit write must not fail the move.
+    await logAuditBestEffort(req, {
+      entityType: 'REPATRIATION',
+      entityId: id,
+      action: 'VERIFY',
+      blockchainTxId: result.transactionId || undefined,
+      metadata: { verificationRef, verificationNotes, blockchainTxId: result.transactionId || null },
+    }, `repatriation ${id} verify`);
+
 
     res.json({
       success: true,
@@ -542,6 +574,16 @@ router.post('/:id/penalty', authMiddleware, requireRole(['NBE', 'NBE_ADMIN', 'NB
     }
 
     logger.info(`[REPATRIATION] ✅ Penalty applied: ${id}`);
+    // Audit: this chain move never wrote an audit_trail row.
+    // Best-effort — a failed audit write must not fail the move.
+    await logAuditBestEffort(req, {
+      entityType: 'REPATRIATION',
+      entityId: id,
+      action: 'APPLY_PENALTY',
+      blockchainTxId: result.transactionId || undefined,
+      metadata: { penaltyAmount, penaltyCurrency, reason, blockchainTxId: result.transactionId || null },
+    }, `repatriation ${id} penalty`);
+
 
     res.json({
       success: true,
@@ -593,6 +635,16 @@ router.post('/:id/waiver/request', authMiddleware, requireRole(['EXPORTER']), as
     }
 
     logger.info(`[REPATRIATION] ✅ Waiver requested: ${id}`);
+    // Audit: this chain move never wrote an audit_trail row.
+    // Best-effort — a failed audit write must not fail the move.
+    await logAuditBestEffort(req, {
+      entityType: 'REPATRIATION',
+      entityId: id,
+      action: 'REQUEST_WAIVER',
+      blockchainTxId: result.transactionId || undefined,
+      metadata: { waiverReason, blockchainTxId: result.transactionId || null },
+    }, `repatriation ${id} waiver-request`);
+
 
     res.json({
       success: true,
@@ -633,6 +685,16 @@ router.post('/:id/waiver/approve', authMiddleware, requireRole(['NBE', 'NBE_ADMI
     }
 
     logger.info(`[REPATRIATION] ✅ Waiver ${approved ? 'approved' : 'rejected'}: ${id}`);
+    // Audit: this chain move never wrote an audit_trail row.
+    // Best-effort — a failed audit write must not fail the move.
+    await logAuditBestEffort(req, {
+      entityType: 'REPATRIATION',
+      entityId: id,
+      action: approved ? 'APPROVE_WAIVER' : 'REJECT_WAIVER',
+      blockchainTxId: result.transactionId || undefined,
+      metadata: { approved, reason, blockchainTxId: result.transactionId || null },
+    }, `repatriation ${id} waiver-approve`);
+
 
     res.json({
       success: true,

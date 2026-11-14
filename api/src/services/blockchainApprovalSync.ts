@@ -66,6 +66,32 @@ class BlockchainApprovalSyncService {
         return false;
       }
 
+      // Audit: this SetApprovalRequirement chain write never wrote an
+      // audit_trail row. Best-effort — a failed audit write must not
+      // fail the sync (and must not mark the requirement unsynced).
+      try {
+        const auditService = require('./auditService').default;
+        await auditService.recordAudit({
+          entityType: 'APPROVAL_REQUIREMENT',
+          entityId: cacheKey,
+          actionType: 'SYNC_APPROVAL_REQUIREMENT',
+          actionBy: 'system',
+          organizationMSP: 'BanksMSP',
+          details: {
+            documentType,
+            entityType,
+            minApprovers: requirement.min_approvers,
+            requiredRoles: rolesString,
+            approvalOrder: requirement.approval_order || 'parallel',
+            blockchainTxId: (result as any)?.txId || null
+          },
+          blockchainTxId: (result as any)?.txId,
+          timestamp: new Date()
+        });
+      } catch (auditErr) {
+        logger.warn('[ApprovalSync] Failed to audit approval-requirement sync (non-fatal):', auditErr);
+      }
+
       // Mark as synced
       this.syncedRequirements.add(cacheKey);
       logger.info(`[ApprovalSync] ✅ Synced to blockchain: ${documentType}/${entityType}`);

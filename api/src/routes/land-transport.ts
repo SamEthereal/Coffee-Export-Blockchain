@@ -5,6 +5,7 @@ import express from 'express';
 import { FabricService } from '../services/fabricService';
 import { ShipmentService } from '../services/shipmentService';
 import { logger } from '../utils/logger';
+import { logAuditBestEffort } from '../utils/auditBestEffort';
 import { validateRequest } from '../middleware/validation';
 import { authMiddleware, requireRole } from '../middleware/auth';
 import { body, param } from 'express-validator';
@@ -90,6 +91,17 @@ router.post('/:shipmentID/start',
         // never fails the request.
         await shipmentService.mirrorShipmentStatus(shipmentID, 'LAND_TRANSPORT');
         logger.info(`✅ Land transport started: ${shipmentID} (Truck: ${truckPlateNumber})`);
+        // Audit: this inline chain move never wrote an audit_trail row.
+        // Best-effort — a failed audit write must not fail the move.
+        await logAuditBestEffort(req, {
+          entityType: 'SHIPMENT',
+          entityId: shipmentID,
+          action: 'START_LAND_TRANSPORT',
+          newValue: 'LAND_TRANSPORT',
+          blockchainTxId: result.txId || undefined,
+          metadata: { status: 'LAND_TRANSPORT', blockchainTxId: result.txId || null },
+        }, `shipment ${shipmentID} start-land-transport`);
+
         res.json({
           success: true,
           message: 'Land transport started successfully',
@@ -174,6 +186,16 @@ router.post('/:shipmentID/border-crossing',
 
       if (result.success) {
         logger.info(`✅ Border crossing recorded: ${shipmentID}`);
+        // Audit: this inline chain move never wrote an audit_trail row.
+        // Best-effort — a failed audit write must not fail the move.
+        await logAuditBestEffort(req, {
+          entityType: 'BORDER_CROSSING',
+          entityId: crossingID,
+          action: 'RECORD',
+          blockchainTxId: result.txId || undefined,
+          metadata: { shipmentID, blockchainTxId: result.txId || null },
+        }, `border crossing ${crossingID} for shipment ${shipmentID}`);
+
         res.json({
           success: true,
           message: 'Border crossing recorded successfully',
@@ -231,6 +253,17 @@ router.post('/:shipmentID/arrive',
 
       if (result.success) {
         logger.info(`✅ Port arrival recorded: ${shipmentID}`);
+        // Audit: this inline chain move never wrote an audit_trail row.
+        // Best-effort — a failed audit write must not fail the move.
+        await logAuditBestEffort(req, {
+          entityType: 'SHIPMENT',
+          entityId: shipmentID,
+          action: 'ARRIVE_AT_PORT',
+          newValue: 'PORT_ARRIVED',
+          blockchainTxId: result.txId || undefined,
+          metadata: { status: 'PORT_ARRIVED', blockchainTxId: result.txId || null },
+        }, `shipment ${shipmentID} port-arrival`);
+
         res.json({
           success: true,
           message: 'Arrival at Djibouti Port recorded successfully',

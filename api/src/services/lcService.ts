@@ -302,6 +302,29 @@ export class LCService {
       const forexId = await this.triggerForexAutoRequest(lcData.lcID, lc || { contract_id: lcData.contractID, exporter_id: lcData.exporterID, amount: lcData.amount, currency: lcData.currency });
 
       logger.info(`✅ [LCService] LC issued: ${lcData.lcID}`);
+      // Audit: issueLC had no audit call at all (request/approve log
+      // theirs, issue never did), so a directly issued LC left no
+      // audit_trail row. Best-effort — a failed audit write must not
+      // fail the issuance (log() never throws; the try/catch is belt
+      // and braces, matching the route-level pattern).
+      try {
+        await this.auditService.log({
+          entityType: 'LC',
+          entityId: lcData.lcID,
+          action: 'ISSUE',
+          performedBy: lcData.userId || 'bank_admin',
+          organization: lcData.userOrg || 'BANKS',
+          performedByOrg: lcData.userOrg || 'BANKS',
+          newValue: 'ISSUED',
+          reason: 'LC issued',
+          // Shared audit contract: top-level operation txId.
+          blockchainTxId: result.txId || undefined,
+          metadata: { contractID: lcData.contractID, exporterID: lcData.exporterID, amount: lcData.amount, currency: lcData.currency, forexID: forexId ?? null, blockchainTxId: result.txId || null },
+        });
+      } catch (auditErr) {
+        logger.warn(`[LCService] Could not write issue audit row for ${lcData.lcID}:`, auditErr);
+      }
+
       return {
         success: true,
         lcID: lcData.lcID,

@@ -6,6 +6,7 @@ import { authMiddleware, requireRole } from '../middleware/auth';
 import { DatabaseService } from '../services/databaseService';
 import { FabricService } from '../services/fabricService';
 import { logger } from '../utils/logger';
+import { logAuditBestEffort } from '../utils/auditBestEffort';
 
 const router = Router();
 const dbService = DatabaseService.getInstance();
@@ -230,6 +231,16 @@ router.post('/phyto', authMiddleware,
       new Date().toISOString()
     ]);
 
+    // Audit: this chain move never wrote an audit_trail row.
+    // Best-effort — a failed audit write must not fail the move.
+    await logAuditBestEffort(req, {
+      entityType: 'PHYTOSANITARY_CERTIFICATE',
+      entityId: certificateId,
+      action: 'REQUEST',
+      newValue: 'PENDING',
+      blockchainTxId: chainResult.txId || undefined,
+      metadata: { shipment, exporter, contractId, blockchainTxId: chainResult.txId || null },
+    }, `certificate ${certificateId} request`);
     res.json({
       success: true,
       message: 'Phytosanitary certificate requested on the ledger successfully',

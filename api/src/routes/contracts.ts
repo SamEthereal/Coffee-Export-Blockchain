@@ -5,6 +5,7 @@ import express, { Request, Response } from 'express';
 import { FabricService } from '../services/fabricService';
 import { ContractService, classifyChaincodeError } from '../services/contractService';
 import { logger } from '../utils/logger';
+import { logAuditBestEffort } from '../utils/auditBestEffort';
 import notificationService from '../services/notificationService';
 import { validateRequest } from '../middleware/validation';
 import { authMiddleware, requireRole } from '../middleware/auth';
@@ -231,6 +232,7 @@ router.patch('/:contractId',
       for (const flag of ['eudrRequired', 'organicCertified', 'fairTradeCertified']) {
         if (ledgerChanges[flag] !== undefined) ledgerChanges[flag] = ledgerChanges[flag] === true || ledgerChanges[flag] === 'true';
       }
+      let ledgerTxId: string | null = null;
       if (Object.keys(ledgerChanges).length > 0) {
         const ledgerContract = await fabricService.getSalesContract(contractId);
         if (ledgerContract.success && ledgerContract.data) {
@@ -239,6 +241,7 @@ router.patch('/:contractId',
             'UpdateSalesContract',
             [contractId, JSON.stringify(merged)]
           );
+          if (ledgerResult.success) ledgerTxId = ledgerResult.txId || null;
           if (!ledgerResult.success) {
             const classified = classifyChaincodeError(ledgerResult.error || '');
             const status = classified?.status || 400;
@@ -368,6 +371,16 @@ router.patch('/:contractId',
       }
       
       logger.info(`✅ Contract ${contractId} updated successfully by ${user.username} (${user.role})`);
+      // Audit: this chain move never wrote an audit_trail row.
+      // Best-effort — a failed audit write must not fail the move.
+      await logAuditBestEffort(req, {
+        entityType: 'CONTRACT',
+        entityId: contractId,
+        action: 'UPDATE',
+        blockchainTxId: ledgerTxId || undefined,
+        metadata: { ledgerWarning, blockchainTxId: ledgerTxId || null },
+      }, `contract ${contractId} amend`);
+
 
       // E2E leg 1 (F13): invalidate the contract cache on PATCH — the
       // GET handler serves a 5-min cached copy, so an edit that leaves
@@ -1748,44 +1761,11 @@ router.post('/:contractID/approve',
           }
         });
 
-        // ✅ LOG TO AUDIT TRAIL - Contract Approved
-        try {
-          const { DatabaseService } = await import('../services/databaseService');
-          const db = DatabaseService.getInstance();
-          
-          await db.run(
-            `INSERT INTO audit_trail (
-              entity_type, entity_id, action, performed_by, performed_by_org, 
-              old_value, new_value, reason, metadata, ip_address, blockchain_tx_id
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
-            [
-              'CONTRACT',
-              contractID,
-              'APPROVE',
-              user?.sub || user?.username || 'ECTA',
-              user?.org || 'ECTAMSP',
-              JSON.stringify({ status: currentStatus }),
-              JSON.stringify({ status: 'APPROVED' }),
-              'Contract approved by ECTA for export compliance',
-              JSON.stringify({
-                contractId: contractID,
-                approvedBy: user?.sub || user?.username,
-                role: user?.role,
-                organization: user?.org,
-                transactionId: result.txId,
-                action: 'Export Compliance Approval',
-                timestamp: new Date().toISOString()
-              }),
-              req.ip || req.connection.remoteAddress || 'unknown',
-              result.txId
-            ]
-          );
-          logger.info(`✅ Audit log created for contract approval: ${contractID}`);
-        } catch (auditError) {
-          logger.error('Failed to create audit log:', auditError);
-          // Don't fail the request if audit logging fails
-        }
-        
+        // NOTE (fix/audit-coverage): the route used to write a second
+        // audit_trail row here (direct INSERT, PG-only). The single
+        // writer is contractService.approveContract, which logs
+        // CONTRACT/APPROVE via auditService.log() — ledger first, same
+        // ApproveSalesContract txId. One approval, one audit row.
         logger.info(`[${user?.org}] ✅ Sales contract approved by ECTA for export compliance: ${contractID}`);
         // In-app notification (persisted feed + live WS broadcast).
         await notificationService.emitWorkflowEvent({
@@ -1988,45 +1968,11 @@ router.post('/:contractID/reject',
         
         logger.info(`✅ Contract ${contractID} rejected successfully`);
         
-        // ✅ LOG TO AUDIT TRAIL - Contract Rejected
-        try {
-          const { DatabaseService } = await import('../services/databaseService');
-          const db = DatabaseService.getInstance();
-          
-          await db.run(
-            `INSERT INTO audit_trail (
-              entity_type, entity_id, action, performed_by, performed_by_org, 
-              old_value, new_value, reason, metadata, ip_address, blockchain_tx_id
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
-            [
-              'CONTRACT',
-              contractID,
-              'REJECT',
-              user?.sub || user?.username || 'ECTA',
-              user?.org || 'ECTAMSP',
-              JSON.stringify({ status: currentStatus }),
-              JSON.stringify({ status: 'REJECTED' }),
-              rejectionFeedback,
-              JSON.stringify({
-                contractId: contractID,
-                rejectedBy: rejectedBy || user?.username,
-                role: user?.role,
-                organization: user?.org,
-                transactionId: result.txId,
-                rejectionReason: rejectionFeedback,
-                action: 'Contract Rejection - Compliance Issues',
-                timestamp: new Date().toISOString()
-              }),
-              req.ip || (req as any).connection?.remoteAddress || 'unknown',
-              result.txId
-            ]
-          );
-          logger.info(`✅ Audit log created for contract rejection: ${contractID}`);
-        } catch (auditError) {
-          logger.error('Failed to create audit log:', auditError);
-          // Don't fail the request if audit logging fails
-        }
-        
+        // NOTE (fix/audit-coverage): the route used to write a second
+        // audit_trail row here (direct INSERT, PG-only). The single
+        // writer is contractService.rejectContract, which logs
+        // CONTRACT/REJECT via auditService.log() — ledger first, same
+        // RejectSalesContract txId. One rejection, one audit row.
         logger.info(`[${user?.org}] ✅ Sales contract rejected by ECTA: ${contractID}, Reason: ${rejectionFeedback}`);
         // In-app notification (persisted feed + live WS broadcast).
         await notificationService.emitWorkflowEvent({
@@ -2364,6 +2310,7 @@ router.post('/:contractId/cancel', authMiddleware, async (req: Request, res: Res
     // does not mean the contract does not exist on-chain.
     let blockchainSynced = false;
     let blockchainWarning: string | null = null;
+    let chainTxId: string | null = null;
     try {
       // CancelContract takes (contractID, cancelledBy, reason) — arg order
       // matters: reason second would be recorded as the canceller.
@@ -2374,6 +2321,7 @@ router.post('/:contractId/cancel', authMiddleware, async (req: Request, res: Res
       ]);
       if (chainResult.success) {
         blockchainSynced = true;
+        chainTxId = chainResult.txId || null;
       } else {
         blockchainWarning = `Chaincode CancelContract did not cancel ${contractId}: ${chainResult.error || 'unknown error'}`;
         logger.warn(`[CONTRACTS] ${blockchainWarning}`);
@@ -2404,6 +2352,17 @@ router.post('/:contractId/cancel', authMiddleware, async (req: Request, res: Res
     }
     
     logger.info(`[CONTRACTS] ✅ Contract cancelled: ${contractId} (blockchainSynced: ${blockchainSynced})`);
+    // Audit: this chain move never wrote an audit_trail row.
+    // Best-effort — a failed audit write must not fail the move.
+    await logAuditBestEffort(req, {
+      entityType: 'CONTRACT',
+      entityId: contractId,
+      action: 'CANCEL',
+      newValue: 'CANCELLED',
+      blockchainTxId: chainTxId || undefined,
+      metadata: { cancellationReason, blockchainSynced, blockchainTxId: chainTxId || null },
+    }, `contract ${contractId} cancel`);
+
     
     res.json({
       success: true,

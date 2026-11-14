@@ -8,6 +8,7 @@ import { authMiddleware, requireRole } from '../middleware/auth';
 import { DatabaseService } from '../services/databaseService';
 import { FabricService } from '../services/fabricService';
 import { logger } from '../utils/logger';
+import { logAuditBestEffort } from '../utils/auditBestEffort';
 
 const router = Router();
 const postgresDb = DatabaseService.getInstance();
@@ -525,6 +526,16 @@ router.post('/forex/:forexId/repatriation', authMiddleware, requireRole('NBE'), 
     } else {
       logger.warn(`[NBE] Repatriation ${forexId} recorded in Postgres only: ${chainSync.warning}`);
     }
+    // Audit: this chain move never wrote an audit_trail row.
+    // Best-effort — a failed audit write must not fail the move.
+    await logAuditBestEffort(req, {
+      entityType: 'REPATRIATION',
+      entityId: chainSync.repatriationId || forexId,
+      action: 'RECORD_FOREX_REPATRIATION',
+      blockchainTxId: chainSync.txId || undefined,
+      metadata: { forexId, repatriationAmount, blockchainSynced: chainSync.synced, blockchainTxId: chainSync.txId || null },
+    }, `forex ${forexId} repatriation`);
+
 
     res.json({
       success: true,
@@ -726,6 +737,16 @@ router.post('/retention-accounts', authMiddleware, requireRole('NBE'), async (re
     } catch (chainError: any) {
       logger.warn(`[NBE] Blockchain sync failed for retention account: ${chainError.message}`);
     }
+    // Audit: this chain move never wrote an audit_trail row.
+    // Best-effort — a failed audit write must not fail the move.
+    await logAuditBestEffort(req, {
+      entityType: 'RETENTION_ACCOUNT',
+      entityId: String(accountId),
+      action: 'RECORD_RETENTION_ACCOUNT',
+      blockchainTxId: blockchainTxId || undefined,
+      metadata: { exporterId, accountNumber, operation, blockchainSynced, blockchainTxId: blockchainTxId || null },
+    }, `retention account ${accountId} record`);
+
     
     res.json({
       success: true,
@@ -893,6 +914,7 @@ router.post('/retention-accounts/:accountId/calculate-penalty', authMiddleware, 
     
     // Optional: Record on blockchain
     let blockchainSynced = false;
+    let blockchainTxId: string | undefined;
     try {
       const chainResult = await fabricService.invokeChaincode('RecordRetentionPenalty', [
         String(penaltyId),
@@ -906,10 +928,21 @@ router.post('/retention-accounts/:accountId/calculate-penalty', authMiddleware, 
       ]);
       if (chainResult.success) {
         blockchainSynced = true;
+        blockchainTxId = (chainResult as any)?.txId;
       }
     } catch (chainError: any) {
       logger.warn(`[NBE] Blockchain sync failed for penalty: ${chainError.message}`);
     }
+    // Audit: this chain move never wrote an audit_trail row.
+    // Best-effort — a failed audit write must not fail the move.
+    await logAuditBestEffort(req, {
+      entityType: 'RETENTION_PENALTY',
+      entityId: String(penaltyId),
+      action: 'RECORD_RETENTION_PENALTY',
+      blockchainTxId: blockchainTxId || undefined,
+      metadata: { accountId, violationType, penaltyAmount, blockchainSynced, blockchainTxId: blockchainTxId || null },
+    }, `penalty ${penaltyId} record`);
+
     
     res.json({
       success: true,
@@ -1057,6 +1090,7 @@ router.post('/waiver-requests', authMiddleware, async (req: Request, res: Respon
     
     // Optional: Record on blockchain
     let blockchainSynced = false;
+    let blockchainTxId: string | undefined;
     try {
       const chainResult = await fabricService.invokeChaincode('RecordWaiverRequest', [
         String(waiverId),
@@ -1068,10 +1102,21 @@ router.post('/waiver-requests', authMiddleware, async (req: Request, res: Respon
       ]);
       if (chainResult.success) {
         blockchainSynced = true;
+        blockchainTxId = (chainResult as any)?.txId;
       }
     } catch (chainError: any) {
       logger.warn(`[NBE] Blockchain sync failed for waiver request: ${chainError.message}`);
     }
+    // Audit: this chain move never wrote an audit_trail row.
+    // Best-effort — a failed audit write must not fail the move.
+    await logAuditBestEffort(req, {
+      entityType: 'WAIVER_REQUEST',
+      entityId: String(waiverId),
+      action: 'RECORD_WAIVER_REQUEST',
+      blockchainTxId: blockchainTxId || undefined,
+      metadata: { requestType, exporterId, blockchainSynced, blockchainTxId: blockchainTxId || null },
+    }, `waiver ${waiverId} record`);
+
     
     res.json({
       success: true,

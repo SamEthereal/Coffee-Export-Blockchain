@@ -4,6 +4,7 @@
 import express from 'express';
 import { FabricService } from '../services/fabricService';
 import { logger } from '../utils/logger';
+import { logAuditBestEffort } from '../utils/auditBestEffort';
 import { validateRequest } from '../middleware/validation';
 import { authMiddleware, requireRole } from '../middleware/auth';
 import { body, param } from 'express-validator';
@@ -63,6 +64,16 @@ router.post('/:shipmentID/send',
 
       if (result.success) {
         logger.info(`✅ Documents sent via ${courierCompany}: ${trackingNumber}`);
+        // Audit: this chain move never wrote an audit_trail row.
+        // Best-effort — a failed audit write must not fail the move.
+        await logAuditBestEffort(req, {
+          entityType: 'SHIPMENT',
+          entityId: shipmentID,
+          action: 'SEND_DOCUMENTS_BY_COURIER',
+          blockchainTxId: result.txId || undefined,
+          metadata: { trackingNumber, courierCompany, blockchainTxId: result.txId || null },
+        }, `shipment ${shipmentID} courier-send`);
+
         res.json({
           success: true,
           message: 'Document dispatch recorded successfully',
@@ -121,6 +132,16 @@ router.post('/:shipmentID/receive',
 
       if (result.success) {
         logger.info(`✅ Document receipt confirmed for shipment: ${shipmentID}`);
+        // Audit: this chain move never wrote an audit_trail row.
+        // Best-effort — a failed audit write must not fail the move.
+        await logAuditBestEffort(req, {
+          entityType: 'SHIPMENT',
+          entityId: shipmentID,
+          action: 'CONFIRM_DOCUMENT_RECEIPT',
+          blockchainTxId: result.txId || undefined,
+          metadata: { blockchainTxId: result.txId || null },
+        }, `shipment ${shipmentID} courier-receive`);
+
         res.json({
           success: true,
           message: 'Document receipt recorded successfully',
@@ -232,6 +253,17 @@ router.put('/:shipmentID/update-status',
 
       if (result.success) {
         logger.info(`✅ Courier status updated: ${shipmentID} - ${status}`);
+        // Audit: this chain move never wrote an audit_trail row.
+        // Best-effort — a failed audit write must not fail the move.
+        await logAuditBestEffort(req, {
+          entityType: 'SHIPMENT',
+          entityId: shipmentID,
+          action: 'UPDATE_COURIER_STATUS',
+          newValue: status,
+          blockchainTxId: result.txId || undefined,
+          metadata: { blockchainTxId: result.txId || null },
+        }, `shipment ${shipmentID} courier-status`);
+
         res.json({
           success: true,
           message: 'Courier status updated successfully',

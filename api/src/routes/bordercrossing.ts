@@ -7,6 +7,7 @@ import { FabricService } from '../services/fabricService';
 import { DatabaseService } from '../services/databaseService';
 import { authMiddleware, requireRole } from '../middleware/auth';
 import { logger } from '../utils/logger';
+import { logAuditBestEffort } from '../utils/auditBestEffort';
 
 const router = express.Router();
 const fabricService = FabricService.getInstance();
@@ -270,6 +271,17 @@ router.post('/initiate', authMiddleware,
     }
 
     logger.info(`[BORDERCROSSING] ✅ Initiated: ${crossingId}`);
+    // Audit: this chain move never wrote an audit_trail row.
+    // Best-effort — a failed audit write must not fail the move.
+    await logAuditBestEffort(req, {
+      entityType: 'BORDER_CROSSING',
+      entityId: crossingId,
+      action: 'INITIATE',
+      newValue: 'INITIATED',
+      blockchainTxId: result.transactionId || undefined,
+      metadata: { shipmentId, contractId, exporterId, borderPost, blockchainTxId: result.transactionId || null },
+    }, `border crossing ${crossingId} initiate`);
+
 
     res.status(201).json({
       success: true,
@@ -315,6 +327,16 @@ router.post('/:id/clear', authMiddleware,
     }
 
     logger.info(`[BORDERCROSSING] ✅ Shipment cleared: ${id}`);
+    // Audit: this chain move never wrote an audit_trail row.
+    // Best-effort — a failed audit write must not fail the move.
+    await logAuditBestEffort(req, {
+      entityType: 'BORDER_CROSSING',
+      entityId: id,
+      action: 'CLEAR',
+      blockchainTxId: result.transactionId || undefined,
+      metadata: { clearanceOfficer, certificateNumber, blockchainTxId: result.transactionId || null },
+    }, `border crossing ${id} clear`);
+
 
     // F6: report the status the ledger actually holds now. Best-effort
     // read-back — if it fails, omit the status rather than claim
@@ -376,6 +398,17 @@ router.post('/:id/detain', authMiddleware,
     }
 
     logger.info(`[BORDERCROSSING] ⚠️ Shipment detained: ${id}`);
+    // Audit: this chain move never wrote an audit_trail row.
+    // Best-effort — a failed audit write must not fail the move.
+    await logAuditBestEffort(req, {
+      entityType: 'BORDER_CROSSING',
+      entityId: id,
+      action: 'DETAIN',
+      newValue: 'DETAINED',
+      blockchainTxId: result.transactionId || undefined,
+      metadata: { detentionReason, nextSteps, blockchainTxId: result.transactionId || null },
+    }, `border crossing ${id} detain`);
+
 
     res.json({
       success: true,
@@ -430,6 +463,16 @@ router.post('/:id/clear-exit', authMiddleware,
     }
 
     logger.info(`[BORDERCROSSING] ✅ Cleared for exit: ${id}`);
+    // Audit: this chain move never wrote an audit_trail row.
+    // Best-effort — a failed audit write must not fail the move.
+    await logAuditBestEffort(req, {
+      entityType: 'BORDER_CROSSING',
+      entityId: id,
+      action: 'CLEAR_EXIT',
+      blockchainTxId: result.transactionId || undefined,
+      metadata: { customsOfficer, clearanceRef, blockchainTxId: result.transactionId || null },
+    }, `border crossing ${id} clear-exit`);
+
 
     res.json({
       success: true,
@@ -468,6 +511,16 @@ router.post('/:id/departure', authMiddleware,
     }
 
     logger.info(`[BORDERCROSSING] ✅ Departure recorded: ${id}`);
+    // Audit: this chain move never wrote an audit_trail row.
+    // Best-effort — a failed audit write must not fail the move.
+    await logAuditBestEffort(req, {
+      entityType: 'BORDER_CROSSING',
+      entityId: id,
+      action: 'RECORD_DEPARTURE',
+      blockchainTxId: result.transactionId || undefined,
+      metadata: { departureDate, blockchainTxId: result.transactionId || null },
+    }, `border crossing ${id} departure`);
+
 
     res.json({
       success: true,
@@ -514,6 +567,16 @@ router.post('/:id/crossing', authMiddleware,
     }
 
     logger.info(`[BORDERCROSSING] ✅ Border crossing recorded: ${id}`);
+    // Audit: this chain move never wrote an audit_trail row.
+    // Best-effort — a failed audit write must not fail the move.
+    await logAuditBestEffort(req, {
+      entityType: 'BORDER_CROSSING',
+      entityId: id,
+      action: 'RECORD_CROSSING',
+      blockchainTxId: result.transactionId || undefined,
+      metadata: { blockchainTxId: result.transactionId || null },
+    }, `border crossing ${id} crossing`);
+
 
     res.json({
       success: true,
@@ -553,6 +616,16 @@ router.post('/:id/location', authMiddleware,
     }
 
     logger.info(`[BORDERCROSSING] ✅ Location updated: ${id} - ${location}`);
+    // Audit: this chain move never wrote an audit_trail row.
+    // Best-effort — a failed audit write must not fail the move.
+    await logAuditBestEffort(req, {
+      entityType: 'BORDER_CROSSING',
+      entityId: id,
+      action: 'UPDATE_LOCATION',
+      blockchainTxId: result.transactionId || undefined,
+      metadata: { location, checkpoint, blockchainTxId: result.transactionId || null },
+    }, `border crossing ${id} location`);
+
 
     res.json({
       success: true,
@@ -592,6 +665,16 @@ router.post('/:id/delay', authMiddleware,
     }
 
     logger.info(`[BORDERCROSSING] ✅ Delay reported: ${id}`);
+    // Audit: this chain move never wrote an audit_trail row.
+    // Best-effort — a failed audit write must not fail the move.
+    await logAuditBestEffort(req, {
+      entityType: 'BORDER_CROSSING',
+      entityId: id,
+      action: 'REPORT_DELAY',
+      blockchainTxId: result.transactionId || undefined,
+      metadata: { delayReason, delayDuration, blockchainTxId: result.transactionId || null },
+    }, `border crossing ${id} delay`);
+
 
     res.json({
       success: true,
@@ -631,6 +714,16 @@ router.post('/:id/arrival', authMiddleware,
     }
 
     logger.info(`[BORDERCROSSING] ✅ Arrival recorded: ${id}`);
+    // Audit: this chain move never wrote an audit_trail row.
+    // Best-effort — a failed audit write must not fail the move.
+    await logAuditBestEffort(req, {
+      entityType: 'BORDER_CROSSING',
+      entityId: id,
+      action: 'RECORD_ARRIVAL',
+      blockchainTxId: result.transactionId || undefined,
+      metadata: { arrivalDate, arrivalLocation, blockchainTxId: result.transactionId || null },
+    }, `border crossing ${id} arrival`);
+
 
     res.json({
       success: true,
@@ -694,6 +787,16 @@ router.post('/:id/inspect',
       }
 
       logger.info(`[BORDERCROSSING] ✅ Inspection recorded: ${id}`);
+      // Audit: this chain move never wrote an audit_trail row.
+      // Best-effort — a failed audit write must not fail the move.
+      await logAuditBestEffort(req, {
+        entityType: 'BORDER_CROSSING',
+        entityId: id,
+        action: 'RECORD_INSPECTION',
+        blockchainTxId: result.transactionId || undefined,
+        metadata: { blockchainTxId: result.transactionId || null },
+      }, `border crossing ${id} inspect`);
+
 
       res.json({
         success: true,
@@ -743,6 +846,16 @@ router.post('/:id/verify', authMiddleware,
     }
 
     logger.info(`[BORDERCROSSING] ✅ Compliance verified: ${id}`);
+    // Audit: this chain move never wrote an audit_trail row.
+    // Best-effort — a failed audit write must not fail the move.
+    await logAuditBestEffort(req, {
+      entityType: 'BORDER_CROSSING',
+      entityId: id,
+      action: 'VERIFY_COMPLIANCE',
+      blockchainTxId: result.transactionId || undefined,
+      metadata: { complianceStatus, complianceNotes, blockchainTxId: result.transactionId || null },
+    }, `border crossing ${id} verify`);
+
 
     res.json({
       success: true,

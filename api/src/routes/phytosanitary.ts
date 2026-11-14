@@ -5,6 +5,7 @@ import express from 'express';
 import { FabricService } from '../services/fabricService';
 import { DatabaseService } from '../services/databaseService';
 import { logger } from '../utils/logger';
+import { logAuditBestEffort } from '../utils/auditBestEffort';
 import { validateRequest } from '../middleware/validation';
 import { authMiddleware, requireRole } from '../middleware/auth';
 import { body, param } from 'express-validator';
@@ -143,6 +144,17 @@ router.post('/request',
           logger.warn(`[PHYTO] Could not mirror ${certificateID} to PostgreSQL:`, pgErr);
         }
         logger.info(`✅ Phytosanitary certificate requested: ${certificateID}`);
+        // Audit: this chain move never wrote an audit_trail row.
+        // Best-effort — a failed audit write must not fail the move.
+        await logAuditBestEffort(req, {
+          entityType: 'PHYTOSANITARY_CERTIFICATE',
+          entityId: certificateID,
+          action: 'REQUEST',
+          newValue: 'PENDING',
+          blockchainTxId: result.txId || undefined,
+          metadata: { shipmentID, exporterID, blockchainTxId: result.txId || null },
+        }, `phyto certificate ${certificateID} request`);
+
         res.status(201).json({
           success: true,
           message: 'Phytosanitary certificate requested successfully',
@@ -250,6 +262,17 @@ router.post('/:certificateID/inspect',
           logger.warn(`[PHYTO] Could not mirror inspection ${certificateID} to PostgreSQL:`, pgErr);
         }
         logger.info(`✅ Phytosanitary inspection completed: ${certificateID}`);
+        // Audit: this chain move never wrote an audit_trail row.
+        // Best-effort — a failed audit write must not fail the move.
+        await logAuditBestEffort(req, {
+          entityType: 'PHYTOSANITARY_CERTIFICATE',
+          entityId: certificateID,
+          action: 'INSPECT',
+          newValue: 'INSPECTED',
+          blockchainTxId: result.txId || undefined,
+          metadata: { inspectorName, inspectionDate, pestsDetected, diseaseDetected, blockchainTxId: result.txId || null },
+        }, `phyto certificate ${certificateID} inspect`);
+
         res.json({
           success: true,
           message: 'Inspection completed successfully',
@@ -441,6 +464,18 @@ router.post('/:certificateID/issue',
           } catch (mirrorErr) {
             logger.warn(`[PHYTO] Could not mirror issuance of ${certificateID} to Postgres:`, mirrorErr);
           }
+          // Audit: this chain move never wrote an audit_trail row.
+          // Best-effort — a failed audit write must not fail the move.
+          await logAuditBestEffort(req, {
+            entityType: 'PHYTOSANITARY_CERTIFICATE',
+            entityId: certificateID,
+            action: 'ISSUE',
+            oldValue: 'INSPECTED',
+            newValue: 'ISSUED',
+            blockchainTxId: result.txId || undefined,
+            metadata: { certificateNumber, issuingAuthority, blockchainTxId: result.txId || null },
+          }, `phyto certificate ${certificateID} issue`);
+
           res.json({
             success: true,
             message: 'Phytosanitary certificate issued successfully',
@@ -728,6 +763,17 @@ router.post('/:certificateId/revoke',
           logger.warn(`[PHYTO] Could not mirror revocation of ${certificateId} to Postgres:`, mirrorErr);
         }
         logger.info(`[PHYTO] ✅ Certificate revoked: ${certificateId}`);
+        // Audit: this chain move never wrote an audit_trail row.
+        // Best-effort — a failed audit write must not fail the move.
+        await logAuditBestEffort(req, {
+          entityType: 'PHYTOSANITARY_CERTIFICATE',
+          entityId: certificateId,
+          action: 'REVOKE',
+          newValue: 'REVOKED',
+          blockchainTxId: result.txId || undefined,
+          metadata: { reason, revokedBy, blockchainTxId: result.txId || null },
+        }, `phyto certificate ${certificateId} revoke`);
+
         res.json({
           success: true,
           message: 'Phytosanitary certificate revoked successfully',

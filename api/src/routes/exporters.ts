@@ -7,6 +7,7 @@ import { DatabaseService } from '../services/databaseService';
 import { EmailService } from '../services/emailService';
 import { AuditService } from '../services/auditService';
 import { logger } from '../utils/logger';
+import { logAuditBestEffort } from '../utils/auditBestEffort';
 import notificationService from '../services/notificationService';
 import { validateRequest } from '../middleware/validation';
 import { authMiddleware, requireRole } from '../middleware/auth';
@@ -2151,6 +2152,16 @@ router.put('/:exporterID/laboratory',
 
       if (result.success) {
         logger.info(`Exporter laboratory certification updated: ${exporterID} - ${certified}`);
+        // Audit: this chain move never wrote an audit_trail row.
+        // Best-effort — a failed audit write must not fail the move.
+        await logAuditBestEffort(req, {
+          entityType: 'EXPORTER',
+          entityId: exporterID,
+          action: 'UPDATE_LABORATORY',
+          blockchainTxId: result.txId || undefined,
+          metadata: { certified, blockchainTxId: result.txId || null },
+        }, `exporter ${exporterID} laboratory`);
+
         res.json({
           success: true,
           data: result.data,
@@ -2240,6 +2251,17 @@ router.put('/:exporterID/status',
 
       if (result.success) {
         logger.info(`Exporter status updated: ${exporterID} - ${status}`);
+        // Audit: this chain move never wrote an audit_trail row.
+        // Best-effort — a failed audit write must not fail the move.
+        await logAuditBestEffort(req, {
+          entityType: 'EXPORTER',
+          entityId: exporterID,
+          action: status === 'SUSPENDED' ? 'SUSPEND' : 'UPDATE_STATUS',
+          newValue: status,
+          blockchainTxId: result.txId || undefined,
+          metadata: { reason, blockchainTxId: result.txId || null },
+        }, `exporter ${exporterID} status ${status}`);
+
         res.json({
           success: true,
           data: result.data,
@@ -2306,6 +2328,16 @@ router.post('/:exporterID/renew-license',
         logger.error(`[EXPORTERS] License renewal committed on-ledger but application mirror sync failed for ${exporterID}:`, syncError);
       }
 
+      // Audit: this chain move never wrote an audit_trail row.
+      // Best-effort — a failed audit write must not fail the move.
+      await logAuditBestEffort(req, {
+        entityType: 'EXPORTER',
+        entityId: exporterID,
+        action: 'RENEW_LICENSE',
+        newValue: 'ACTIVE',
+        blockchainTxId: result.txId || undefined,
+        metadata: { newExpiryDate, applicationMirrorSynchronized, blockchainTxId: result.txId || null },
+      }, `exporter ${exporterID} license-renew`);
       return res.json({
         success: true,
         data: { exporterID, licenseExpiryDate: newExpiryDate, licenseStatus: 'ACTIVE', applicationMirrorSynchronized },
@@ -2359,6 +2391,16 @@ router.post('/:exporterID/revoke',
         logger.error(`[EXPORTERS] License revocation committed on-ledger but account sync failed for ${exporterID}:`, syncError);
       }
 
+      // Audit: this chain move never wrote an audit_trail row.
+      // Best-effort — a failed audit write must not fail the move.
+      await logAuditBestEffort(req, {
+        entityType: 'EXPORTER',
+        entityId: exporterID,
+        action: 'REVOKE_LICENSE',
+        newValue: 'REVOKED',
+        blockchainTxId: result.txId || undefined,
+        metadata: { reason, accountDisabled, blockchainTxId: result.txId || null },
+      }, `exporter ${exporterID} license-revoke`);
       return res.json({
         success: true,
         data: { exporterID, licenseStatus: 'REVOKED', accountDisabled },
