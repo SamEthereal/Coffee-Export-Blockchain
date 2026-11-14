@@ -557,6 +557,81 @@ router.get('/customs', authMiddleware, async (req: Request, res: Response) => {
 
 /**
  * @swagger
+ * /api/v1/stats/payments:
+ *   get:
+ *     summary: Get Payments (all settlements) from BOTH sources
+ *     tags: [Statistics]
+ *     description: >
+ *       This route did not exist: GET /stats/payments 404'd while every
+ *       sibling entity had a dual-source list endpoint. It returns the
+ *       same shape as /stats/lc, /stats/contracts, etc. — data plus meta
+ *       with couchdbCount / postgresCount / totalCount / source — backed
+ *       by DualSourceDataService.getPayments (QueryAllPayments + the
+ *       `payments` Postgres mirror, merged on paymentId / payment_id).
+ */
+router.get('/payments', authMiddleware, async (req: Request, res: Response) => {
+  try {
+    const result = await dualSourceService.getPayments();
+    res.json({
+      success: true,
+      data: result.mergedData,
+      meta: {
+        couchdbCount: result.couchdbCount,
+        postgresCount: result.postgresCount,
+        totalCount: result.totalCount,
+        source: result.source
+      },
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    logger.error('[STATS] Error fetching payments:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch payments',
+      message: error instanceof Error ? error.message : 'Unknown error'
+    });
+  }
+});
+
+/**
+ * @swagger
+ * /api/v1/stats/declarations:
+ *   get:
+ *     summary: Get Customs Declarations from BOTH sources
+ *     tags: [Statistics]
+ *     description: >
+ *       Alias of /stats/customs under the plural-noun name callers
+ *       expect: GET /stats/declarations 404'd while /stats/customs
+ *       served the same data. Same dual-source shape (data + meta with
+ *       couchdbCount / postgresCount / totalCount / source) via
+ *       DualSourceDataService.getCustomsDeclarations.
+ */
+router.get('/declarations', authMiddleware, async (req: Request, res: Response) => {
+  try {
+    const result = await dualSourceService.getCustomsDeclarations();
+    res.json({
+      success: true,
+      data: result.mergedData,
+      meta: {
+        couchdbCount: result.couchdbCount,
+        postgresCount: result.postgresCount,
+        totalCount: result.totalCount,
+        source: result.source
+      },
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    logger.error('[STATS] Error fetching declarations:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch declarations',
+      message: error instanceof Error ? error.message : 'Unknown error'
+    });
+  }
+});
+
+/**
+ * @swagger
  * /api/v1/stats/ecx-lots:
  *   get:
  *     summary: Get ECX Lots from BOTH sources

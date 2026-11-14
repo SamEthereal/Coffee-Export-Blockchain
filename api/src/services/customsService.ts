@@ -5,6 +5,7 @@ import { FabricService } from './fabricService';
 import { DatabaseService } from './databaseService';
 import { AuditService } from './auditService';
 import { logger } from '../utils/logger';
+import { isValidHsCode, normalizeHsCode, HS_CODE_MESSAGE } from '../utils/hsCode';
 
 export class CustomsService {
   private static instance: CustomsService;
@@ -46,6 +47,17 @@ export class CustomsService {
     try {
       logger.info(`[CustomsService] Submitting declaration: ${declarationData.declarationID}`);
 
+      // HS-code format (utils/hsCode): the only caller passes the
+      // '090111' constant, but validate + normalize here so a future
+      // caller cannot store a malformed code through the
+      // auto-declaration path.
+      if (declarationData.hsCode != null && String(declarationData.hsCode).trim() !== '' && !isValidHsCode(declarationData.hsCode)) {
+        throw new Error(HS_CODE_MESSAGE);
+      }
+      const hsCode = declarationData.hsCode != null && String(declarationData.hsCode).trim() !== ''
+        ? normalizeHsCode(String(declarationData.hsCode))
+        : '090111';
+
       // Connect as ECTA (submitting on behalf of exporter after quality pass)
       await this.fabricService.connectAsOrg('ECTAMSP');
 
@@ -70,7 +82,7 @@ export class CustomsService {
         declarationData.shipmentID,
         declarationData.exporterID,
         'STANDARD',
-        declarationData.hsCode,
+        hsCode,
         declarationData.quantity.toString(),
         declarationData.value.toString(),
         declarationData.currency,
@@ -97,7 +109,7 @@ export class CustomsService {
           declarationData.shipmentID,
           declarationData.contractId || null,
           declarationData.exporterID,
-          declarationData.hsCode,
+          hsCode,
           declarationData.quantity,
           declarationData.value,
           declarationData.value,
