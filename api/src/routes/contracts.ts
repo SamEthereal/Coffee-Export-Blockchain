@@ -1756,8 +1756,8 @@ router.post('/:contractID/approve',
           await db.run(
             `INSERT INTO audit_trail (
               entity_type, entity_id, action, performed_by, performed_by_org, 
-              old_value, new_value, reason, metadata, ip_address
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+              old_value, new_value, reason, metadata, ip_address, blockchain_tx_id
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
             [
               'CONTRACT',
               contractID,
@@ -1776,7 +1776,8 @@ router.post('/:contractID/approve',
                 action: 'Export Compliance Approval',
                 timestamp: new Date().toISOString()
               }),
-              req.ip || req.connection.remoteAddress || 'unknown'
+              req.ip || req.connection.remoteAddress || 'unknown',
+              result.txId
             ]
           );
           logger.info(`✅ Audit log created for contract approval: ${contractID}`);
@@ -1995,8 +1996,8 @@ router.post('/:contractID/reject',
           await db.run(
             `INSERT INTO audit_trail (
               entity_type, entity_id, action, performed_by, performed_by_org, 
-              old_value, new_value, reason, metadata, ip_address
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+              old_value, new_value, reason, metadata, ip_address, blockchain_tx_id
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
             [
               'CONTRACT',
               contractID,
@@ -2016,7 +2017,8 @@ router.post('/:contractID/reject',
                 action: 'Contract Rejection - Compliance Issues',
                 timestamp: new Date().toISOString()
               }),
-              req.ip || (req as any).connection?.remoteAddress || 'unknown'
+              req.ip || (req as any).connection?.remoteAddress || 'unknown',
+              result.txId
             ]
           );
           logger.info(`✅ Audit log created for contract rejection: ${contractID}`);
@@ -2211,8 +2213,8 @@ router.post('/:contractId/resubmit',
         await db.run(
           `INSERT INTO audit_trail (
             entity_type, entity_id, action, performed_by, performed_by_org,
-            old_value, new_value, reason, metadata, ip_address
-          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+            old_value, new_value, reason, metadata, ip_address, blockchain_tx_id
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
           [
             'CONTRACT',
             contractId,
@@ -2231,7 +2233,8 @@ router.post('/:contractId/resubmit',
               action: 'Contract Resubmission after Rejection',
               timestamp: new Date().toISOString()
             }),
-            req.ip || (req as any).connection?.remoteAddress || 'unknown'
+            req.ip || (req as any).connection?.remoteAddress || 'unknown',
+            result.txId
           ]
         );
       } catch (auditError) {

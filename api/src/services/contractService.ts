@@ -218,6 +218,7 @@ export class ContractService {
         newValue: 'REGISTERED',
         reason: 'Contract registered',
         metadata: { totalValue, paymentMethod: contractData.paymentMethod },
+        blockchainTxId: result.txId,
       });
 
       logger.info(`✅ [ContractService] Contract registered: ${contractData.contractID}`);
@@ -298,6 +299,7 @@ export class ContractService {
         newValue: 'APPROVED',
         reason: approvalData.reason || 'Contract approved',
         metadata: { exporterID: contract.exporter_id, amount: contract.total_value },
+        blockchainTxId: result.txId,
       });
 
       // 7. LC creation lives in exactly ONE place: the LC handoff in the
@@ -373,6 +375,7 @@ export class ContractService {
         newValue: 'REJECTED',
         reason: rejectionData.reason,
         metadata: { exporterID: contract.exporter_id },
+        blockchainTxId: result.txId,
       });
 
       logger.info(`✅ [ContractService] Contract rejected: ${rejectionData.contractID}`);

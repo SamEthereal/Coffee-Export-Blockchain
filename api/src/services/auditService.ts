@@ -18,6 +18,7 @@ export interface AuditLogEntry {
   reason?: string;
   metadata?: any;
   ipAddress?: string;
+  blockchainTxId?: string;  // operation chain txId, when the caller already has one
 }
 
 interface FieldChange {
@@ -222,6 +223,12 @@ export class AuditService {
       }
 
       // STEP 2: Cache in PostgreSQL (backup + fast queries)
+      // The blockchain_tx_id column carries the OPERATION's chain txId
+      // when the caller already has one (entry.blockchainTxId), else this
+      // audit log's own CreateAuditLog txId, else NULL (Fabric down) —
+      // never an invented value.
+      const columnTxId = entry.blockchainTxId ?? blockchainTxId ?? null;
+
       // Add blockchain metadata to the entry
       const enhancedMetadata = {
         ...toAuditJsonbMetadata(entry.metadata),
@@ -243,8 +250,8 @@ export class AuditService {
       await this.db.run(
         `INSERT INTO audit_trail (
           entity_type, entity_id, action, performed_by, organization, performed_by_org,
-          old_value, new_value, reason, metadata, ip_address
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+          old_value, new_value, reason, metadata, ip_address, blockchain_tx_id
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
         [
           entry.entityType,
           entry.entityId,
@@ -256,7 +263,8 @@ export class AuditService {
           entry.newValue ? toAuditJsonbValue(entry.newValue) : null,
           entry.reason || '',
           JSON.stringify(enhancedMetadata),
-          entry.ipAddress || 'unknown'
+          entry.ipAddress || 'unknown',
+          columnTxId
         ]
       );
       
@@ -288,6 +296,7 @@ export class AuditService {
     details?: any;
     reason?: string;
     timestamp?: Date | string;
+    blockchainTxId?: string;
   }): Promise<{ txId: string | null }> {
     const txId = await this.log({
       entityType: record.entityType,
@@ -298,6 +307,7 @@ export class AuditService {
       performedByOrg: record.organizationMSP,
       reason: record.reason,
       metadata: record.details,
+      blockchainTxId: record.blockchainTxId,
     });
     return { txId };
   }

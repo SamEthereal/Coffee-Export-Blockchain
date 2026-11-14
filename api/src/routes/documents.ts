@@ -2275,8 +2275,8 @@ router.post('/:documentId/sign',
       await postgresDb.run(
         `INSERT INTO audit_trail (
           entity_type, entity_id, action, performed_by, organization, performed_by_org,
-          old_value, new_value, reason, metadata, ip_address
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+          old_value, new_value, reason, metadata, ip_address, blockchain_tx_id
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
         [
           'DOCUMENT',
           documentId,
@@ -2288,7 +2288,8 @@ router.post('/:documentId/sign',
           JSON.stringify({ status: 'signed' }),
           `Document signed with ${signatureType} signature`,
           metadataJson,
-          req.ip || (req as any).connection?.remoteAddress || 'unknown'
+          req.ip || (req as any).connection?.remoteAddress || 'unknown',
+          blockchainTxId || null
         ]
       );
 

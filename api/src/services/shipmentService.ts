@@ -116,6 +116,7 @@ export class ShipmentService {
         newValue: 'REGISTERED',
         reason: 'Shipment registered',
         metadata: { contractID: shipmentData.contractID, quantity: shipmentData.quantity },
+        blockchainTxId: result.txId,
       });
 
       // NOTE: no quality inspection is auto-created here. A shipment has NO

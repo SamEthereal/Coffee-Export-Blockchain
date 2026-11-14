@@ -62,6 +62,7 @@ export interface AuditTrailEntry {
   metadata?: AuditValueWrapper | null; // MUST be object, not plain string
   ipAddress?: string | null;
   organization?: string | null;
+  blockchainTxId?: string | null; // operation chain txId, when the caller already has one
 }
 
 /**
@@ -158,8 +159,8 @@ export async function logAuditTrail(
     await dbInstance.run(
       `INSERT INTO audit_trail (
         entity_type, entity_id, action, performed_by, organization, performed_by_org,
-        old_value, new_value, reason, metadata, ip_address
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+        old_value, new_value, reason, metadata, ip_address, blockchain_tx_id
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
       [
         entry.entityType,
         entry.entityId,
@@ -171,7 +172,8 @@ export async function logAuditTrail(
         newValueJson,
         entry.reason || null,
         metadataJson,
-        entry.ipAddress || 'unknown'
+        entry.ipAddress || 'unknown',
+        entry.blockchainTxId || null
       ]
     );
 

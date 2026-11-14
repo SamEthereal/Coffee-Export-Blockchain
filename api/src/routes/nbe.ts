@@ -214,8 +214,8 @@ router.post('/forex/:forexId/approve', authMiddleware, requireRole('NBE'), async
       await db.run(
         `INSERT INTO audit_trail (
           entity_type, entity_id, action, performed_by, performed_by_org,
-          old_value, new_value, reason, metadata, ip_address
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+          old_value, new_value, reason, metadata, ip_address, blockchain_tx_id
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
         [
           'FOREX',
           forexId,
@@ -232,7 +232,8 @@ router.post('/forex/:forexId/approve', authMiddleware, requireRole('NBE'), async
             action: 'Forex Confirmation',
             timestamp: new Date().toISOString()
           }),
-          req.ip || 'unknown'
+          req.ip || 'unknown',
+          confirmTxId || null
         ]
       );
     } catch (auditErr: any) {

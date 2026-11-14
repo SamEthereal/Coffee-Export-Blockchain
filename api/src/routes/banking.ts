@@ -3933,8 +3933,8 @@ async function recordLCExaminationTrace(opts: {
     await dbService.run(
       `INSERT INTO audit_trail (
         entity_type, entity_id, action, performed_by, performed_by_org,
-        old_value, new_value, reason, metadata, ip_address
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+        old_value, new_value, reason, metadata, ip_address, blockchain_tx_id
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
       [
         'LC',
         lcID,
@@ -3953,7 +3953,8 @@ async function recordLCExaminationTrace(opts: {
           action: 'LC Document Examination',
           timestamp: new Date().toISOString()
         }),
-        ip || 'unknown'
+        ip || 'unknown',
+        txId || null
       ]
     );
   } catch (auditErr: any) {
