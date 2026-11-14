@@ -2926,7 +2926,7 @@ const ExporterPortal: React.FC = () => {
                     setLcRequestForm({
                       ...lcRequestForm,
                       issuingBank: contract.buyerBank || '',
-                      advisingBank: profile?.bankName || '',
+                      advisingBank: contract.exporterBank || profile?.bankName || 'Commercial Bank of Ethiopia',
                       beneficiaryName: profile?.companyName || '',
                       amount: contract.totalValue.toString(),
                       currency: contract.currency,
@@ -6118,8 +6118,11 @@ This contract is registered with ECTA and approved by NBE.
                   </span>
                 </Tooltip>
               );
-            } else {
-              // Show info button to request LC instead
+            } else if (isContractApproved(selectedContractForDetail)) {
+              // APPROVED and no LC yet: the only state in which a manual
+              // LC request can succeed. (Approval normally auto-creates
+              // the LC, so this is a defensive path for the rare case the
+              // auto-created LC is missing.) Offer the request.
               return (
                 <SecondaryButton brand='EXPORTER'
                   startIcon={<AccountBalance />}
@@ -6132,7 +6135,7 @@ This contract is registered with ECTA and approved by NBE.
                       setSelectedContractForLC(selectedContractForDetail);
                       setLcRequestForm({
                         issuingBank: selectedContractForDetail.buyerBank || '',
-                        advisingBank: profile?.bankName || '',
+                        advisingBank: selectedContractForDetail.exporterBank || profile?.bankName || 'Commercial Bank of Ethiopia',
                         beneficiaryName: profile?.companyName || '',
                         expiryDays: '90',
                         amount: (selectedContractForDetail.totalValue || 0).toString(),
@@ -6152,6 +6155,16 @@ This contract is registered with ECTA and approved by NBE.
                 >
                   Request LC
                 </SecondaryButton>
+              );
+            } else {
+              // Not APPROVED yet: the chaincode rejects an LC request for
+              // any non-APPROVED contract (400 LC_REQUEST_FAILED), and
+              // approval auto-creates the LC, so a button here could only
+              // ever fail. Show a plain note instead of offering it.
+              return (
+                <Typography variant="body2" color="text.secondary" sx={{ alignSelf: 'center' }}>
+                  LC is created automatically when the contract is approved.
+                </Typography>
               );
             }
           }
@@ -6446,6 +6459,12 @@ This contract is registered with ECTA and approved by NBE.
                       return (
                         <>
                           ✅ <strong>Ready to proceed!</strong> Click the <strong>"Create Shipment"</strong> button below to register shipment details and initiate the export workflow (quality inspection → export permit → customs clearance).
+                        </>
+                      );
+                    } else if (!isContractApproved(selectedContractForDetail)) {
+                      return (
+                        <>
+                          ⏳ <strong>Awaiting ECTA Approval:</strong> This contract must be approved by ECTA before a Letter of Credit can be created. The LC is created automatically when the contract is approved.
                         </>
                       );
                     } else {
