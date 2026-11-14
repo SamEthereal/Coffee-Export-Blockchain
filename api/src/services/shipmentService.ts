@@ -256,13 +256,26 @@ export class ShipmentService {
    * yet, so this skips and the quality-approval trigger fires later
    * instead. Never throws; never creates a duplicate
    * (triggerCustomsDeclaration is idempotent per shipment).
+   *
+   * E2E-FULL-20261114 fix: the permit-issuance call sites (quality.ts
+   * issue-permit, permits.ts) mirror the inspection row to PERMIT_ISSUED
+   * BEFORE calling this helper, so by the time it runs the inspection is
+   * no longer APPROVED — the old `status = 'APPROVED'` check skipped
+   * every literal-order permit and no auto-declaration was ever created
+   * (proven live: SHIP-E2E-FULL-20261114, permit PERMIT-1794679439668,
+   * log "No APPROVED inspection ... deferred"). PERMIT_ISSUED is the
+   * same precondition, one step later: a permit exists for this
+   * inspection. The chaincode gate (shipment PERMIT_ISSUED) still
+   * applies inside triggerCustomsDeclaration, and the helper stays
+   * idempotent, so accepting both states cannot duplicate or fabricate
+   * a declaration.
    */
   async maybeTriggerCustomsDeclarationAfterPermit(shipmentID: string, userId: string) {
     try {
       if (!shipmentID) return { success: false, skipped: 'NO_SHIPMENT' };
       const inspection = await this.dbService.get(
         `SELECT inspection_id FROM quality_inspections
-          WHERE shipment_id = $1 AND status = 'APPROVED'
+          WHERE shipment_id = $1 AND status IN ('APPROVED', 'PERMIT_ISSUED')
           ORDER BY created_at DESC LIMIT 1`,
         [shipmentID]
       );

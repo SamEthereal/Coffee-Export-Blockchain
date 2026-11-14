@@ -1701,10 +1701,11 @@ router.post('/inspections/:inspectionID/issue-permit',
         shipmentMirror.error = reReadErr?.message || String(reReadErr);
       }
 
-      // Auto-create the customs declaration now that the permit exists:
-      // the inspection is already APPROVED here, so this is the first
-      // moment both preconditions hold (literal order inspect → permit
-      // → customs). Best-effort, never duplicates.
+      // Auto-create the customs declaration now that the permit exists.
+      // The inspection row was just mirrored to PERMIT_ISSUED above, so
+      // the helper accepts APPROVED or PERMIT_ISSUED (E2E-FULL-20261114:
+      // the old APPROVED-only check skipped every literal-order permit).
+      // Best-effort, never duplicates.
       await shipmentService.maybeTriggerCustomsDeclarationAfterPermit(
         inspection.shipment_id,
         issuedBy || 'ECTA Export Permit Office'
