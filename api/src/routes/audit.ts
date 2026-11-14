@@ -578,8 +578,8 @@ router.get('/entity/:entityType/:entityId', authMiddleware, async (req: any, res
                 await dbService.run(
                   `INSERT INTO audit_trail (
                     entity_type, entity_id, action, performed_by, organization, performed_by_org,
-                    old_value, new_value, reason, metadata, ip_address, created_at
-                  ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+                    old_value, new_value, reason, metadata, ip_address, created_at, blockchain_tx_id
+                  ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
                   [
                     bcLog.entityType || bcLog.EntityType,
                     bcLog.entityId || bcLog.EntityID,
@@ -603,7 +603,8 @@ router.get('/entity/:entityType/:entityId', authMiddleware, async (req: any, res
                       syncedAt: new Date().toISOString()
                     }),
                     'blockchain-sync',
-                    bcLog.createdAt || bcLog.CreatedAt || new Date().toISOString()
+                    bcLog.createdAt || bcLog.CreatedAt || new Date().toISOString(),
+                    txId
                   ]
                 );
                 

@@ -119,6 +119,7 @@ export class LCService {
         newValue: 'REQUESTED',
         reason: 'LC requested',
         metadata: { contractID: lcData.contractID, amount: lcData.amount, bank: lcData.bankName },
+        blockchainTxId: result.txId,
       });
 
       logger.info(`✅ [LCService] LC requested: ${lcData.lcID}`);
@@ -185,6 +186,7 @@ export class LCService {
         newValue: 'APPROVED',
         reason: 'LC approved',
         metadata: { approvalRef },
+        blockchainTxId: result.txId,
       });
 
       logger.info(`✅ [LCService] LC approved: ${lcID}`);

@@ -711,7 +711,8 @@ router.post('/exporter-applications/:applicationId/approve',
           verificationCode: licenseResult.verificationCode,
           approvedBy: (req as any).user?.username
         },
-        ipAddress: req.ip || req.socket.remoteAddress || 'unknown'
+        ipAddress: req.ip || req.socket.remoteAddress || 'unknown',
+        blockchainTxId: result.txId,
       });
       
       // Step 5: Send approval email with license download link

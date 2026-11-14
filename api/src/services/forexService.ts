@@ -84,6 +84,7 @@ export class ForexService {
         newValue: 'REQUESTED',
         reason: 'Forex requested',
         metadata: { contractId: forexData.contractId, amount: forexData.amount },
+        blockchainTxId: result.txId,
       });
 
       logger.info(`✅ [ForexService] Forex requested: ${forexData.forexId}`);
@@ -282,6 +283,7 @@ export class ForexService {
           releaseAmount,
           retentionRate: allocationData.retentionRate,
         },
+        blockchainTxId: blockchainTxId ?? undefined,
       });
 
       logger.info(`✅ [ForexService] Forex allocated: ${forexId} (Retention: ${retentionAmount} ${forex?.currency || 'USD'})`);
@@ -337,6 +339,7 @@ export class ForexService {
         newValue: 'UTILIZED',
         reason: 'Forex utilized',
         metadata: { utilizedAmount },
+        blockchainTxId: result.txId,
       });
 
       logger.info(`✅ [ForexService] Forex utilized: ${forexId}`);

@@ -140,7 +140,8 @@ export class CustomsService {
         metadata: { 
           status: 'SUBMITTED',
           blockchainTxId: typeof blockchainResult === 'string' ? JSON.parse(blockchainResult).transactionId : blockchainResult.txId
-        }
+        },
+        blockchainTxId: typeof blockchainResult === 'string' ? JSON.parse(blockchainResult).transactionId : blockchainResult.txId
       });
 
       logger.info(`[CustomsService] ✅ Declaration submitted: ${declarationData.declarationID}`);
@@ -209,7 +210,8 @@ export class CustomsService {
           status: 'UNDER_INSPECTION', 
           reviewer: reviewData.reviewerName,
           blockchainTxId: typeof blockchainResult === 'string' ? JSON.parse(blockchainResult).transactionId : blockchainResult.txId
-        }
+        },
+        blockchainTxId: typeof blockchainResult === 'string' ? JSON.parse(blockchainResult).transactionId : blockchainResult.txId
       });
 
       logger.info(`[CustomsService] ✅ Declaration under inspection: ${reviewData.declarationID}`);
@@ -287,7 +289,8 @@ export class CustomsService {
           inspector: inspectionData.inspectorName,
           result: inspectionData.inspectionResult,
           blockchainTxId: typeof blockchainResult === 'string' ? JSON.parse(blockchainResult).transactionId : blockchainResult.txId
-        }
+        },
+        blockchainTxId: typeof blockchainResult === 'string' ? JSON.parse(blockchainResult).transactionId : blockchainResult.txId
       });
 
       logger.info(`[CustomsService] ✅ Inspection complete: ${inspectionData.declarationID}`);
@@ -430,7 +433,8 @@ export class CustomsService {
           clearedBy: clearanceData.clearedBy,
           clearanceNumber: clearanceData.clearanceNumber,
           blockchainTxId
-        }
+        },
+        blockchainTxId: blockchainTxId ?? undefined
       });
 
       if (blockchainSynced) {
@@ -522,7 +526,8 @@ export class CustomsService {
           rejectedBy: rejectData.rejectedBy,
           reason: rejectData.rejectionReason,
           blockchainTxId: typeof blockchainResult === 'string' ? JSON.parse(blockchainResult).transactionId : blockchainResult.txId
-        }
+        },
+        blockchainTxId: typeof blockchainResult === 'string' ? JSON.parse(blockchainResult).transactionId : blockchainResult.txId
       });
 
       logger.info(`[CustomsService] ❌ Declaration rejected: ${rejectData.declarationID}`);

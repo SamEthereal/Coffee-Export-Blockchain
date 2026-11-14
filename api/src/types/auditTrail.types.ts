@@ -30,6 +30,7 @@ export interface AuditTrailRecord {
   reason?: string | null;
   metadata?: AuditJsonbValue;      // ⚠️ MUST be JSON object, not string
   ip_address?: string | null;
+  blockchain_tx_id?: string | null; // operation chain txId, else the audit log's own CreateAuditLog txId
   timestamp?: Date;
   created_at?: Date;
 }
