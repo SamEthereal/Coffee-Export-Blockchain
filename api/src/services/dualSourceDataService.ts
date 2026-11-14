@@ -65,7 +65,7 @@ export class DualSourceDataService {
     }
 
     // 3. Merge and deduplicate
-    const merged = this.mergeByKey(couchdbData, postgresData, 'lcID', 'lc_id');
+    const merged = this.mergeByKey(couchdbData, postgresData, 'lcId', 'lc_id');
 
     return {
       couchdbCount: couchdbData.length,
@@ -112,7 +112,7 @@ export class DualSourceDataService {
     }
 
     // 3. Merge and deduplicate
-    const merged = this.mergeByKey(couchdbData, postgresData, 'paymentID', 'payment_id');
+    const merged = this.mergeByKey(couchdbData, postgresData, 'paymentId', 'payment_id');
 
     return {
       couchdbCount: couchdbData.length,
@@ -160,7 +160,7 @@ export class DualSourceDataService {
     }
 
     // 3. Merge and deduplicate
-    const merged = this.mergeByKey(couchdbData, postgresData, 'consignmentID', 'consignment_id');
+    const merged = this.mergeByKey(couchdbData, postgresData, 'consignmentId', 'consignment_id');
 
     return {
       couchdbCount: couchdbData.length,
@@ -207,7 +207,7 @@ export class DualSourceDataService {
     }
 
     // 3. Merge and deduplicate
-    const merged = this.mergeByKey(couchdbData, postgresData, 'collectionID', 'collection_id');
+    const merged = this.mergeByKey(couchdbData, postgresData, 'collectionId', 'collection_id');
 
     return {
       couchdbCount: couchdbData.length,
@@ -246,7 +246,7 @@ export class DualSourceDataService {
       logger.warn('[DUAL-SOURCE] Failed to fetch contracts from PostgreSQL:', error);
     }
 
-    const merged = this.mergeByKey(couchdbData, postgresData, 'contractID', 'contract_id');
+    const merged = this.mergeByKey(couchdbData, postgresData, 'contractId', 'contract_id');
     return {
       couchdbCount: couchdbData.length,
       postgresCount: postgresData.length,
@@ -282,7 +282,7 @@ export class DualSourceDataService {
       logger.warn('[DUAL-SOURCE] Failed to fetch shipments from PostgreSQL:', error);
     }
 
-    const merged = this.mergeByKey(couchdbData, postgresData, 'shipmentID', 'shipment_id');
+    const merged = this.mergeByKey(couchdbData, postgresData, 'shipmentId', 'shipment_id');
     return {
       couchdbCount: couchdbData.length,
       postgresCount: postgresData.length,
@@ -320,7 +320,7 @@ export class DualSourceDataService {
       logger.warn('[DUAL-SOURCE] Failed to fetch forex from PostgreSQL:', error);
     }
 
-    const merged = this.mergeByKey(couchdbData, postgresData, 'forexID', 'forex_id');
+    const merged = this.mergeByKey(couchdbData, postgresData, 'forexId', 'forex_id');
     return {
       couchdbCount: couchdbData.length,
       postgresCount: postgresData.length,
@@ -358,7 +358,7 @@ export class DualSourceDataService {
       logger.warn('[DUAL-SOURCE] Failed to fetch customs declarations from PostgreSQL:', error);
     }
 
-    const merged = this.mergeByKey(couchdbData, postgresData, 'declarationID', 'declaration_id');
+    const merged = this.mergeByKey(couchdbData, postgresData, 'declarationId', 'declaration_id');
     return {
       couchdbCount: couchdbData.length,
       postgresCount: postgresData.length,
@@ -434,7 +434,7 @@ export class DualSourceDataService {
       logger.warn('[DUAL-SOURCE] Failed to fetch exporters from PostgreSQL:', error);
     }
 
-    const merged = this.mergeByKey(couchdbData, postgresData, 'exporterID', 'exporter_id');
+    const merged = this.mergeByKey(couchdbData, postgresData, 'exporterId', 'exporter_id');
     return {
       couchdbCount: couchdbData.length,
       postgresCount: postgresData.length,
