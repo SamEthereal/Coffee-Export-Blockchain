@@ -300,6 +300,9 @@ func ValidateExchangeRate(rate float64) error {
 // one export rule everywhere (leg2 audit #19) — ECX grading rejects a
 // lot above 12%, so quality inspection must not accept 12–13% either.
 func ValidateMoistureContent(moisture float64) error {
+	if math.IsNaN(moisture) || math.IsInf(moisture, 0) {
+		return fmt.Errorf("moisture content must be a finite number")
+	}
 	if moisture < 8.0 || moisture > 12.0 {
 		return fmt.Errorf("moisture content must be between 8%% and 12%%, got: %.2f%%", moisture)
 	}
@@ -316,6 +319,9 @@ func ValidateDefectCount(defects int) error {
 
 // ValidateCuppingScore validates cupping score (0-100)
 func ValidateCuppingScore(score float64) error {
+	if math.IsNaN(score) || math.IsInf(score, 0) {
+		return fmt.Errorf("cupping score must be a finite number")
+	}
 	if score < 0 || score > 100 {
 		return fmt.Errorf("cupping score must be between 0 and 100, got: %.2f", score)
 	}

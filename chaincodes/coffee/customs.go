@@ -305,10 +305,16 @@ func (c *CoffeeContract) SubmitCustomsDeclaration(ctx contractapi.TransactionCon
 	if err != nil {
 		return fmt.Errorf("invalid quantity: %v", err)
 	}
+	if err := ValidateQuantity(quantity, "quantity"); err != nil {
+		return fmt.Errorf("SubmitCustomsDeclaration: %w", err)
+	}
 
 	value, err := strconv.ParseFloat(valueStr, 64)
 	if err != nil {
 		return fmt.Errorf("invalid value: %v", err)
+	}
+	if err := ValidateAmount(value, "value"); err != nil {
+		return fmt.Errorf("SubmitCustomsDeclaration: %w", err)
 	}
 
 	eudrCompliant := false
