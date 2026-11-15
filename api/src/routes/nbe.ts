@@ -296,12 +296,23 @@ router.post('/forex/:forexId/approve', authMiddleware, requireRole('NBE'), async
  * request MSP instead. Any failure leaves the Postgres record intact
  * and is reported as blockchainSynced: false with a reason; it never
  * fails the request.
+ *
+ * Return values: `txId` is the RecordRepatriation txId (the historical
+ * contract — the route response still reports it as blockchainTxId).
+ * `initiateTxId` is the InitiateRepatriation txId when this call
+ * initiated a new repatriation; it is undefined when an existing
+ * on-chain repatriation was reused (no initiate happened in this call)
+ * or when the initiate failed. `recordTxId` mirrors `txId`. The audit
+ * row treats the InitiateRepatriation txId as the operation's own txId
+ * — it is the call that creates the repatriation entity — with the
+ * RecordRepatriation txId in metadata; when no initiate ran, the
+ * column honestly falls back to the record txId.
  */
 async function syncRepatriationToChain(
   db: DatabaseService,
   allocation: any,
-  input: { forexId: string; repatriationAmount: number; bankReference?: string }
-): Promise<{ synced: boolean; repatriationId?: string; txId?: string; warning?: string }> {
+  input: { forexId: string; repatriationAmount: number; bankReference?: string; bankCertificate?: string }
+): Promise<{ synced: boolean; repatriationId?: string; txId?: string; initiateTxId?: string; recordTxId?: string; warning?: string }> {
   const fail = (warning: string): { synced: boolean; warning: string } => ({ synced: false, warning });
   try {
     const contractId: string | undefined = allocation.contract_id;
@@ -351,7 +362,11 @@ async function syncRepatriationToChain(
     }
 
     // Reuse an existing on-chain repatriation for this payment if there is one.
+    // In that case no InitiateRepatriation runs in this call, so
+    // initiateTxId stays undefined (never backfilled from the earlier
+    // operation — the audit row must only carry txIds this call produced).
     let repatriationId: string | null = null;
+    let initiateTxId: string | undefined;
     try {
       const existing = await fabricService.evaluateTransaction('QueryRepatriationsByPayment', payment.payment_id);
       const list = Array.isArray(existing?.data) ? existing.data : [];
@@ -393,6 +408,7 @@ async function syncRepatriationToChain(
       if (!initiate?.success) {
         return fail(`InitiateRepatriation was rejected on-chain: ${initiate?.error || 'unknown error'}`);
       }
+      initiateTxId = (initiate as any)?.txId as string | undefined;
     }
 
     // Record the split at the active ledger exchange rate — the chaincode
@@ -418,16 +434,23 @@ async function syncRepatriationToChain(
       String(convertedAmount),
       String(rate),
       String(input.bankReference || ''),
-      '', // bankCertificate — not collected by this endpoint
+      // The chaincode requires BOTH a SWIFT reference and a bank
+      // certificate as evidence; an empty certificate makes every
+      // RecordRepatriation fail (the helper used to hardcode '' here,
+      // so this route could initiate but never record). The value
+      // comes from the request body — never invented.
+      String(input.bankCertificate || ''),
     ], 'BanksMSP');
     if (!record?.success) {
       return {
         synced: false,
         repatriationId,
+        initiateTxId,
         warning: `Repatriation ${repatriationId} was initiated on-chain but RecordRepatriation was rejected: ${record?.error || 'unknown error'}`,
       };
     }
-    return { synced: true, repatriationId, txId: (record as any)?.txId };
+    const recordTxId = (record as any)?.txId as string | undefined;
+    return { synced: true, repatriationId, txId: recordTxId, initiateTxId, recordTxId };
   } catch (error: any) {
     return fail(`Chain write failed: ${error.message}`);
   }
@@ -444,11 +467,15 @@ router.post('/forex/:forexId/repatriation', authMiddleware, requireRole('NBE'), 
   body('repatriationAmount').isFloat({ gt: 0 }).withMessage('Repatriation amount must be greater than 0'),
   body('repatriationDate').optional().isISO8601().withMessage('Repatriation date must be a valid date'),
   body('bankReference').optional().isString(),
+  // RecordRepatriation requires a bank certificate as evidence alongside
+  // the SWIFT reference; without it the chain write initiates but never
+  // records. Optional here — omitting it keeps the old honest failure.
+  body('bankCertificate').optional().isString(),
   body('repatriationMethod').optional().isString(),
 ], validateRequest, async (req: Request, res: Response) => {
   try {
     const { forexId } = req.params;
-    const { repatriationAmount, repatriationDate, bankReference, repatriationMethod } = req.body;
+    const { repatriationAmount, repatriationDate, bankReference, bankCertificate, repatriationMethod } = req.body;
     
     logger.info(`[NBE] Recording forex repatriation for: ${forexId}`);
     
@@ -520,6 +547,7 @@ router.post('/forex/:forexId/repatriation', authMiddleware, requireRole('NBE'), 
       forexId,
       repatriationAmount: Number(repatriationAmount),
       bankReference,
+      bankCertificate,
     });
     if (chainSync.synced) {
       logger.info(`[NBE] ✅ Repatriation ${chainSync.repatriationId} synced to chain for ${forexId}`);
@@ -528,12 +556,20 @@ router.post('/forex/:forexId/repatriation', authMiddleware, requireRole('NBE'), 
     }
     // Audit: this chain move never wrote an audit_trail row.
     // Best-effort — a failed audit write must not fail the move.
+    // Column holds the operation's own txId: InitiateRepatriation is
+    // the call that creates the repatriation entity, so its txId is
+    // primary; the RecordRepatriation txId (the follow-up that records
+    // the split) goes in metadata alongside it. When an existing
+    // on-chain repatriation was reused, no initiate ran in this call,
+    // so the column honestly falls back to the record txId and
+    // metadata.initiateTxId is null — never an invented txId.
+    const primaryTxId = chainSync.initiateTxId || chainSync.txId;
     await logAuditBestEffort(req, {
       entityType: 'REPATRIATION',
       entityId: chainSync.repatriationId || forexId,
       action: 'RECORD_FOREX_REPATRIATION',
-      blockchainTxId: chainSync.txId || undefined,
-      metadata: { forexId, repatriationAmount, blockchainSynced: chainSync.synced, blockchainTxId: chainSync.txId || null },
+      blockchainTxId: primaryTxId || undefined,
+      metadata: { forexId, repatriationAmount, bankCertificate: bankCertificate || null, blockchainSynced: chainSync.synced, blockchainTxId: primaryTxId || null, initiateTxId: chainSync.initiateTxId || null, recordTxId: chainSync.recordTxId || null },
     }, `forex ${forexId} repatriation`);
 
 
@@ -549,6 +585,8 @@ router.post('/forex/:forexId/repatriation', authMiddleware, requireRole('NBE'), 
         repatriationId: chainSync.repatriationId,
         blockchainSynced: chainSync.synced,
         ...(chainSync.txId ? { blockchainTxId: chainSync.txId } : {}),
+        ...(chainSync.initiateTxId ? { initiateTxId: chainSync.initiateTxId } : {}),
+        ...(chainSync.recordTxId ? { recordTxId: chainSync.recordTxId } : {}),
         ...(chainSync.warning ? { blockchainWarning: chainSync.warning } : {})
       },
       timestamp: new Date().toISOString()
