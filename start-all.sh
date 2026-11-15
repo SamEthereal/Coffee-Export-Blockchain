@@ -1390,17 +1390,121 @@ async function runMigrations() {
 runMigrations();
 EOF
             
-            # Run the migration script
-            if NODE_ENV=production node /tmp/run-migrations.js "$DATABASE_URL" 2>&1; then
-                write_success "All migrations completed successfully"
+            # Check if API container is running
+            if docker ps --format '{{.Names}}' | grep -q "cecbs-api"; then
+                # Run migrations inside the Docker container where pg module is available
+                write_step "Running migrations inside API container..."
+                docker exec cecbs-api sh -c "cat > /tmp/run-migrations.js << 'MIGRATION_EOF'
+const { Pool } = require('pg');
+const fs = require('fs');
+const path = require('path');
+
+async function runMigrations() {
+    const databaseUrl = process.env.DATABASE_URL || process.argv[2];
+    const migrationsDir = path.join('/app', 'dist', 'migrations');
+    
+    if (!databaseUrl) {
+        console.error('❌ DATABASE_URL not provided');
+        process.exit(1);
+    }
+    
+    const pool = new Pool({ connectionString: databaseUrl });
+    
+    try {
+        // Create migrations tracking table if it doesn't exist
+        await pool.query(\\\`
+            CREATE TABLE IF NOT EXISTS _schema_migrations (
+                migration_name VARCHAR(255) PRIMARY KEY,
+                applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        \\\`);
+        
+        // Get list of applied migrations
+        const { rows: applied } = await pool.query(
+            'SELECT migration_name FROM _schema_migrations ORDER BY migration_name'
+        );
+        const appliedSet = new Set(applied.map(r => r.migration_name));
+        
+        // Get all migration files
+        const files = fs.readdirSync(migrationsDir)
+            .filter(f => f.endsWith('.sql'))
+            .sort();
+        
+        console.log(\\\`📋 Found \\\${files.length} migration file(s)\\\`);
+        
+        let appliedCount = 0;
+        let skippedCount = 0;
+        
+        for (const file of files) {
+            const migrationName = file.replace('.sql', '');
+            
+            if (appliedSet.has(migrationName)) {
+                console.log(\\\`   ⏭️  Skipping: \\\${migrationName}\\\`);
+                skippedCount++;
+                continue;
+            }
+            
+            console.log(\\\`   ▶️  Applying: \\\${migrationName}\\\`);
+            
+            const sql = fs.readFileSync(path.join(migrationsDir, file), 'utf8');
+            
+            try {
+                await pool.query('BEGIN');
+                await pool.query(sql);
+                await pool.query(
+                    'INSERT INTO _schema_migrations (migration_name) VALUES (\\\$1)',
+                    [migrationName]
+                );
+                await pool.query('COMMIT');
+                console.log(\\\`   ✅ Applied: \\\${migrationName}\\\`);
+                appliedCount++;
+            } catch (error) {
+                await pool.query('ROLLBACK');
+                console.error(\\\`   ❌ Failed: \\\${migrationName}\\\`);
+                console.error(\\\`   Error: \\\${error.message}\\\`);
+                process.exit(1);
+            }
+        }
+        
+        if (appliedCount > 0) {
+            console.log(\\\`\\\\n✅ Successfully applied \\\${appliedCount} migration(s)\\\`);
+        } else {
+            console.log(\\\`\\\\n✅ All migrations up to date (\\\${skippedCount} already applied)\\\`);
+        }
+        
+    } catch (error) {
+        console.error('❌ Migration error:', error.message);
+        process.exit(1);
+    } finally {
+        await pool.end();
+    }
+}
+
+runMigrations();
+MIGRATION_EOF
+node /tmp/run-migrations.js '$DATABASE_URL' && rm -f /tmp/run-migrations.js"
+                
+                if [ $? -eq 0 ]; then
+                    write_success "All migrations completed successfully"
+                else
+                    write_error "Migration failed! Check the output above"
+                    write_info "You may need to fix migration files and re-run"
+                    return 1
+                fi
             else
-                write_error "Migration failed! Check the output above"
-                write_info "You may need to fix migration files and re-run"
-                rm -f /tmp/run-migrations.js
-                return 1
+                # Fallback: try running on host if container not available
+                write_warning "API container not running, attempting migration on host..."
+                if NODE_ENV=production node /tmp/run-migrations.js "$DATABASE_URL" 2>&1; then
+                    write_success "All migrations completed successfully"
+                else
+                    write_error "Migration failed! API container not running and host lacks dependencies"
+                    write_info "Start the API container or install 'pg' module globally"
+                    rm -f /tmp/run-migrations.js
+                    return 1
+                fi
             fi
             
-            rm -f /tmp/run-migrations.js
+            rm -f /tmp/run-migrations.js 2>/dev/null
             cd "$PROJECT_ROOT"
 
             # Check if users table exists and has data
