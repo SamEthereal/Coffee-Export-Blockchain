@@ -241,3 +241,76 @@ func TestReadPhytosanitaryCertificateFresh(t *testing.T) {
 		t.Fatalf("ReadPhytosanitaryCertificate: payload lacks empty pestsFreeFrom array: %s", payload)
 	}
 }
+
+// validMT700JSON mirrors a fully valid MT700 as stored by
+// CreateMT700_IssueLC: every field ValidateSWIFTMessageComplete checks is
+// present, so the function must return isValid:true with an EMPTY errors
+// array — not a nil slice, which JSON-marshals as null and fails the
+// contract-api response schema ("return.errors: Invalid type. Expected:
+// array, given: null", seen live 2026-11-15 on MSG-PROBE-20261115-700/-750/-752).
+const validMT700JSON = `{
+	"messageId": "SW-TEST-700", "messageType": "MT700",
+	"swiftReference": "SWTEST700", "relatedReference": "",
+	"senderBic": "CBETETAA", "receiverBic": "FNBKUS33XXX",
+	"intermediaryBic1": "", "intermediaryBic2": "",
+	"valueDate": "261115", "currency": "USD", "amount": 275000, "exchangeRate": 57.25,
+	"sentDate": "2026-11-15T00:00:00Z", "receivedDate": "", "processedDate": "",
+	"orderingCustomer": "Buyer", "orderingInstitution": "Buyer Bank",
+	"beneficiary": "International Coffee Importers Inc", "beneficiaryBank": "CBE",
+	"beneficiaryAccount": "123", "charges": "SHA", "remittanceInfo": "Coffee",
+	"purposeCode": "", "instructionCode": "", "lcNumber": "LC-TEST-700", "lcIssueDate": "2026-11-15",
+	"lcExpiryDate": "2027-02-13", "lcExpiryPlace": "", "lcApplicant": "Yirgacheffe Coffee Export PLC", "lcAmount": 275000,
+	"lcCurrency": "USD", "partialShipment": "", "transhipment": "",
+	"loadingPort": "Djibouti Port", "dischargePort": "New York Port", "latestShipDate": "2027-02-10",
+	"documents": [], "additionalInfo": "",
+	"amendmentNumber": 0, "amendmentDate": "", "amendmentReason": "",
+	"discrepancyDetails": "", "discrepancyList": [], "action": "",
+	"status": "DRAFT", "processingStatus": "", "rejectionReason": "",
+	"errorCode": "", "retryCount": 0, "maxRetries": 3,
+	"authenticated": false, "validationFlags": [], "securityHash": "",
+	"digitalSign": "", "encrypted": false,
+	"createdBy": "x", "approvedBy": "", "sentBy": "", "processedBy": "",
+	"receivedBy": "", "nbeApprovedBy": "", "nbeApprovalDate": "",
+	"nbeAmlCheck": "", "nbeSanctionScreening": "", "nbeApprovalComments": "",
+	"rawMessage": "", "messageHash": "", "networkInfo": "", "priorityCode": "",
+	"deliveryMonitor": "", "linkedPaymentId": "", "linkedLcId": "LC-TEST-700",
+	"linkedContractId": "",
+	"createdAt": "2026-11-15T00:00:00Z", "updatedAt": "2026-11-15T00:00:00Z"
+}`
+
+func TestValidateSWIFTMessageCompleteValid(t *testing.T) {
+	stub := newTestStub(t)
+	seedState(t, stub, "SWIFT_SW-TEST-700", validMT700JSON)
+
+	status, payload := invoke(t, stub, "ValidateSWIFTMessageComplete", "SW-TEST-700")
+	if status != 200 {
+		t.Fatalf("ValidateSWIFTMessageComplete (valid MT700): status %d, payload %q (want 200 — live this 500s with 'return.errors: Expected: array, given: null')", status, payload)
+	}
+	var res SWIFTValidationResult
+	if err := json.Unmarshal([]byte(payload), &res); err != nil {
+		t.Fatalf("ValidateSWIFTMessageComplete: payload is not valid validation JSON: %v (%s)", err, payload)
+	}
+	if !res.IsValid {
+		t.Fatalf("ValidateSWIFTMessageComplete (valid MT700): isValid=false, errors=%v (want true)", res.Errors)
+	}
+	if res.Errors == nil {
+		t.Fatalf("ValidateSWIFTMessageComplete (valid MT700): errors is nil (want empty non-nil array)")
+	}
+	if !strings.Contains(payload, `"errors":[]`) {
+		t.Fatalf("ValidateSWIFTMessageComplete: payload lacks empty errors array: %s", payload)
+	}
+
+	// An invalid message must still report its errors (non-empty array).
+	invalidJSON := strings.Replace(validMT700JSON, `"beneficiary": "International Coffee Importers Inc"`, `"beneficiary": ""`, 1)
+	seedState(t, stub, "SWIFT_SW-TEST-701", invalidJSON)
+	status, payload = invoke(t, stub, "ValidateSWIFTMessageComplete", "SW-TEST-701")
+	if status != 200 {
+		t.Fatalf("ValidateSWIFTMessageComplete (invalid MT700): status %d, payload %q (want 200)", status, payload)
+	}
+	if err := json.Unmarshal([]byte(payload), &res); err != nil {
+		t.Fatalf("ValidateSWIFTMessageComplete (invalid): bad JSON: %v", err)
+	}
+	if res.IsValid || len(res.Errors) == 0 {
+		t.Fatalf("ValidateSWIFTMessageComplete (invalid MT700): isValid=%v errors=%v (want false + >=1 error)", res.IsValid, res.Errors)
+	}
+}
