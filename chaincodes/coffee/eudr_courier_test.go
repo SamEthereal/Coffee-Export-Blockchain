@@ -253,12 +253,18 @@ func TestCourierSendStatusReceiveUpdate(t *testing.T) {
 		t.Fatalf("shipment documentsReceivedDate %q after send, want empty", ship.DocumentsReceivedDate)
 	}
 
-	// A second send for the same shipment must fail (no overwrite).
+	// A second send for the same shipment must fail (no overwrite),
+	// and the error must name the STORED tracking number (DHL-EC-123),
+	// not the incoming one (FDX-999) — courier.go:128 fix.
 	if code, p := invokeFull(t, stub, "SendDocumentsByCourier", shipID,
 		"FedEx", "FDX-999", "[]", "Buyer Co", "New York, USA", "2026-11-14T10:00:00Z"); code == 200 {
 		t.Fatalf("second send succeeded, want refusal")
 	} else if !strings.Contains(p, "already been sent") {
 		t.Fatalf("second send error %q, want 'already been sent'", p)
+	} else if !strings.Contains(p, "DHL-EC-123") {
+		t.Fatalf("second send error %q, want stored tracking number DHL-EC-123", p)
+	} else if strings.Contains(p, "FDX-999") {
+		t.Fatalf("second send error %q, must not name the incoming tracking number FDX-999", p)
 	}
 
 	// Intermediate status update -> stored on the courier record.
