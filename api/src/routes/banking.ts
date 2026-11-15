@@ -3909,8 +3909,45 @@ router.put('/consignment/:consignmentID/status',
       const { consignmentID } = req.params;
       const { status, notes } = req.body;
 
-      const result = await fabricService.invokeChaincode('UpdateConsignmentStatus', [
-        consignmentID, status, notes || ''
+      // BUG (probe 2026-11-15): the old call invoked 'UpdateConsignmentStatus',
+      // which does not exist in the chaincode (consignment.go only defines
+      // IssueConsignmentPermit / RecordConsignmentShipment /
+      // RecordPartialPayment), so EVERY status update 400'd with
+      // "Function UpdateConsignmentStatus not found in contract
+      // CoffeeContract". The chaincode state machine is PERMIT_ISSUED ->
+      // SHIPPED -> PARTIAL -> SETTLED, so SHIPPED is the only status move
+      // this route can perform: it records the shipment at the permit
+      // amount. SOLD / SETTLED / OUTSTANDING / PERMITTED have no chaincode
+      // transition and fail honestly with 400 instead of a 500 from a
+      // missing function. (SETTLED is reached through the payment route.)
+      if (status !== 'SHIPPED') {
+        return res.status(400).json({
+          success: false,
+          error: {
+            code: 'CONSIGNMENT_STATUS_UNSUPPORTED',
+            message: `Consignment status '${status}' has no chaincode transition (the ledger state machine is PERMIT_ISSUED -> SHIPPED -> PARTIAL -> SETTLED); only SHIPPED is supported here`,
+          },
+          timestamp: new Date().toISOString(),
+        });
+      }
+      const readResult = await fabricService.queryChaincode('ReadConsignment', [consignmentID]);
+      if (!readResult.success || !readResult.data) {
+        return res.status(404).json({
+          success: false,
+          error: { code: 'NOT_FOUND', message: readResult.error || 'Consignment not found' },
+          timestamp: new Date().toISOString(),
+        });
+      }
+      const shippedValue = Number(readResult.data.permitAmount);
+      if (!Number.isFinite(shippedValue) || shippedValue <= 0) {
+        return res.status(400).json({
+          success: false,
+          error: { code: 'CONSIGNMENT_STATUS_UPDATE_FAILED', message: 'Consignment has no permit amount to ship' },
+          timestamp: new Date().toISOString(),
+        });
+      }
+      const result = await fabricService.invokeChaincode('RecordConsignmentShipment', [
+        consignmentID, shippedValue.toString()
       ]);
 
       if (result.success) {
@@ -3975,9 +4012,19 @@ router.post('/consignment/:consignmentID/payment',
     try {
       const { consignmentID } = req.params;
       const { amountReceived, paymentReference } = req.body;
+      const user = (req as any).user;
 
-      const result = await fabricService.invokeChaincode('RecordConsignmentPayment', [
-        consignmentID, amountReceived.toString(), paymentReference
+      // BUG (probe 2026-11-15): the old call invoked 'RecordConsignmentPayment',
+      // which does not exist in the chaincode (consignment.go only defines
+      // RecordPartialPayment for payments), so EVERY consignment payment
+      // 400'd with "Function RecordConsignmentPayment not found in
+      // contract CoffeeContract". RecordPartialPayment takes
+      // (consignmentID, amount, swiftReference, receivedBy); the API's
+      // paymentReference is the SWIFT reference and the caller is the
+      // receiver. It requires SHIPPED or PARTIAL and settles the
+      // consignment (and its permit) once the shipped value is covered.
+      const result = await fabricService.invokeChaincode('RecordPartialPayment', [
+        consignmentID, amountReceived.toString(), paymentReference, user?.username || 'bank_admin'
       ]);
 
       if (result.success) {
