@@ -3360,11 +3360,17 @@ func main() {
 		}
 
 		log.Printf("About to start chaincode server at %s (TLS: %s)", address, tlsStatus)
+		log.Printf("DEBUG: Verifying server configuration before start:")
+		log.Printf("  - CCID length: %d", len(server.CCID))
+		log.Printf("  - Address: %s", server.Address)
+		log.Printf("  - TLS Disabled: %v", server.TLSProps.Disabled)
+		log.Printf("  - Chaincode interface: %T", server.CC)
 		
 		// Start server.Start() in a goroutine to capture errors
 		done := make(chan error, 1)
 		go func() {
 			log.Printf("→ Calling server.Start() - this will block if successful...")
+			log.Printf("→ Listening for peer connections on %s...", address)
 			err := server.Start()
 			if err != nil {
 				log.Printf("✗ CRITICAL ERROR: server.Start() failed: %v", err)
