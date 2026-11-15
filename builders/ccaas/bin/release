@@ -1,14 +1,5 @@
 #!/bin/bash
 set -euo pipefail
-<<<<<<< Updated upstream
-# Peer invokes: bin/release BUILD_OUTPUT_DIR RELEASE_OUTPUT_DIR (two args)
-# $1 = build output dir, $2 = release output dir
-# The old script used $2/$3, so $3 was unbound and release always failed.
-BUILD_OUTPUT_DIR=$1
-RELEASE_OUTPUT_DIR=$2
-cp "$BUILD_OUTPUT_DIR/connection.json" "$RELEASE_OUTPUT_DIR/connection.json"
-exit 0
-=======
 
 # For Fabric 2.5 CCAAS packages:
 # $1 = BUILD_OUTPUT_DIR - contains connection.json from build step
@@ -32,4 +23,3 @@ else
     echo "RELEASE ERROR: BUILD_OUTPUT_DIR is empty or doesn't exist" >&2
     exit 1
 fi
->>>>>>> Stashed changes
