@@ -1391,64 +1391,6 @@ async function runMigrations() {
 
 runMigrations();
 MIGRATION_EOF
-        const appliedSet = new Set(applied.map(r => r.migration_name));
-        
-        const files = fs.readdirSync(migrationsDir)
-            .filter(f => f.endsWith('.sql'))
-            .sort();
-        
-        console.log(`Found ${files.length} migration file(s)`);
-        
-        let appliedCount = 0;
-        let skippedCount = 0;
-        
-        for (const file of files) {
-            const migrationName = file.replace('.sql', '');
-            
-            if (appliedSet.has(migrationName)) {
-                console.log(`  Skipping: ${migrationName}`);
-                skippedCount++;
-                continue;
-            }
-            
-            console.log(`  Applying: ${migrationName}`);
-            
-            const sql = fs.readFileSync(path.join(migrationsDir, file), 'utf8');
-            
-            try {
-                await pool.query('BEGIN');
-                await pool.query(sql);
-                await pool.query(
-                    'INSERT INTO _schema_migrations (migration_name) VALUES ($1)',
-                    [migrationName]
-                );
-                await pool.query('COMMIT');
-                console.log(`  Applied: ${migrationName}`);
-                appliedCount++;
-            } catch (error) {
-                await pool.query('ROLLBACK');
-                console.error(`  Failed: ${migrationName}`);
-                console.error(`  Error: ${error.message}`);
-                process.exit(1);
-            }
-        }
-        
-        if (appliedCount > 0) {
-            console.log(`\nSuccessfully applied ${appliedCount} migration(s)`);
-        } else {
-            console.log(`\nAll migrations up to date (${skippedCount} already applied)`);
-        }
-        
-    } catch (error) {
-        console.error('Migration error:', error.message);
-        process.exit(1);
-    } finally {
-        await pool.end();
-    }
-}
-
-runMigrations();
-MIGRATION_EOF
                 
                 # Copy script to container's working directory and run it
                 docker cp /tmp/run-migrations-host.js cecbs-api:/app/run-migrations.js
