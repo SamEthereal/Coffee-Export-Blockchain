@@ -4,6 +4,7 @@ set -euo pipefail
 # For Fabric 2.5 CCAAS packages:
 # $1 = BUILD_OUTPUT_DIR - contains connection.json from build step
 # $2 = RELEASE_OUTPUT_DIR - final location for chaincode metadata
+# Per Fabric docs: connection.json must be at $RELEASE_OUTPUT_DIR/chaincode/server/connection.json
 
 BUILD_OUTPUT_DIR=$1
 RELEASE_OUTPUT_DIR=$2
@@ -13,13 +14,23 @@ echo "RELEASE: RELEASE_OUTPUT_DIR=$RELEASE_OUTPUT_DIR" >&2
 echo "RELEASE: Contents of BUILD_OUTPUT_DIR:" >&2
 ls -la "$BUILD_OUTPUT_DIR" >&2 || true
 
-# Copy everything from build output to release output
-if [ -d "$BUILD_OUTPUT_DIR" ] && [ "$(ls -A $BUILD_OUTPUT_DIR)" ]; then
-    cp -a "$BUILD_OUTPUT_DIR"/* "$RELEASE_OUTPUT_DIR/"
-    echo "RELEASE: Files copied successfully" >&2
-    ls -la "$RELEASE_OUTPUT_DIR" >&2 || true
-    exit 0
-else
-    echo "RELEASE ERROR: BUILD_OUTPUT_DIR is empty or doesn't exist" >&2
+# Check if connection.json exists in build output
+if [ ! -f "$BUILD_OUTPUT_DIR/connection.json" ]; then
+    echo "RELEASE ERROR: connection.json not found in BUILD_OUTPUT_DIR" >&2
     exit 1
 fi
+
+# Create the required directory structure: chaincode/server/
+mkdir -p "$RELEASE_OUTPUT_DIR/chaincode/server"
+
+# Copy connection.json to the correct location
+cp "$BUILD_OUTPUT_DIR/connection.json" "$RELEASE_OUTPUT_DIR/chaincode/server/connection.json"
+
+# Also copy metadata if present
+if [ -d "$BUILD_OUTPUT_DIR/metadata" ]; then
+    cp -a "$BUILD_OUTPUT_DIR/metadata" "$RELEASE_OUTPUT_DIR/"
+fi
+
+echo "RELEASE: Files copied successfully to chaincode/server/" >&2
+ls -la "$RELEASE_OUTPUT_DIR/chaincode/server/" >&2 || true
+exit 0
