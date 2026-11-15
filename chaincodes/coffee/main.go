@@ -1,5 +1,7 @@
 package main
 
+// Version 2.10 - Fixed CCAAS connection.json path in release script
+
 import (
 	"crypto/tls"
 	"encoding/json"
