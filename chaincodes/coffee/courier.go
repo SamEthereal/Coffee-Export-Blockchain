@@ -125,7 +125,11 @@ func (c *CoffeeContract) SendDocumentsByCourier(ctx contractapi.TransactionConte
 		return fmt.Errorf("SendDocumentsByCourier: failed to read courier record: %w", err)
 	}
 	if existing != nil {
-		return fmt.Errorf("SendDocumentsByCourier: documents for shipment %s have already been sent (tracking %s)", shipmentID, trackingNumber)
+		var stored CourierRecord
+		if err := json.Unmarshal(existing, &stored); err != nil {
+			return fmt.Errorf("SendDocumentsByCourier: failed to read existing courier record: %w", err)
+		}
+		return fmt.Errorf("SendDocumentsByCourier: documents for shipment %s have already been sent (tracking %s)", shipmentID, stored.TrackingNumber)
 	}
 
 	record := &CourierRecord{
