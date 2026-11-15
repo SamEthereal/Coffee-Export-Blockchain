@@ -1171,7 +1171,6 @@ router.post('/upload-registration',
           document_id, entity_type, entity_id, document_type, file_name,
           file_hash, mime_type, file_size, file_path, uploaded_by, status, blockchain_tx_id
         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
-<<<<<<< Updated upstream
           [
             documentID,
             finalEntityType,
