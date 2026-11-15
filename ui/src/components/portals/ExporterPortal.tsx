@@ -3901,7 +3901,6 @@ const ExporterPortal: React.FC = () => {
               ledgerWrite
               disabled={isCreatingContract || !newContract.buyerCompany || !newContract.buyerCountry ||
                         !newContract.buyerBank || !newContract.exporterBank ||
-<<<<<<< Updated upstream
                         !newContract.buyerEmail || !newContract.coffeeType || !newContract.quantity ||
                         !newContract.pricePerKg || !newContract.portOfDestination || !newContract.deliveryDate ||
                         // Validation fix (2026-11-13): the payment method
@@ -3910,13 +3909,6 @@ const ExporterPortal: React.FC = () => {
                         // while the handler refused the click.
                         !newContract.paymentMethod || parseFloat(newContract.quantity) <= 0 ||
                         (parseFloat(newContract.pricePerKg) < 5.0) || contractDocuments.some((doc) => doc.status !== 'success')}
-=======
-                        !newContract.buyerEmail || !newContract.coffeeType || !newContract.quantity || 
-                        !newContract.pricePerKg || !newContract.portOfDestination || !newContract.deliveryDate || 
-                        (parseFloat(newContract.pricePerKg) < 5.0)
-                        // Temporarily disabled: || contractDocuments.some((doc) => doc.status !== 'success')
-              }
->>>>>>> Stashed changes
               size="large"
               sx={{ minWidth: 150 }}
             >

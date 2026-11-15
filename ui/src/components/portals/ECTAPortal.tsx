@@ -3591,9 +3591,6 @@ The exporter can reapply once all requirements are met.`,
           )}
         
       </PortalDialog>
-=======
-      {/* OLD Application Details Dialog REMOVED - now using modern DocumentValidationDialog */}
->>>>>>> Stashed changes
 
       {/* Approve Confirmation Dialog */}
       <PortalDialog brand="ECTA" title="Confirm Approval" open={approveConfirmOpen} onClose={() => setApproveConfirmOpen(false)} maxWidth="sm" actions={<>

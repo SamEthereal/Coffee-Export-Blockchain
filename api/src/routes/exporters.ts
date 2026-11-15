@@ -754,17 +754,10 @@ router.post('/exporter-applications/:applicationId/approve',
         email: application.email,
         username: newUsername,  // ✅ Send the NEW username (exporterId)
         oldUsername: oldUsername,  // Include old username for reference
-<<<<<<< Updated upstream
-        temporaryPassword: 'Use your existing password',
-        bankName: effectiveBankName || undefined,
-        bankBranch: effectiveBankBranch || undefined,
-        bankBranchCode: effectiveBankBranchCode || undefined,
-=======
         temporaryPassword: newPassword,  // ✅ Send the NEW password
         bankName: bankName || undefined,
         bankBranch: bankBranch || undefined,
         bankBranchCode: bankBranchCode || undefined,
->>>>>>> Stashed changes
         loginUrl: `${loginUrl}/login`,
       });
       

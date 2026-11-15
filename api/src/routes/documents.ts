@@ -1210,23 +1210,6 @@ router.post('/upload-registration',
           timestamp: new Date().toISOString()
         });
       }
-=======
-        [
-          documentID, 
-          finalEntityType, 
-          finalEntityId, 
-          finalDocType, 
-          finalFileName,
-          fileHash,
-          file.mimetype,
-          file.size,
-          file.path,
-          null, // uploaded_by is integer, use NULL for public registration uploads
-          'active',
-          blockchainResult.txId
-        ]
-      );
->>>>>>> Stashed changes
 
       logger.info('Registration document cached in database:', documentID);
 
