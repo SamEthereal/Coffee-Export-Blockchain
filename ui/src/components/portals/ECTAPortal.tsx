@@ -1093,7 +1093,12 @@ Contact system administrator if the issue persists.`,
             status: 'AVAILABLE',
             url: documentId ? `/api/v1/documents/${documentId}/download` : undefined,
             uploadedDate: formatUploadDate(doc.uploadedDate || doc.uploadedAt),
-            size: doc.size && !isNaN(doc.size) ? `${(doc.size / 1024).toFixed(0)} KB` : (doc.file_size && !isNaN(doc.file_size) ? `${(doc.file_size / 1024).toFixed(0)} KB` : 'N/A'),
+            size: (() => {
+              const bytes = doc.size || doc.file_size;
+              if (!bytes || isNaN(bytes)) return 'N/A';
+              if (bytes < 1024) return `${bytes} bytes`;
+              return `${(bytes / 1024).toFixed(1)} KB`;
+            })(),
             category: doc.category || 'APPLICATION_DOCUMENT',
           });
         }
@@ -1104,6 +1109,7 @@ Contact system administrator if the issue persists.`,
     
     if (token) {
       try {
+        console.log('[ECTA] Fetching documents for application:', application.application_id);
         const response = await apiFetch(`/documents/entity/EXPORTER_APPLICATION/${application.application_id}`, {
           method: 'GET',
           headers: {
@@ -1113,8 +1119,13 @@ Contact system administrator if the issue persists.`,
         });
         
         const result = await response.json();
+        console.log('[ECTA] Documents API response:', result);
+        
         if (result.success && result.data) {
-          applicationDocuments = dedupeDocuments(result.data.map((doc: any) => ({
+          console.log('[ECTA] Raw documents data:', result.data);
+          
+          // Map documents with blockchain data
+          const mappedDocs = result.data.map((doc: any) => ({
             id: doc.document_id || doc.documentId || doc.id,
             name: doc.file_name || doc.filename || doc.name || 'Document',
             type: (doc.mime_type || doc.mimeType || 'application/pdf').split('/')[1]?.toUpperCase() || 'PDF',
@@ -1124,10 +1135,40 @@ Contact system administrator if the issue persists.`,
             size: doc.file_size || doc.size,
             file_size: doc.file_size || doc.size,
             category: doc.document_type || doc.category || 'APPLICATION_DOCUMENT',
-          })));
+            blockchain_tx_id: doc.blockchain_tx_id,
+            blockchainVerified: false,
+            verificationStatus: doc.blockchain_tx_id ? 'PENDING' : undefined,
+          }));
+          
+          // Fetch blockchain verification for documents with TX IDs
+          for (const doc of mappedDocs) {
+            if (doc.blockchain_tx_id && doc.id) {
+              try {
+                const verifyResponse = await apiFetch(`/documents/${doc.id}/verify-signatures`, {
+                  method: 'GET',
+                  headers: {
+                    'Authorization': `Bearer ${token}`,
+                    'Content-Type': 'application/json',
+                  },
+                });
+                const verifyResult = await verifyResponse.json();
+                
+                if (verifyResult.success && verifyResult.data?.signatures?.length > 0) {
+                  const signature = verifyResult.data.signatures[0];
+                  doc.blockchainVerified = signature.blockchainVerified || false;
+                  doc.verificationStatus = signature.verificationStatus || 'UNVERIFIED';
+                }
+              } catch (verifyError) {
+                console.warn('[ECTA] Could not verify blockchain for doc:', doc.id, verifyError);
+              }
+            }
+          }
+          
+          applicationDocuments = dedupeDocuments(mappedDocs);
+          console.log('[ECTA] Mapped documents with blockchain data:', applicationDocuments);
         }
       } catch (error) {
-        console.error('Error fetching application documents:', error);
+        console.error('[ECTA] Error fetching application documents:', error);
       }
     }
     
@@ -1161,8 +1202,12 @@ Contact system administrator if the issue persists.`,
       }
     }
     
+    console.log('[ECTA] After all fetching, applicationDocuments:', applicationDocuments);
+    console.log('[ECTA] Application status:', application.status);
+    
     // If no documents found AND application is still pending, show required documents list
     if (applicationDocuments.length === 0 && application.status === 'pending') {
+      console.log('[ECTA] No documents found, showing MISSING placeholders');
       applicationDocuments = [
         { id: '1', name: 'Business License', type: 'PDF', status: 'MISSING', uploadedDate: 'N/A', size: 'N/A' },
         { id: '2', name: 'TIN Certificate', type: 'PDF', status: 'MISSING', uploadedDate: 'N/A', size: 'N/A' },
@@ -1172,6 +1217,8 @@ Contact system administrator if the issue persists.`,
         { id: '6', name: 'Trade License', type: 'PDF', status: 'MISSING', uploadedDate: 'N/A', size: 'N/A' },
       ];
     }
+    
+    console.log('[ECTA] Final applicationDocuments to show:', applicationDocuments);
     
     // Set validation data for view/approval mode
     setValidationData({
@@ -1846,27 +1893,27 @@ The exporter can reapply once all requirements are met.`,
       
       case 1: // Approved Exporters
         return [
-          { icon: <Coffee />, label: 'Active Exporters', value: approvedApplications.filter(a => a.status === 'approved').length, color: BRAND_COLOR },
+          { icon: <Coffee />, label: 'Active Exporters', value: approvedApplications.filter(a => a.status === 'approved').length, color: BRAND_COLOR, onClick: undefined, selected: false },
           { icon: <Warning />, label: 'Expiring Soon (30 days)', value: approvedApplications.filter(a => {
               if (!a.license_expiry_date) return false;
               const expiryDate = new Date(a.license_expiry_date);
               const daysUntilExpiry = Math.floor((expiryDate.getTime() - Date.now()) / (1000 * 60 * 60 * 24));
               return daysUntilExpiry > 0 && daysUntilExpiry <= 30;
-            }).length, color: '#ff9800' },
+            }).length, color: '#ff9800', onClick: undefined, selected: false },
           { icon: <ErrorOutline />, label: 'Expired Licenses', value: approvedApplications.filter(a => {
               if (!a.license_expiry_date) return false;
               const expiryDate = new Date(a.license_expiry_date);
               return expiryDate.getTime() < Date.now();
-            }).length, color: '#f44336' },
-          { icon: <TrendingUp />, label: 'Total Registered', value: allExporters.length, color: '#2196f3' },
+            }).length, color: '#f44336', onClick: undefined, selected: false },
+          { icon: <TrendingUp />, label: 'Total Registered', value: allExporters.length, color: '#2196f3', onClick: undefined, selected: false },
         ];
       
       case 2: // Sales Contracts
         return [
-          { icon: <Description />, label: 'Pending Review', value: allContracts.filter(c => c.status === 'REGISTERED').length, color: '#ff9800' },
-          { icon: <CheckCircle />, label: 'Approved', value: allContracts.filter(c => c.status === 'APPROVED').length, color: '#4caf50' },
-          { icon: <Cancel />, label: 'Rejected', value: allContracts.filter(c => c.status === 'REJECTED').length, color: '#f44336' },
-          { icon: <Assignment />, label: 'Total Contracts', value: allContracts.length, color: '#2196f3' },
+          { icon: <Description />, label: 'Pending Review', value: allContracts.filter(c => c.status === 'REGISTERED').length, color: '#ff9800', onClick: undefined, selected: false },
+          { icon: <CheckCircle />, label: 'Approved', value: allContracts.filter(c => c.status === 'APPROVED').length, color: '#4caf50', onClick: undefined, selected: false },
+          { icon: <Cancel />, label: 'Rejected', value: allContracts.filter(c => c.status === 'REJECTED').length, color: '#f44336', onClick: undefined, selected: false },
+          { icon: <Assignment />, label: 'Total Contracts', value: allContracts.length, color: '#2196f3', onClick: undefined, selected: false },
         ];
       
       case 3: // Quality Control
@@ -1884,25 +1931,25 @@ The exporter can reapply once all requirements are met.`,
               const expiryDate = new Date(a.license_expiry_date);
               const daysUntilExpiry = Math.floor((expiryDate.getTime() - Date.now()) / (1000 * 60 * 60 * 24));
               return daysUntilExpiry > 0 && daysUntilExpiry <= 90;
-            }).length, color: '#ff9800' },
+            }).length, color: '#ff9800', onClick: undefined, selected: false },
           { icon: <CheckCircle />, label: 'Recently Renewed', value: approvedApplications.filter(a => {
               if (!a.license_expiry_date) return false;
               const expiryDate = new Date(a.license_expiry_date);
               const daysUntilExpiry = Math.floor((expiryDate.getTime() - Date.now()) / (1000 * 60 * 60 * 24));
               return daysUntilExpiry > 330; // Renewed in last 35 days
-            }).length, color: '#4caf50' },
+            }).length, color: '#4caf50', onClick: undefined, selected: false },
           { icon: <ErrorOutline />, label: 'Expired', value: approvedApplications.filter(a => {
               if (!a.license_expiry_date) return false;
               const expiryDate = new Date(a.license_expiry_date);
               return expiryDate.getTime() < Date.now();
-            }).length, color: '#f44336' },
+            }).length, color: '#f44336', onClick: undefined, selected: false },
         ];
       
       case 9: // Post-Delivery Audits
         return [
-          { icon: <DirectionsBoat />, label: 'Delivered Shipments', value: deliveredShipments.length, color: BRAND_COLOR },
-          { icon: <CheckCircle />, label: 'Audits Completed', value: deliveredShipments.filter(s => s.post_delivery_audit_status === 'COMPLETED').length, color: '#4caf50' },
-          { icon: <HourglassEmpty />, label: 'Audits Pending', value: deliveredShipments.filter(s => !s.post_delivery_audit_status || s.post_delivery_audit_status === 'PENDING').length, color: '#ff9800' },
+          { icon: <DirectionsBoat />, label: 'Delivered Shipments', value: deliveredShipments.length, color: BRAND_COLOR, onClick: undefined, selected: false },
+          { icon: <CheckCircle />, label: 'Audits Completed', value: deliveredShipments.filter(s => s.post_delivery_audit_status === 'COMPLETED').length, color: '#4caf50', onClick: undefined, selected: false },
+          { icon: <HourglassEmpty />, label: 'Audits Pending', value: deliveredShipments.filter(s => !s.post_delivery_audit_status || s.post_delivery_audit_status === 'PENDING').length, color: '#ff9800', onClick: undefined, selected: false },
         ];
       
       default:
@@ -2245,7 +2292,12 @@ The exporter can reapply once all requirements are met.`,
                                     type: doc.mime_type?.split('/')[1]?.toUpperCase() || 'PDF',
                                     status: 'AVAILABLE',
                                     uploadedDate: formatUploadDate(doc.uploaded_at),
-                                    size: doc.file_size ? `${Math.round(doc.file_size / 1024)} KB` : 'N/A'
+                                    size: (() => {
+                                      const bytes = doc.file_size;
+                                      if (!bytes || isNaN(bytes)) return 'N/A';
+                                      if (bytes < 1024) return `${bytes} bytes`;
+                                      return `${Math.round(bytes / 1024)} KB`;
+                                    })()
                                   }));
                                   
                                   // Set simplified validation data for approved exporters (read-only)
@@ -3386,6 +3438,7 @@ The exporter can reapply once all requirements are met.`,
         </form>
       </PortalDialog>
 
+<<<<<<< Updated upstream
       {/* Application Details Dialog */}
       <PortalDialog brand="ECTA" title="Application Details" subtitle={selectedApplication ? `${selectedApplication.application_id} — ${selectedApplication.company_name}` : undefined} open={!!selectedApplication && !approveDialogOpen && !rejectDialogOpen && !approveConfirmOpen && !rejectConfirmOpen} onClose={() => setSelectedApplication(null)} maxWidth="md" contentSx={{ bgcolor: '#f8f9fa' }} actions={<>
 
@@ -3538,6 +3591,9 @@ The exporter can reapply once all requirements are met.`,
           )}
         
       </PortalDialog>
+=======
+      {/* OLD Application Details Dialog REMOVED - now using modern DocumentValidationDialog */}
+>>>>>>> Stashed changes
 
       {/* Approve Confirmation Dialog */}
       <PortalDialog brand="ECTA" title="Confirm Approval" open={approveConfirmOpen} onClose={() => setApproveConfirmOpen(false)} maxWidth="sm" actions={<>
@@ -4277,7 +4333,14 @@ The exporter can reapply once all requirements are met.`,
                               />
                             </TableCell>
                             <TableCell>{doc.file_name || doc.filename}</TableCell>
-                            <TableCell>{doc.file_size ? `${(doc.file_size / 1024).toFixed(0)} KB` : (doc.size ? `${(doc.size / 1024).toFixed(0)} KB` : 'N/A')}</TableCell>
+                            <TableCell>
+                              {(() => {
+                                const bytes = doc.file_size || doc.size;
+                                if (!bytes || isNaN(bytes)) return 'N/A';
+                                if (bytes < 1024) return `${bytes} bytes`;
+                                return `${(bytes / 1024).toFixed(1)} KB`;
+                              })()}
+                            </TableCell>
                             <TableCell>{new Date(doc.uploaded_at).toLocaleDateString()}</TableCell>
                             <TableCell>
                               <Chip 

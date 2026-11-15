@@ -1,0 +1,15 @@
+peer:
+  BCCSP:
+    Default: SW
+    SW:
+      Hash: SHA2
+      Security: 256
+      FileKeyStore:
+        KeyStore:
+
+chaincode:
+  externalBuilders:
+    - name: ccaas_builder
+      path: /builders/ccaas
+      propagateEnvironment:
+        - CHAINCODE_AS_A_SERVICE_BUILDER_CONFIG

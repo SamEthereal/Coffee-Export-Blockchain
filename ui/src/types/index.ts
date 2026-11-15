@@ -56,6 +56,7 @@ export interface CoffeeShipment {
   eudrCompliant: boolean;
   createdAt: string;
   updatedAt: string;
+<<<<<<< Updated upstream
   /**
    * ECTA post-delivery audit state. The shipments list endpoint never
    * returns this — the portal enriches delivered shipments client-side
@@ -63,6 +64,9 @@ export interface CoffeeShipment {
    * ectaAuditResult). Absent / PENDING means the audit has not started.
    */
   post_delivery_audit_status?: 'COMPLETED' | 'PENDING' | 'FAILED';
+=======
+  post_delivery_audit_status?: 'PENDING' | 'COMPLETED' | 'FAILED';
+>>>>>>> Stashed changes
 }
 
 export interface TraceabilityData {

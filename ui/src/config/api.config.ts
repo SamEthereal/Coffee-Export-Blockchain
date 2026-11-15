@@ -122,7 +122,7 @@ async function doFetch(
     const token = getToken();
     if (token) headers.set('Authorization', `Bearer ${token}`);
   }
-  if (options.body && !headers.has('Content-Type')) {
+  if (options.body && !(options.body instanceof FormData) && !headers.has('Content-Type')) {
     headers.set('Content-Type', 'application/json');
   }
 

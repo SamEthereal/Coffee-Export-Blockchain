@@ -14,6 +14,8 @@ import { authMiddleware, requireRole } from '../middleware/auth';
 import { dedupeById, isValidContract, isValidForex, isValidLC, isValidShipment } from '../utils/dataFilters';
 import { body, param, query } from 'express-validator';
 import { statusManager } from '../utils/statusManager';
+import crypto from 'crypto';
+import bcrypt from 'bcryptjs';
 
 const router = express.Router();
 const fabricService = FabricService.getInstance();
@@ -730,6 +732,20 @@ router.post('/exporter-applications/:applicationId/approve',
         [applicationId]
       );
       
+      // Decode the password hash to get the plain password
+      // NOTE: We can't decode bcrypt hashes, so we need to store the plain password temporarily
+      // For now, we'll generate a NEW password and update the user account
+      const newPassword = crypto.randomBytes(8).toString('hex'); // Generate 16-char password
+      const hashedPassword = await bcrypt.hash(newPassword, 10);
+      
+      // Update the user's password with the new one
+      await postgresDb.run(
+        `UPDATE users SET password_hash = $1 WHERE username = $2`,
+        [hashedPassword, newUsername]
+      );
+      
+      logger.info(`✅ Generated new password for ${newUsername}`);
+      
       // Send approval email after the approval transaction and report its result.
       const approvalEmailSent = await emailService.sendApprovalEmail({
         exporterName: application.company_name,
@@ -738,10 +754,17 @@ router.post('/exporter-applications/:applicationId/approve',
         email: application.email,
         username: newUsername,  // ✅ Send the NEW username (exporterId)
         oldUsername: oldUsername,  // Include old username for reference
+<<<<<<< Updated upstream
         temporaryPassword: 'Use your existing password',
         bankName: effectiveBankName || undefined,
         bankBranch: effectiveBankBranch || undefined,
         bankBranchCode: effectiveBankBranchCode || undefined,
+=======
+        temporaryPassword: newPassword,  // ✅ Send the NEW password
+        bankName: bankName || undefined,
+        bankBranch: bankBranch || undefined,
+        bankBranchCode: bankBranchCode || undefined,
+>>>>>>> Stashed changes
         loginUrl: `${loginUrl}/login`,
       });
       

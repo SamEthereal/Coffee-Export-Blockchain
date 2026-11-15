@@ -1,0 +1,27 @@
+#!/bin/bash
+set -euo pipefail
+
+# For CCAAS (Chaincode-as-a-Service), the chaincode runs as an external service.
+# This script is called by Fabric to "launch" the chaincode, but since the chaincode
+# is already running externally, this script just needs to stay alive as a stub.
+#
+# The peer monitors this process - if it exits, the peer thinks the chaincode stopped.
+# So we need to keep running (sleep) until killed by Fabric.
+#
+# Parameters:
+# $1 = BUILD_OUTPUT_DIR (contains connection.json from release step)
+# $2 = RUN_METADATA_DIR (where peer stores runtime info)
+
+BUILD_OUTPUT_DIR=$1
+RUN_METADATA_DIR=$2
+
+echo "RUN: CCAAS chaincode - keeping stub process alive" >&2
+echo "RUN: BUILD_OUTPUT_DIR=$BUILD_OUTPUT_DIR" >&2
+echo "RUN: RUN_METADATA_DIR=$RUN_METADATA_DIR" >&2
+echo "RUN: The actual chaincode server is running externally" >&2
+
+# Keep this process alive - the peer monitors it to know if chaincode is "running"
+# We sleep in a loop so the script can be terminated cleanly
+while true; do
+    sleep 3600  # Sleep for 1 hour at a time
+done

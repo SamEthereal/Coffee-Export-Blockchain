@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log"
 	"sort"
 	"strings"
 	"time"
@@ -115,19 +116,25 @@ type ComplianceMetadata struct {
 
 // CaptureIdentity extracts cryptographic identity from transaction context
 func (c *CoffeeContract) CaptureIdentity(ctx contractapi.TransactionContextInterface) (*Identity, error) {
+	log.Printf("CaptureIdentity: STEP I1 - Getting client identity")
 	clientIdentity := ctx.GetClientIdentity()
 
 	// Get MSP ID (organization)
+	log.Printf("CaptureIdentity: STEP I2 - Getting MSP ID")
 	mspID, err := clientIdentity.GetMSPID()
 	if err != nil {
+		log.Printf("CaptureIdentity: ERROR - Failed to get MSP ID: %v", err)
 		return nil, fmt.Errorf("failed to get MSP ID: %v", err)
 	}
+	log.Printf("CaptureIdentity: STEP I3 - Got MSP ID: %s, getting certificate", mspID)
 
 	// Get certificate (X.509)
 	cert, err := clientIdentity.GetX509Certificate()
 	if err != nil {
+		log.Printf("CaptureIdentity: ERROR - Failed to get certificate: %v", err)
 		return nil, fmt.Errorf("failed to get X.509 certificate: %v", err)
 	}
+	log.Printf("CaptureIdentity: STEP I4 - Got certificate, extracting attributes")
 
 	// Get user ID (from certificate attributes)
 	userID, found, err := clientIdentity.GetAttributeValue("userID")
@@ -164,6 +171,8 @@ func (c *CoffeeContract) CaptureIdentity(ctx contractapi.TransactionContextInter
 	// Calculate certificate hash (SHA-256)
 	certHash := sha256.Sum256([]byte(certPEM))
 	certHashHex := hex.EncodeToString(certHash[:])
+
+	log.Printf("CaptureIdentity: STEP I5 - Identity captured successfully for MSP: %s", mspID)
 
 	identity := &Identity{
 		MSPID:             mspID,
@@ -258,18 +267,22 @@ func (c *CoffeeContract) CreateAuditLog(
 	reason string,
 	complianceData ComplianceMetadata,
 ) error {
+	log.Printf("CreateAuditLog: STEP A1 - Starting for entity %s/%s", entityType, entityID)
 	if changes == nil {
 		changes = []FieldChange{}
 	}
 
 	// Generate log ID
+	log.Printf("CreateAuditLog: STEP A2 - Getting transaction details")
 	txID := ctx.GetStub().GetTxID()
 	logID := "AUDIT_" + entityType + "_" + entityID + "_" + txID
 	txTimestamp, err := ctx.GetStub().GetTxTimestamp()
 	if err != nil {
+		log.Printf("CreateAuditLog: ERROR - Failed to get timestamp: %v", err)
 		return fmt.Errorf("failed to get timestamp: %v", err)
 	}
 	timestamp := time.Unix(txTimestamp.Seconds, int64(txTimestamp.Nanos)).UTC()
+	log.Printf("CreateAuditLog: STEP A3 - Got timestamp, calculating hash")
 
 	// Bind the hash to the complete audit payload, including the changed fields,
 	// reason, compliance details, and ledger timestamp.
@@ -287,8 +300,10 @@ func (c *CoffeeContract) CreateAuditLog(
 		CreatedAt:      timestamp,
 	})
 	if err != nil {
+		log.Printf("CreateAuditLog: ERROR - Failed to calculate hash: %v", err)
 		return err
 	}
+	log.Printf("CreateAuditLog: STEP A4 - Hash calculated, getting previous state")
 
 	// Get previous state hash (from existing log if it exists)
 	previousStateHash := ""
@@ -300,6 +315,7 @@ func (c *CoffeeContract) CreateAuditLog(
 			previousStateHash = previousLog.Signature.NewStateHash
 		}
 	}
+	log.Printf("CreateAuditLog: STEP A5 - Creating transaction signature")
 
 	// Create transaction signature
 	args := []string{actionType, entityType, entityID}
@@ -312,8 +328,10 @@ func (c *CoffeeContract) CreateAuditLog(
 		dataHash, // New state hash
 	)
 	if err != nil {
+		log.Printf("CreateAuditLog: ERROR - Failed to create signature: %v", err)
 		return fmt.Errorf("failed to create signature: %v", err)
 	}
+	log.Printf("CreateAuditLog: STEP A6 - Signature created, creating audit log object")
 
 	// Create audit log
 	auditLog := AuditLog{
@@ -332,21 +350,29 @@ func (c *CoffeeContract) CreateAuditLog(
 	}
 
 	// Save audit log (immutable)
+	log.Printf("CreateAuditLog: STEP A7 - Marshaling audit log")
 	auditLogJSON, err := json.Marshal(auditLog)
 	if err != nil {
+		log.Printf("CreateAuditLog: ERROR - Failed to marshal: %v", err)
 		return fmt.Errorf("failed to marshal audit log: %v", err)
 	}
 
+	log.Printf("CreateAuditLog: STEP A8 - Saving to ledger with key: %s", logID)
 	err = ctx.GetStub().PutState(logID, auditLogJSON)
 	if err != nil {
+		log.Printf("CreateAuditLog: ERROR - Failed to save: %v", err)
 		return fmt.Errorf("failed to save audit log: %v", err)
 	}
 
+	log.Printf("CreateAuditLog: STEP A9 - Updating latest log pointer")
 	// Update latest log pointer for chain verification
 	err = ctx.GetStub().PutState(previousLogKey, auditLogJSON)
 	if err != nil {
+		log.Printf("CreateAuditLog: ERROR - Failed to update pointer: %v", err)
 		return fmt.Errorf("failed to update latest log pointer: %v", err)
 	}
+
+	log.Printf("CreateAuditLog: STEP A10 - Audit log completed successfully")
 
 	// Emit audit event
 	eventPayload := map[string]interface{}{

@@ -1,13 +1,48 @@
 #!/bin/bash
 set -euo pipefail
-# Peer invokes: bin/detect CHAINCODE_SOURCE_DIR CHAINCODE_METADATA_DIR
-# $1 = source dir (extracted code.tar.gz — connection.json lives here for CCAAS)
-# $2 = metadata dir (metadata.json lives here)
-# The old script checked $2 for connection.json, which is never there,
-# so it always exited 1 and the peer fell back to the Docker platform
-# builder ("Unknown chaincodeType: ccaas").
-SOURCEDIR=$1
-if [ -f "$SOURCEDIR/connection.json" ]; then
+
+# For Fabric 2.5 CCAAS packages:
+# Fabric creates: /tmp/fabric-xxx/metadata/metadata.json
+#                 /tmp/fabric-xxx/code.tar.gz (or src/)
+# And passes /tmp/fabric-xxx/metadata as METADIR
+# $1 = BUILD_OUTPUT_DIR (not used in detect)  
+# $2 = METADATA_DIR - the /metadata subdirectory
+
+METADIR=$2
+PARENT_DIR=$(dirname "$METADIR")
+
+# Debug: log what we're checking
+echo "DETECT: Checking METADIR=$METADIR" >&2
+echo "DETECT: PARENT_DIR=$PARENT_DIR" >&2
+ls -la "$METADIR" >&2 || true
+echo "DETECT: Parent directory contents:" >&2
+ls -la "$PARENT_DIR" >&2 || true
+
+# Check if connection.json is directly in METADIR
+if [ -f "$METADIR/connection.json" ]; then
+   echo "DETECT: connection.json found in METADIR - SUCCESS" >&2
    exit 0
 fi
+
+# Check if code.tar.gz exists in parent and extract it
+if [ -f "$PARENT_DIR/code.tar.gz" ]; then
+   echo "DETECT: code.tar.gz found in parent, extracting to check contents" >&2
+   # Extract to temp and check for connection.json
+   TEMP_EXTRACT=$(mktemp -d)
+   tar -xzf "$PARENT_DIR/code.tar.gz" -C "$TEMP_EXTRACT" 2>/dev/null || true
+   if [ -f "$TEMP_EXTRACT/connection.json" ]; then
+      echo "DETECT: connection.json found in code.tar.gz - SUCCESS" >&2
+      rm -rf "$TEMP_EXTRACT"
+      exit 0
+   fi
+   rm -rf "$TEMP_EXTRACT"
+fi
+
+# Check src directory
+if [ -f "$PARENT_DIR/src/connection.json" ]; then
+   echo "DETECT: connection.json found in src/ - SUCCESS" >&2
+   exit 0
+fi
+
+echo "DETECT: connection.json NOT found anywhere" >&2
 exit 1

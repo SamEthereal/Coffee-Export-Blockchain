@@ -1,5 +1,6 @@
 #!/bin/bash
 set -euo pipefail
+<<<<<<< Updated upstream
 # Peer invokes: bin/release BUILD_OUTPUT_DIR RELEASE_OUTPUT_DIR (two args)
 # $1 = build output dir, $2 = release output dir
 # The old script used $2/$3, so $3 was unbound and release always failed.
@@ -7,3 +8,28 @@ BUILD_OUTPUT_DIR=$1
 RELEASE_OUTPUT_DIR=$2
 cp "$BUILD_OUTPUT_DIR/connection.json" "$RELEASE_OUTPUT_DIR/connection.json"
 exit 0
+=======
+
+# For Fabric 2.5 CCAAS packages:
+# $1 = BUILD_OUTPUT_DIR - contains connection.json from build step
+# $2 = RELEASE_OUTPUT_DIR - final location for chaincode metadata
+
+BUILD_OUTPUT_DIR=$1
+RELEASE_OUTPUT_DIR=$2
+
+echo "RELEASE: BUILD_OUTPUT_DIR=$BUILD_OUTPUT_DIR" >&2
+echo "RELEASE: RELEASE_OUTPUT_DIR=$RELEASE_OUTPUT_DIR" >&2
+echo "RELEASE: Contents of BUILD_OUTPUT_DIR:" >&2
+ls -la "$BUILD_OUTPUT_DIR" >&2 || true
+
+# Copy everything from build output to release output
+if [ -d "$BUILD_OUTPUT_DIR" ] && [ "$(ls -A $BUILD_OUTPUT_DIR)" ]; then
+    cp -a "$BUILD_OUTPUT_DIR"/* "$RELEASE_OUTPUT_DIR/"
+    echo "RELEASE: Files copied successfully" >&2
+    ls -la "$RELEASE_OUTPUT_DIR" >&2 || true
+    exit 0
+else
+    echo "RELEASE ERROR: BUILD_OUTPUT_DIR is empty or doesn't exist" >&2
+    exit 1
+fi
+>>>>>>> Stashed changes

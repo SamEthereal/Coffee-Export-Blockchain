@@ -543,17 +543,21 @@ func (c *CoffeeContract) RegisterSalesContractWithPaymentMethod(ctx contractapi.
 	portOfLoading, portOfDestination, deliveryDate, incoterm, specialInstructions string) error {
 
 	log.Printf("=== RegisterSalesContractWithPaymentMethod called: contractID=%s, buyerName=%s, paymentMethod=%s ===", contractID, buyerName, paymentMethod)
+	log.Printf("STEP 1: Starting identity capture")
 
 	// ✅ CAPTURE MSP IDENTITY of registrar
 	registrarMSP, err := ctx.GetClientIdentity().GetMSPID()
 	if err != nil {
+		log.Printf("ERROR: Failed to get MSP ID: %v", err)
 		return fmt.Errorf("failed to get registrar MSP ID: %w", err)
 	}
+	log.Printf("STEP 1 DONE: Got MSP ID: %s", registrarMSP)
 
 	registrarID, err := ctx.GetClientIdentity().GetID()
 	if err != nil {
 		registrarID = registrarMSP // Fallback
 	}
+	log.Printf("STEP 2: Got registrar ID, starting validations")
 
 	// VALIDATION: Payment method
 	if err := validatePaymentMethod(paymentMethod); err != nil {
@@ -645,6 +649,8 @@ func (c *CoffeeContract) RegisterSalesContractWithPaymentMethod(ctx contractapi.
 		documents = []string{} // Ensure non-nil empty array
 	}
 
+	log.Printf("STEP 3: Validations passed, checking exporter existence")
+
 	// ✅ FIX: Verify exporter exists before creating contract
 	exporterExists, err := c.ExporterExists(ctx, exporterID)
 	if err != nil {
@@ -666,6 +672,8 @@ func (c *CoffeeContract) RegisterSalesContractWithPaymentMethod(ctx contractapi.
 		return fmt.Errorf("RegisterSalesContractWithPaymentMethod: exporter license is %s, cannot register a sales contract", exporter.LicenseStatus)
 	}
 
+	log.Printf("STEP 4: Exporter validated, checking if contract exists")
+
 	// Check if contract already exists
 	exists, err := c.SalesContractExists(ctx, contractID)
 	if err != nil {
@@ -674,6 +682,8 @@ func (c *CoffeeContract) RegisterSalesContractWithPaymentMethod(ctx contractapi.
 	if exists {
 		return fmt.Errorf("sales contract %s already exists", contractID)
 	}
+
+	log.Printf("STEP 5: Contract doesn't exist, creating new contract")
 
 	// Get transaction timestamp
 	txTimestamp, err := ctx.GetStub().GetTxTimestamp()
@@ -730,19 +740,24 @@ func (c *CoffeeContract) RegisterSalesContractWithPaymentMethod(ctx contractapi.
 	}
 
 	key := "CONTRACT_" + contractID
-	log.Printf("Storing contract with key: %s, paymentMethod: %s", key, paymentMethod)
+	log.Printf("STEP 6: Storing contract with key: %s, paymentMethod: %s", key, paymentMethod)
 	err = ctx.GetStub().PutState(key, contractJSON)
 	if err != nil {
 		log.Printf("ERROR: PutState failed for key %s: %v", key, err)
 		return err
 	}
 
+	log.Printf("STEP 7: Contract stored, creating audit log")
+
 	// Create audit log for contract registration with payment method
+	log.Printf("STEP 7.1: Calling CreateAuditLog")
 	auditErr := c.CreateAuditLog(ctx, "REGISTER", "CONTRACT", contractID, "", "REGISTERED", nil,
 		fmt.Sprintf("Contract registered with %s payment by %s (MSP: %s)", paymentMethod, registrarID, registrarMSP), ComplianceMetadata{})
 	if auditErr != nil {
+		log.Printf("ERROR: CreateAuditLog failed: %v", auditErr)
 		return fmt.Errorf("RegisterSalesContractWithPaymentMethod: failed to create audit log: %w", auditErr)
 	}
+	log.Printf("STEP 7.2: Audit log created successfully")
 
 	log.Printf("=== RegisterSalesContractWithPaymentMethod completed successfully: %s ===", key)
 	return nil
@@ -3316,6 +3331,15 @@ func main() {
 
 	// If both CCID and address are set, use CCAAS server mode
 	if ccid != "" && address != "" {
+		// IMPORTANT: For Fabric 2.5 CCAAS with external builders,
+		// the address should be the peer's address (where to connect TO),
+		// NOT where the chaincode should listen.
+		// The connection.json in the package tells peers where to find us,
+		// but the chaincode must also actively connect to each peer.
+		
+		log.Printf("Starting Coffee Chaincode (CCAAS Mode) - CCID: %s, Address: %s", ccid, address)
+		
+		// Create TLS properties
 		tlsProperties, err := loadChaincodeTLSProperties()
 		if err != nil {
 			log.Printf("⚠️  Warning: TLS configuration failed, proceeding with TLS disabled: %v", err)
@@ -3326,8 +3350,7 @@ func main() {
 		if !tlsProperties.Disabled {
 			tlsStatus = "enabled"
 		}
-		log.Printf("Starting Coffee Chaincode (CCAAS Server Mode) - CCID: %s, Address: %s, TLS: %s", ccid, address, tlsStatus)
-		log.Printf("Chaincode: %+v", chaincode)
+		log.Printf("Chaincode configuration: CCID=%s, Address=%s, TLS=%s", ccid, address, tlsStatus)
 
 		server := &shim.ChaincodeServer{
 			CCID:     ccid,
@@ -3336,14 +3359,50 @@ func main() {
 			TLSProps: tlsProperties,
 		}
 
-		log.Printf("ChaincodeServer struct created: CCID=%s, Address=%s, TLS=%s", server.CCID, server.Address, tlsStatus)
-		log.Printf("About to call server.Start() on %s", address)
-
-		if err := server.Start(); err != nil {
-			log.Panicf("Error starting coffee chaincode server: %v", err)
+		log.Printf("About to start chaincode server at %s (TLS: %s)", address, tlsStatus)
+		
+		// Start server.Start() in a goroutine to capture errors
+		done := make(chan error, 1)
+		go func() {
+			log.Printf("→ Calling server.Start() - this will block if successful...")
+			err := server.Start()
+			if err != nil {
+				log.Printf("✗ CRITICAL ERROR: server.Start() failed: %v", err)
+				log.Printf("   CCID: %s", server.CCID)
+				log.Printf("   Address: %s", server.Address)
+				log.Printf("   Chaincode type: %T", server.CC)
+				done <- err
+			} else {
+				log.Printf("⚠️  server.Start() returned without error (unexpected)")
+				done <- nil
+			}
+		}()
+		
+		// Monitor if server is running
+		go func() {
+			for i := 1; i <= 10; i++ {
+				time.Sleep(2 * time.Second)
+				log.Printf("✓ Chaincode server running... (%ds elapsed)", i*2)
+			}
+		}()
+		
+		// Check if server started or failed
+		time.Sleep(1 * time.Second)
+		select {
+		case err := <-done:
+			if err != nil {
+				log.Panicf("FATAL: Chaincode server.Start() failed: %v", err)
+			} else {
+				log.Panicf("FATAL: server.Start() returned without blocking")
+			}
+		default:
+			log.Printf("✓ Server appears to be running (Start() did not return in 1s)")
 		}
+		
+		// Block main thread forever while server runs
+		log.Printf("✓ Main thread blocking - chaincode server should be handling requests")
 
-		log.Printf("server.Start() returned without error - server should be running with TLS")
+		select {}
 	} else {
 		// Traditional mode - chaincode started by peer
 		log.Printf("Starting Coffee Chaincode (Traditional Mode)")

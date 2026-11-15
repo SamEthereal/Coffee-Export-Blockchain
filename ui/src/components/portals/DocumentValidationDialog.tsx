@@ -38,8 +38,8 @@ import {
   Visibility,
   AttachFile,
   Close,
+  VerifiedUser,
 } from '@mui/icons-material';
-import BlockchainSignatureVerification from '@/components/documents/BlockchainSignatureVerification';
 
 interface Document {
   id: string;
@@ -49,6 +49,9 @@ interface Document {
   url?: string;
   uploadedDate?: string;
   size?: string;
+  blockchain_tx_id?: string;
+  blockchainVerified?: boolean;
+  verificationStatus?: string;
 }
 
 interface PrerequisiteCheck {
@@ -240,7 +243,6 @@ export const DocumentValidationDialog: React.FC<DocumentValidationDialogProps> =
             <Tab label="Prerequisites" />
             <Tab label={`Documents (${data.documents.length})`} />
             {data.complianceChecks && <Tab label="Compliance" />}
-            <Tab label="Blockchain" />
           </Tabs>
         </Box>
 
@@ -344,9 +346,82 @@ export const DocumentValidationDialog: React.FC<DocumentValidationDialogProps> =
                               </Grid>
                             </Grid>
 
+                            {/* Blockchain Verification Section */}
+                            {doc.blockchain_tx_id && (
+                              <Paper
+                                variant="outlined"
+                                sx={{
+                                  mt: 2,
+                                  p: 2,
+                                  bgcolor: doc.blockchainVerified ? '#f0f9ff' : '#fffbeb',
+                                  borderColor: doc.blockchainVerified ? '#0284c7' : '#f59e0b',
+                                  borderWidth: 2,
+                                }}
+                              >
+                                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
+                                  <VerifiedUser
+                                    sx={{
+                                      color: doc.blockchainVerified ? 'success.main' : 'warning.main',
+                                      fontSize: 20,
+                                    }}
+                                  />
+                                  <Typography variant="subtitle2" fontWeight={600}>
+                                    Blockchain Verification
+                                  </Typography>
+                                  <Chip
+                                    label={doc.blockchainVerified ? 'VERIFIED' : doc.verificationStatus || 'PENDING'}
+                                    color={doc.blockchainVerified ? 'success' : 'warning'}
+                                    size="small"
+                                    sx={{ ml: 'auto' }}
+                                  />
+                                </Box>
+                                <Divider sx={{ my: 1 }} />
+                                <Grid container spacing={1}>
+                                  <Grid item xs={12}>
+                                    <Typography variant="caption" color="text.secondary">
+                                      Transaction ID
+                                    </Typography>
+                                    <Typography
+                                      variant="body2"
+                                      sx={{
+                                        fontFamily: 'monospace',
+                                        fontSize: 11,
+                                        wordBreak: 'break-all',
+                                        bgcolor: 'white',
+                                        p: 0.5,
+                                        borderRadius: 0.5,
+                                      }}
+                                    >
+                                      {doc.blockchain_tx_id}
+                                    </Typography>
+                                  </Grid>
+                                </Grid>
+                                {doc.blockchainVerified && (
+                                  <Alert severity="success" sx={{ mt: 1, py: 0 }}>
+                                    <Typography variant="caption">
+                                      This document has been cryptographically verified on the Hyperledger Fabric blockchain.
+                                    </Typography>
+                                  </Alert>
+                                )}
+                                {!doc.blockchainVerified && doc.blockchain_tx_id && (
+                                  <Alert severity="info" sx={{ mt: 1, py: 0 }}>
+                                    <Typography variant="caption">
+                                      Blockchain transaction recorded. Full verification requires ledger confirmation.
+                                    </Typography>
+                                  </Alert>
+                                )}
+                              </Paper>
+                            )}
+
                             {/* Document Preview/Actions - Only show if doc has valid ID starting with DOC- */}
                             {doc.id && doc.id.startsWith('DOC-') ? (
-                              <Box sx={{ display: 'flex', gap: 1 }}>
+                              <Box sx={{ display: 'flex', gap: 1, flexDirection: 'column' }}>
+                                <Alert severity="info" sx={{ mb: 1 }}>
+                                  <Typography variant="caption">
+                                    <strong>Test Environment Note:</strong> If you see "Failed to load PDF", the test documents are not real PDFs. Use Download button to inspect the file.
+                                  </Typography>
+                                </Alert>
+                                <Box sx={{ display: 'flex', gap: 1 }}>
                                 <Button
                                   size="small"
                                   variant="outlined"
@@ -486,6 +561,7 @@ export const DocumentValidationDialog: React.FC<DocumentValidationDialogProps> =
                                   Download
                                 </Button>
                               </Box>
+                              </Box>
                             ) : (
                               <Alert severity="info" sx={{ mt: 1 }}>
                                 This document has not been uploaded yet. Document actions are not available for placeholder documents.
@@ -585,14 +661,6 @@ export const DocumentValidationDialog: React.FC<DocumentValidationDialogProps> =
             )}
           </TabPanel>
         )}
-
-        {/* Blockchain Tab */}
-        <TabPanel value={tabValue} index={data.complianceChecks ? 3 : 2}>
-          <BlockchainSignatureVerification
-            entityType={data.entityType}
-            entityId={data.entityId}
-          />
-        </TabPanel>
 
         {/* Additional Information */}
         {data.additionalInfo && (

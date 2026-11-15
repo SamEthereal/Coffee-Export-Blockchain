@@ -317,6 +317,7 @@ const RegisterExporterPage = () => {
       });
       if (!res.data.success) throw new Error(res.data.error?.message || 'Submission failed');
       const appId = res.data.data.applicationId;
+<<<<<<< Updated upstream
       // LEG 1 (F2): keep the real applicationId + credentials the
       // server returned — the success screen shows these, not an
       // invented APP-Date.now() id.
@@ -354,8 +355,54 @@ const RegisterExporterPage = () => {
         })
       );
       setUploadFailures(failures);
+=======
+      
+      console.log('[REGISTER] Application created:', appId);
+      console.log('[REGISTER] Uploading', Object.entries(docFiles).filter(([, f]) => !!f).length, 'documents...');
+      
+      // Upload documents sequentially with error handling
+      const uploadResults = await Promise.allSettled(
+        (Object.entries(docFiles) as [DocKey, File | null][]).filter(([, f]) => !!f).map(async ([key, f]) => {
+          const fd = new FormData();
+          fd.append('file', f!); 
+          fd.append('fileName', f!.name);
+          fd.append('documentType', key.toUpperCase()); 
+          fd.append('encrypt', 'true');
+          fd.append('entityType', 'EXPORTER_APPLICATION'); 
+          fd.append('entityId', appId);
+          
+          console.log('[REGISTER] Uploading', key, ':', f!.name);
+          
+          // Use relative URL so it works with the API proxy
+          const response = await fetch('/api/v1/documents/upload-registration', { 
+            method: 'POST', 
+            body: fd 
+          });
+          
+          if (!response.ok) {
+            const errorText = await response.text();
+            console.error('[REGISTER] Upload failed for', key, ':', errorText);
+            throw new Error(`Failed to upload ${key}: ${response.statusText}`);
+          }
+          
+          const result = await response.json();
+          console.log('[REGISTER] Upload success for', key, ':', result);
+          return result;
+        })
+      );
+      
+      // Check if any uploads failed
+      const failedUploads = uploadResults.filter(r => r.status === 'rejected');
+      if (failedUploads.length > 0) {
+        console.error('[REGISTER] Some uploads failed:', failedUploads);
+        throw new Error(`Failed to upload ${failedUploads.length} document(s). Please contact support with Application ID: ${appId}`);
+      }
+      
+      console.log('[REGISTER] All documents uploaded successfully!');
+>>>>>>> Stashed changes
       setMode('success');
     } catch (err: any) {
+      console.error('[REGISTER] Submission error:', err);
       setError(err.response?.data?.error?.message || err.message || 'Submission failed. Please try again.');
     } finally {
       setLoading(false);

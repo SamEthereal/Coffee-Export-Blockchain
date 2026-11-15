@@ -1,5 +1,6 @@
 #!/bin/bash
 set -euo pipefail
+<<<<<<< Updated upstream
 # Peer invokes: bin/build CHAINCODE_SOURCE_DIR CHAINCODE_METADATA_DIR BUILD_OUTPUT_DIR
 # $1 = source dir (connection.json), $2 = metadata dir, $3 = output dir
 # The old script copied $2 (the metadata dir) instead of $1/connection.json,
@@ -8,3 +9,36 @@ SOURCE=$1
 OUTPUT=$3
 cp "$SOURCE/connection.json" "$OUTPUT/connection.json"
 exit 0
+=======
+
+# For Fabric 2.5 CCAAS packages:
+# $1 = CHAINCODE_SOURCE_DIR (not used)
+# $2 = METADATA_DIR - the /metadata subdirectory
+# $3 = BUILD_OUTPUT_DIR - where to extract connection.json
+
+METADIR=$2
+PARENT_DIR=$(dirname "$METADIR")
+BUILD_OUTPUT_DIR=$3
+
+echo "BUILD: METADIR=$METADIR" >&2
+echo "BUILD: PARENT_DIR=$PARENT_DIR" >&2
+echo "BUILD: BUILD_OUTPUT_DIR=$BUILD_OUTPUT_DIR" >&2
+
+# Extract code.tar.gz from parent directory to BUILD_OUTPUT_DIR
+if [ -f "$PARENT_DIR/code.tar.gz" ]; then
+    echo "BUILD: Extracting code.tar.gz to $BUILD_OUTPUT_DIR" >&2
+    tar -xzf "$PARENT_DIR/code.tar.gz" -C "$BUILD_OUTPUT_DIR"
+    echo "BUILD: Extraction successful" >&2
+    exit 0
+fi
+
+# Check if already extracted in src/
+if [ -f "$PARENT_DIR/src/connection.json" ]; then
+    echo "BUILD: Copying from src/" >&2
+    cp "$PARENT_DIR/src/connection.json" "$BUILD_OUTPUT_DIR/"
+    exit 0
+fi
+
+echo "BUILD ERROR: code.tar.gz not found in $PARENT_DIR" >&2
+exit 1
+>>>>>>> Stashed changes

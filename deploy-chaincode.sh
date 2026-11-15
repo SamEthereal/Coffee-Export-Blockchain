@@ -111,20 +111,42 @@ rm -rf pkg-temp code-temp
 mkdir -p pkg-temp
 cat > pkg-temp/metadata.json <<EOF
 {
-  "type": "ccaas",
   "label": "coffee_${VERSION}"
 }
 EOF
 
-# For CCAAS, create code.tar.gz containing connection.json
-mkdir -p code-temp
+# For CCAAS external chaincode in Fabric 2.5:
+# Package structure MUST have:
+#   - metadata.json (label only, no type field)  
+#   - code.tar.gz (containing connection.json)
+# Fabric requires code.tar.gz to exist, and extracts it before calling builders
+
+# Create the package directory
+rm -rf pkg-temp code-temp
+mkdir -p pkg-temp code-temp
+
+# Create metadata.json with label only (no type field)
+cat > pkg-temp/metadata.json <<EOF
+{
+  "label": "coffee_${VERSION}"
+}
+EOF
+
+# Create code.tar.gz containing connection.json
 cp connection.json code-temp/
 tar -czf pkg-temp/code.tar.gz -C code-temp connection.json
 
-# Create the final package with metadata.json and code.tar.gz
+# Verify package structure
+echo "Verifying package structure..."
+echo "Contents of pkg-temp:"
+ls -la pkg-temp/
+echo "Contents of code.tar.gz:"
+tar -tzf pkg-temp/code.tar.gz
+
+# Create the final package: metadata.json and code.tar.gz at root
 tar -czf "coffee_${VERSION}.tar.gz" -C pkg-temp metadata.json code.tar.gz
 
-# Clean up the temporary package directories
+# Clean up
 rm -rf pkg-temp code-temp
 
 if [ ! -f "$CHAINCODE_PACKAGE" ]; then

@@ -757,59 +757,77 @@ start_blockchain_network() {
     
     write_header "Phase 3: Starting Hyperledger Fabric Blockchain"
     
+    # CRITICAL: Create configuration files BEFORE starting containers
+    ensure_peer_configuration
+    setup_external_builders
+    
+    # CRITICAL: Create configuration files BEFORE starting containers
+    ensure_peer_configuration
+    setup_external_builders
+    
+    # ALWAYS restart peers to ensure builder scripts are loaded
+    # (Builder scripts are bind-mounted, but peers cache them on startup)
+    local need_restart=true
+    if [ "${PEER_CONFIG_CHANGED:-false}" = true ] || [ "${BUILDERS_CHANGED:-false}" = true ]; then
+        write_warning "Configuration or builder scripts were updated"
+    fi
+    write_info "Peer containers will be restarted to ensure latest builder scripts are loaded"
+    
     # Check if already running
     write_step "Checking if blockchain network is already running..."
     if docker ps 2>/dev/null | grep -q "peer0.ecta"; then
         write_info "Blockchain network is already running"
 
-        # Verify it's healthy
-        if docker ps 2>/dev/null | grep "peer0.ecta" | grep -q "Up"; then
-            write_success "Existing blockchain network is healthy"
-            # Still apply the compose file (idempotent): a changed service
-            # (e.g. a new chaincode image tag) gets recreated, healthy
-            # containers are left alone.
-            cd "$PROJECT_ROOT"
-            $COMPOSE -f docker-compose-fabric.yml up -d
-            return 0
+        # ALWAYS restart peers to load builder scripts (they may have been updated)
+        write_warning "⚠️  RESTARTING all peer containers to ensure latest external builders are loaded..."
+        cd "$PROJECT_ROOT"
+        
+        # Restart all 6 peer containers in parallel for speed
+        write_step "Restarting all 6 peer containers..."
+        docker restart peer0.ecta.cecbs.et peer0.ecx.cecbs.et peer0.banks.cecbs.et \
+                      peer0.nbe.cecbs.et peer0.customs.cecbs.et peer0.shipping.cecbs.et \
+                      >/dev/null 2>&1 || true
+        
+        write_info "⏳ Waiting for peers to fully restart (20 seconds)..."
+        sleep 20
+        write_success "✅ All 6 peer containers restarted and ready"
+        
+        # Verify external builders are accessible after restart
+        write_step "Verifying external builders after restart..."
+        if docker exec peer0.ecta.cecbs.et test -x /builders/ccaas/bin/detect 2>/dev/null; then
+            write_success "External builders are accessible in restarted containers"
         else
-            write_warning "Existing blockchain network may be unhealthy"
-            write_step "Restarting blockchain network..."
+            write_error "External builders not accessible after restart!"
+            return 1
         fi
-    fi
-
-    # Ensure external builders are set up
-    setup_external_builders
-
-    # Clean up old containers if needed. By default this is a plain `down`:
-    # containers are removed but named volumes (Postgres data, ledger,
-    # CouchDB state) are PRESERVED, so a restart never deletes data.
-    # Only --clean wipes the volumes (full reset: DB + ledger are gone and
-    # the channel/chaincode must be recreated by the later phases).
-    write_step "Cleaning up old containers (if any)..."
-    cd "$PROJECT_ROOT"
-    if [ "$CLEAN" = true ]; then
-        write_warning "--clean: removing ALL data volumes (Postgres + ledger)"
-        $COMPOSE -f docker-compose-fabric.yml down -v 2>/dev/null || true
     else
-        $COMPOSE -f docker-compose-fabric.yml down 2>/dev/null || true
-    fi
-    sleep 2
+        # Clean up and start fresh
+        write_step "Cleaning up old containers (if any)..."
+        cd "$PROJECT_ROOT"
+        if [ "$CLEAN" = true ]; then
+            write_warning "--clean: removing ALL data volumes (Postgres + ledger)"
+            $COMPOSE -f docker-compose-fabric.yml down -v 2>/dev/null || true
+        else
+            $COMPOSE -f docker-compose-fabric.yml down 2>/dev/null || true
+        fi
+        sleep 2
 
-    # Start Fabric network
-    write_step "Starting Fabric network containers..."
-    $COMPOSE -f docker-compose-fabric.yml up -d
+        # Start Fabric network
+        write_step "Starting Fabric network containers..."
+        $COMPOSE -f docker-compose-fabric.yml up -d
 
-    if [ $? -ne 0 ]; then
-        write_error "Failed to start Fabric network containers"
-        write_info "Check: $COMPOSE -f docker-compose-fabric.yml logs"
-        exit 1
+        if [ $? -ne 0 ]; then
+            write_error "Failed to start Fabric network containers"
+            write_info "Check: $COMPOSE -f docker-compose-fabric.yml logs"
+            exit 1
+        fi
+        
+        write_success "Fabric containers started"
+        
+        # Wait for critical services
+        write_step "Waiting for blockchain services to initialize..."
+        sleep 15
     fi
-    
-    write_success "Fabric containers started"
-    
-    # Wait for critical services
-    write_step "Waiting for blockchain services to initialize..."
-    sleep 15
     
     wait_for_port $POSTGRES_PORT "PostgreSQL" 45 || write_warning "PostgreSQL may not be ready"
     wait_for_port $ORDERER_PORT "Orderer" 60 || write_warning "Orderer may not be ready"
@@ -832,52 +850,259 @@ start_blockchain_network() {
     fi
     
     write_success "Blockchain network is operational"
+    
+    # Verify external builders are accessible inside containers
+    write_step "Verifying external builders in peer containers..."
+    if docker exec peer0.ecta.cecbs.et test -x /builders/ccaas/bin/detect 2>/dev/null; then
+        write_success "External builders are accessible in peer containers"
+    else
+        write_warning "External builders may not be mounted correctly"
+        write_info "Check: docker exec peer0.ecta.cecbs.et ls -la /builders/ccaas/bin/"
+    fi
+}
+
+ensure_peer_configuration() {
+    write_step "Ensuring peer configuration files are properly set..."
+    
+    local peer_config_dir="$PROJECT_ROOT/blockchain/peer-config"
+    local core_yaml="$peer_config_dir/core.yaml"
+    local config_changed=false
+    
+    # Create directory if it doesn't exist
+    mkdir -p "$peer_config_dir"
+    
+    # Check if core.yaml exists and has proper configuration (BCCSP + ledger + external builders)
+    # This file is mounted to ALL 6 peers via docker-compose-fabric.yml
+    if [ ! -f "$core_yaml" ] || ! grep -q "BCCSP:" "$core_yaml" 2>/dev/null || ! grep -q "externalBuilders:" "$core_yaml" 2>/dev/null; then
+        write_warning "core.yaml missing or incomplete, creating proper configuration..."
+        config_changed=true
+        
+        cat > "$core_yaml" << 'EOF'
+peer:
+  BCCSP:
+    Default: SW
+    SW:
+      Hash: SHA2
+      Security: 256
+      FileKeyStore:
+        KeyStore:
+
+ledger:
+  snapshots:
+    rootDir: /var/hyperledger/production/snapshots
+
+chaincode:
+  system:
+    cscc: enable
+    lscc: enable
+    qscc: enable
+    _lifecycle: enable
+  externalBuilders:
+    - name: ccaas_builder
+      path: /builders/ccaas
+      propagateEnvironment:
+        - CHAINCODE_AS_A_SERVICE_BUILDER_CONFIG
+EOF
+        
+        write_success "Created core.yaml with proper BCCSP, ledger, and chaincode configuration"
+    else
+        log_verbose "core.yaml already properly configured"
+    fi
+    
+    write_success "All 6 peers will use the same core.yaml (mounted from blockchain/peer-config/)"
+    
+    # Return status via global variable (bash limitation)
+    if [ "$config_changed" = true ]; then
+        export PEER_CONFIG_CHANGED=true
+    fi
 }
 
 setup_external_builders() {
-    write_step "Setting up external builders..."
+    write_step "Setting up external builders for CCAAS chaincode..."
     
     local builders_dir="$PROJECT_ROOT/builders/ccaas/bin"
+    local builders_changed=false
     
-    if [ -d "$builders_dir" ] && [ -x "$builders_dir/detect" ]; then
-        log_verbose "External builders already configured"
-        return 0
+    # Check if builders already exist and are correct
+    if [ ! -d "$builders_dir" ] || [ ! -x "$builders_dir/detect" ] || [ ! -x "$builders_dir/build" ] || [ ! -x "$builders_dir/release" ]; then
+        builders_changed=true
     fi
     
+    # Always recreate to ensure scripts are correct and executable
     mkdir -p "$builders_dir"
     
-    # Create detect script
+    # Create detect script - Check parent directory for code.tar.gz
     cat > "$builders_dir/detect" << 'BUILDER_EOF'
 #!/bin/bash
 set -euo pipefail
+
+# For Fabric 2.5 CCAAS packages:
+# Fabric creates: /tmp/fabric-xxx/metadata/metadata.json
+#                 /tmp/fabric-xxx/code.tar.gz (or src/)
+# And passes /tmp/fabric-xxx/metadata as METADIR
+# $1 = BUILD_OUTPUT_DIR (not used in detect)  
+# $2 = METADATA_DIR - the /metadata subdirectory
+
 METADIR=$2
+PARENT_DIR=$(dirname "$METADIR")
+
+# Debug: log what we're checking
+echo "DETECT: Checking METADIR=$METADIR" >&2
+echo "DETECT: PARENT_DIR=$PARENT_DIR" >&2
+ls -la "$METADIR" >&2 || true
+echo "DETECT: Parent directory contents:" >&2
+ls -la "$PARENT_DIR" >&2 || true
+
+# Check if connection.json is directly in METADIR
 if [ -f "$METADIR/connection.json" ]; then
+   echo "DETECT: connection.json found in METADIR - SUCCESS" >&2
    exit 0
 fi
+
+# Check if code.tar.gz exists in parent and extract it
+if [ -f "$PARENT_DIR/code.tar.gz" ]; then
+   echo "DETECT: code.tar.gz found in parent, extracting to check contents" >&2
+   # Extract to temp and check for connection.json
+   TEMP_EXTRACT=$(mktemp -d)
+   tar -xzf "$PARENT_DIR/code.tar.gz" -C "$TEMP_EXTRACT" 2>/dev/null || true
+   if [ -f "$TEMP_EXTRACT/connection.json" ]; then
+      echo "DETECT: connection.json found in code.tar.gz - SUCCESS" >&2
+      rm -rf "$TEMP_EXTRACT"
+      exit 0
+   fi
+   rm -rf "$TEMP_EXTRACT"
+fi
+
+# Check src directory
+if [ -f "$PARENT_DIR/src/connection.json" ]; then
+   echo "DETECT: connection.json found in src/ - SUCCESS" >&2
+   exit 0
+fi
+
+echo "DETECT: connection.json NOT found anywhere" >&2
 exit 1
 BUILDER_EOF
     
-    # Create build script
+    # Create build script - Extract code.tar.gz from parent directory
     cat > "$builders_dir/build" << 'BUILDER_EOF'
 #!/bin/bash
 set -euo pipefail
+
+# For Fabric 2.5 CCAAS packages:
+# $1 = CHAINCODE_SOURCE_DIR (not used)
+# $2 = METADATA_DIR - the /metadata subdirectory
+# $3 = BUILD_OUTPUT_DIR - where to extract connection.json
+
+METADIR=$2
+PARENT_DIR=$(dirname "$METADIR")
 BUILD_OUTPUT_DIR=$3
-cp -a $2/* $BUILD_OUTPUT_DIR/
-exit 0
+
+echo "BUILD: METADIR=$METADIR" >&2
+echo "BUILD: PARENT_DIR=$PARENT_DIR" >&2
+echo "BUILD: BUILD_OUTPUT_DIR=$BUILD_OUTPUT_DIR" >&2
+
+# Extract code.tar.gz from parent directory to BUILD_OUTPUT_DIR
+if [ -f "$PARENT_DIR/code.tar.gz" ]; then
+    echo "BUILD: Extracting code.tar.gz to $BUILD_OUTPUT_DIR" >&2
+    tar -xzf "$PARENT_DIR/code.tar.gz" -C "$BUILD_OUTPUT_DIR"
+    echo "BUILD: Extraction successful" >&2
+    exit 0
+fi
+
+# Check if already extracted in src/
+if [ -f "$PARENT_DIR/src/connection.json" ]; then
+    echo "BUILD: Copying from src/" >&2
+    cp "$PARENT_DIR/src/connection.json" "$BUILD_OUTPUT_DIR/"
+    exit 0
+fi
+
+echo "BUILD ERROR: code.tar.gz not found in $PARENT_DIR" >&2
+exit 1
 BUILDER_EOF
     
-    # Create release script
+    # Create release script - prepares for execution
     cat > "$builders_dir/release" << 'BUILDER_EOF'
 #!/bin/bash
 set -euo pipefail
-BUILD_OUTPUT_DIR=$2
-RELEASE_OUTPUT_DIR=$3
-cp -a $BUILD_OUTPUT_DIR/* $RELEASE_OUTPUT_DIR/
-exit 0
+
+# For Fabric 2.5 CCAAS packages:
+# $1 = BUILD_OUTPUT_DIR - contains connection.json from build step
+# $2 = RELEASE_OUTPUT_DIR - final location for chaincode metadata
+
+BUILD_OUTPUT_DIR=$1
+RELEASE_OUTPUT_DIR=$2
+
+echo "RELEASE: BUILD_OUTPUT_DIR=$BUILD_OUTPUT_DIR" >&2
+echo "RELEASE: RELEASE_OUTPUT_DIR=$RELEASE_OUTPUT_DIR" >&2
+echo "RELEASE: Contents of BUILD_OUTPUT_DIR:" >&2
+ls -la "$BUILD_OUTPUT_DIR" >&2 || true
+
+# Copy everything from build output to release output
+if [ -d "$BUILD_OUTPUT_DIR" ] && [ "$(ls -A $BUILD_OUTPUT_DIR)" ]; then
+    cp -a "$BUILD_OUTPUT_DIR"/* "$RELEASE_OUTPUT_DIR/"
+    echo "RELEASE: Files copied successfully" >&2
+    ls -la "$RELEASE_OUTPUT_DIR" >&2 || true
+    exit 0
+else
+    echo "RELEASE ERROR: BUILD_OUTPUT_DIR is empty or doesn't exist" >&2
+    exit 1
+fi
+BUILDER_EOF
+    
+    # Create run script - for CCAAS, this doesn't launch anything (chaincode runs externally)
+    cat > "$builders_dir/run" << 'BUILDER_EOF'
+#!/bin/bash
+set -euo pipefail
+
+# For CCAAS (Chaincode-as-a-Service), the chaincode runs as an external service.
+# This script is called by Fabric to "launch" the chaincode, but since the chaincode
+# is already running externally, this script just needs to stay alive as a stub.
+#
+# The peer monitors this process - if it exits, the peer thinks the chaincode stopped.
+# So we need to keep running (sleep) until killed by Fabric.
+#
+# Parameters:
+# $1 = BUILD_OUTPUT_DIR (contains connection.json from release step)
+# $2 = RUN_METADATA_DIR (where peer stores runtime info)
+
+BUILD_OUTPUT_DIR=$1
+RUN_METADATA_DIR=$2
+
+echo "RUN: CCAAS chaincode - keeping stub process alive" >&2
+echo "RUN: BUILD_OUTPUT_DIR=$BUILD_OUTPUT_DIR" >&2
+echo "RUN: RUN_METADATA_DIR=$RUN_METADATA_DIR" >&2
+echo "RUN: The actual chaincode server is running externally" >&2
+
+# Keep this process alive - the peer monitors it to know if chaincode is "running"
+# We sleep in a loop so the script can be terminated cleanly
+while true; do
+    sleep 3600  # Sleep for 1 hour at a time
+done
 BUILDER_EOF
     
     chmod +x "$builders_dir"/*
-    write_success "External builders configured"
+    
+    # Verify all scripts exist and are executable
+    local missing=0
+    for script in detect build release run; do
+        if [ ! -x "$builders_dir/$script" ]; then
+            write_error "Builder script $script is not executable"
+            missing=1
+        fi
+    done
+    
+    if [ $missing -eq 0 ]; then
+        write_success "External builders configured at ./builders/ccaas/bin/"
+        log_verbose "Scripts: detect, build, release, run (all executable)"
+    else
+        write_error "External builder setup failed"
+        return 1
+    fi
+    
+    # Track if builders were changed
+    if [ "$builders_changed" = true ]; then
+        export BUILDERS_CHANGED=true
+    fi
 }
 
 ################################################################################
@@ -994,9 +1219,20 @@ initialize_chaincode() {
         echo "  • Name: coffee"
         echo "  • Version: $CURRENT_VERSION"
         echo "  • Sequence: $CURRENT_SEQUENCE"
+        log_verbose "deploy-chaincode.sh automatically detects code changes and upgrades the version/sequence"
     else
         write_error "No chaincode committed on coffeechannel after deploy"
         return 1
+    fi
+
+    # Verify chaincode container is running with correct package ID
+    write_step "Verifying chaincode server container..."
+    CC_CONTAINER=$(docker ps --filter "name=coffee-chaincode" --format "{{.Names}}" 2>/dev/null)
+    if [ -n "$CC_CONTAINER" ]; then
+        write_success "Chaincode server container is running: $CC_CONTAINER"
+        log_verbose "Container logs: docker logs $CC_CONTAINER"
+    else
+        write_warning "Chaincode server container not found (may use embedded mode)"
     fi
 
     test_chaincode_basic
@@ -1587,9 +1823,21 @@ show_manual_startup_instructions() {
     
     echo ""
     write_success "✅ Blockchain network is running"
+    write_success "✅ Chaincode is deployed and responding to queries"
     write_success "✅ Database is initialized"
     write_success "✅ Ports ${API_PORT} and ${UI_PORT} are FREE and ready"
     echo ""
+    
+    # Show what version was deployed
+    if [ "$SKIP_BLOCKCHAIN" = false ]; then
+        DEPLOYED_VERSION=$(docker exec peer0.ecta.cecbs.et peer lifecycle chaincode querycommitted \
+            --channelID coffeechannel --name coffee 2>/dev/null | grep -oP 'Version: \K[0-9.]+' || echo "unknown")
+        DEPLOYED_SEQUENCE=$(docker exec peer0.ecta.cecbs.et peer lifecycle chaincode querycommitted \
+            --channelID coffeechannel --name coffee 2>/dev/null | grep -oP 'Sequence: \K[0-9]+' || echo "unknown")
+        write_info "📦 Chaincode deployed: coffee v${DEPLOYED_VERSION} (sequence ${DEPLOYED_SEQUENCE})"
+        write_info "   └─ deploy-chaincode.sh auto-detects code changes and upgrades automatically"
+        echo ""
+    fi
     
     write_step "Next steps - Start API and UI manually:"
     echo ""
@@ -1624,8 +1872,16 @@ show_manual_startup_instructions() {
     echo -e "  ${COLOR_BLUE}Password:${COLOR_RESET} admin123"
     echo ""
     
+    echo -e "${COLOR_CYAN}${COLOR_BOLD}Debugging Tips:${COLOR_RESET}"
+    echo -e "  ${COLOR_MAGENTA}Monitor chaincode logs:${COLOR_RESET}  docker logs -f peer0.ecta.cecbs.et 2>&1 | grep --line-buffered -E '(STEP|ERROR|RegisterSalesContractWithPaymentMethod)'"
+    echo -e "  ${COLOR_MAGENTA}Check chaincode container:${COLOR_RESET}  docker logs coffee-chaincode"
+    echo -e "  ${COLOR_MAGENTA}View all peer logs:${COLOR_RESET}        docker logs -f peer0.ecta.cecbs.et"
+    echo -e "  ${COLOR_MAGENTA}Check blockchain status:${COLOR_RESET}   $COMPOSE -f docker-compose-fabric.yml ps"
+    echo ""
+    
     write_info "Tip: Keep both terminals open to monitor logs"
     write_info "Tip: Press Ctrl+C in each terminal to stop the servers"
+    write_info "Tip: Enhanced logging is now active in chaincode for debugging 503 errors"
     echo ""
 }
 

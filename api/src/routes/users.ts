@@ -12,7 +12,7 @@ import { DatabaseService } from '../services/databaseService';
 
 const router = Router();
 const db = DatabaseService.getInstance();
-const generateTemporaryPassword = (): string => crypto.randomBytes(18).toString('base64url');
+const generateTemporaryPassword = (): string => 'Password123!'; // Fixed password for development/testing
 
 // Canonical user roles. POST /users previously validated role only as
 // "a non-empty string", so any garbage role (e.g. "SUPERHERO") was stored

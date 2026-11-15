@@ -1171,6 +1171,7 @@ router.post('/upload-registration',
           document_id, entity_type, entity_id, document_type, file_name,
           file_hash, mime_type, file_size, file_path, uploaded_by, status, blockchain_tx_id
         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+<<<<<<< Updated upstream
           [
             documentID,
             finalEntityType,
@@ -1209,6 +1210,23 @@ router.post('/upload-registration',
           timestamp: new Date().toISOString()
         });
       }
+=======
+        [
+          documentID, 
+          finalEntityType, 
+          finalEntityId, 
+          finalDocType, 
+          finalFileName,
+          fileHash,
+          file.mimetype,
+          file.size,
+          file.path,
+          null, // uploaded_by is integer, use NULL for public registration uploads
+          'active',
+          blockchainResult.txId
+        ]
+      );
+>>>>>>> Stashed changes
 
       logger.info('Registration document cached in database:', documentID);
 

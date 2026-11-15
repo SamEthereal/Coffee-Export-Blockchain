@@ -449,12 +449,13 @@ services:
     build:
       context: ./chaincodes/coffee
       dockerfile: Dockerfile
-    image: coffee-chaincode:2.3
+    image: coffee-chaincode:2.7
     environment:
       - CHAINCODE_SERVER_ADDRESS=0.0.0.0:9999
-      - CORE_CHAINCODE_ID_NAME=coffee_2.3:d9bd4854c13d34634d246f83a50bf293e9bc716309e4ff1785f655355be68bd1
+      - CORE_CHAINCODE_ID_NAME=coffee_2.7:52cf925d876dc42974e24f42b6c921f289cdc9a291b96c558ad0d2a22496252e
       - CHAINCODE_TLS_DISABLED=true
       - CORE_CHAINCODE_LOGGING_LEVEL=INFO
+      - CORE_PEER_LOCALMSPID=ECTAMSP
     expose:
       - "9999"
     networks:
