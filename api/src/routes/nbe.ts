@@ -311,7 +311,7 @@ router.post('/forex/:forexId/approve', authMiddleware, requireRole('NBE'), async
 async function syncRepatriationToChain(
   db: DatabaseService,
   allocation: any,
-  input: { forexId: string; repatriationAmount: number; bankReference?: string }
+  input: { forexId: string; repatriationAmount: number; bankReference?: string; bankCertificate?: string }
 ): Promise<{ synced: boolean; repatriationId?: string; txId?: string; initiateTxId?: string; recordTxId?: string; warning?: string }> {
   const fail = (warning: string): { synced: boolean; warning: string } => ({ synced: false, warning });
   try {
@@ -434,7 +434,12 @@ async function syncRepatriationToChain(
       String(convertedAmount),
       String(rate),
       String(input.bankReference || ''),
-      '', // bankCertificate — not collected by this endpoint
+      // The chaincode requires BOTH a SWIFT reference and a bank
+      // certificate as evidence; an empty certificate makes every
+      // RecordRepatriation fail (the helper used to hardcode '' here,
+      // so this route could initiate but never record). The value
+      // comes from the request body — never invented.
+      String(input.bankCertificate || ''),
     ], 'BanksMSP');
     if (!record?.success) {
       return {
@@ -462,11 +467,15 @@ router.post('/forex/:forexId/repatriation', authMiddleware, requireRole('NBE'), 
   body('repatriationAmount').isFloat({ gt: 0 }).withMessage('Repatriation amount must be greater than 0'),
   body('repatriationDate').optional().isISO8601().withMessage('Repatriation date must be a valid date'),
   body('bankReference').optional().isString(),
+  // RecordRepatriation requires a bank certificate as evidence alongside
+  // the SWIFT reference; without it the chain write initiates but never
+  // records. Optional here — omitting it keeps the old honest failure.
+  body('bankCertificate').optional().isString(),
   body('repatriationMethod').optional().isString(),
 ], validateRequest, async (req: Request, res: Response) => {
   try {
     const { forexId } = req.params;
-    const { repatriationAmount, repatriationDate, bankReference, repatriationMethod } = req.body;
+    const { repatriationAmount, repatriationDate, bankReference, bankCertificate, repatriationMethod } = req.body;
     
     logger.info(`[NBE] Recording forex repatriation for: ${forexId}`);
     
@@ -538,6 +547,7 @@ router.post('/forex/:forexId/repatriation', authMiddleware, requireRole('NBE'), 
       forexId,
       repatriationAmount: Number(repatriationAmount),
       bankReference,
+      bankCertificate,
     });
     if (chainSync.synced) {
       logger.info(`[NBE] ✅ Repatriation ${chainSync.repatriationId} synced to chain for ${forexId}`);
@@ -559,7 +569,7 @@ router.post('/forex/:forexId/repatriation', authMiddleware, requireRole('NBE'), 
       entityId: chainSync.repatriationId || forexId,
       action: 'RECORD_FOREX_REPATRIATION',
       blockchainTxId: primaryTxId || undefined,
-      metadata: { forexId, repatriationAmount, blockchainSynced: chainSync.synced, blockchainTxId: primaryTxId || null, initiateTxId: chainSync.initiateTxId || null, recordTxId: chainSync.recordTxId || null },
+      metadata: { forexId, repatriationAmount, bankCertificate: bankCertificate || null, blockchainSynced: chainSync.synced, blockchainTxId: primaryTxId || null, initiateTxId: chainSync.initiateTxId || null, recordTxId: chainSync.recordTxId || null },
     }, `forex ${forexId} repatriation`);
 
 
