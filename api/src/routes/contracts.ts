@@ -1637,7 +1637,7 @@ router.post('/:contractID/approve',
                     lc_id, lc_number, contract_id, exporter_id, issuing_bank, advising_bank, beneficiary, amount, currency,
                     latest_shipment_date, port_of_loading, port_of_discharge, payment_terms,
                     status, expiry_date, request_date, blockchain_tx_id, created_at, updated_at
-                  ) VALUES ($1, $1, $2, $3, $4, $5, $6, $7, $8, $10, $11, $12, $13, 'REQUESTED', $9, $14, NOW(), NOW(), NOW())
+                  ) VALUES ($1, $1, $2, $3, $4, $5, $6, $7, $8, $10, $11, $12, $13, 'REQUESTED', $9, NOW(), $14, NOW(), NOW())
                   ON CONFLICT (lc_id) DO NOTHING`,
                   [generatedLcId, contractID, exporterId, issuingBank, advisingBank, handoffBeneficiary, amount, currency, expiryDate,
                    String(approvedContract.deliveryDate || approvedContract.DeliveryDate || '').slice(0, 10) || null,
