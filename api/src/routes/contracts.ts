@@ -1627,18 +1627,24 @@ router.post('/:contractID/approve',
               try {
                 const { DatabaseService: HandoffDatabaseService } = await import('../services/databaseService');
                 const handoffDb = HandoffDatabaseService.getInstance();
+                // Settle-sig follow-up: also mirror the handoff's own
+                // RequestLC txId into letters_of_credit.blockchain_tx_id
+                // (migration 005 added the column; the old insert left
+                // it NULL for every handoff LC, so no PG cross-match
+                // existed for the handoff tx — audit-gaps-4 gap 4).
                 await handoffDb.run(
                   `INSERT INTO letters_of_credit (
                     lc_id, lc_number, contract_id, exporter_id, issuing_bank, advising_bank, beneficiary, amount, currency,
                     latest_shipment_date, port_of_loading, port_of_discharge, payment_terms,
-                    status, expiry_date, request_date, created_at, updated_at
-                  ) VALUES ($1, $1, $2, $3, $4, $5, $6, $7, $8, $10, $11, $12, $13, 'REQUESTED', $9, NOW(), NOW(), NOW())
+                    status, expiry_date, request_date, blockchain_tx_id, created_at, updated_at
+                  ) VALUES ($1, $1, $2, $3, $4, $5, $6, $7, $8, $10, $11, $12, $13, 'REQUESTED', $9, NOW(), $14, NOW(), NOW())
                   ON CONFLICT (lc_id) DO NOTHING`,
                   [generatedLcId, contractID, exporterId, issuingBank, advisingBank, handoffBeneficiary, amount, currency, expiryDate,
                    String(approvedContract.deliveryDate || approvedContract.DeliveryDate || '').slice(0, 10) || null,
                    String(approvedContract.portOfLoading || approvedContract.PortOfLoading || '') || null,
                    String(approvedContract.portOfDestination || approvedContract.PortOfDestination || '') || null,
-                   String(approvedContract.paymentMethod || approvedContract.PaymentMethod || '') || null]
+                   String(approvedContract.paymentMethod || approvedContract.PaymentMethod || '') || null,
+                   requestResult.txId || null]
                 );
               } catch (syncError) {
                 logger.warn(`[LC HANDOFF] PostgreSQL sync failed for ${generatedLcId}; blockchain request is committed:`, syncError);
@@ -1660,6 +1666,54 @@ router.post('/:contractID/approve',
                 blockchainTxId: requestResult.txId || undefined,
                 metadata: { contractID, exporterId, amount, currency, blockchainTxId: requestResult.txId || null },
               }, `lc ${generatedLcId} handoff request`);
+
+              // Settle-sig follow-up: the handoff's RequestLC call never
+              // left a blockchain_signatures row — the manual LC-request
+              // route writes one (LC / RequestLC / LC_REQUESTED,
+              // banking.ts) and this path did not, so the portal's
+              // signature view (GET /blockchain-signatures/entity/LC/:id,
+              // which reads PG by entity_type + entity_id) showed
+              // nothing for a handoff LC. Key it the same way —
+              // entity_type 'LC', entity_id the generated LC id — so
+              // the portal finds it; signer is the ECTA approver, the
+              // org the handoff submits as. Best-effort, deduped by
+              // txId (no UNIQUE constraint on blockchain_tx_id), so a
+              // failed PG write cannot fail the approval.
+              try {
+                const { DatabaseService: SigDatabaseService } = await import('../services/databaseService');
+                const sigDb = SigDatabaseService.getInstance();
+                const handoffTxId = requestResult.txId || null;
+                const alreadySigned = handoffTxId
+                  ? await sigDb.get(
+                    `SELECT signature_id FROM blockchain_signatures WHERE blockchain_tx_id = $1 LIMIT 1`,
+                    [handoffTxId]
+                  )
+                  : null;
+                if (!alreadySigned && handoffTxId) {
+                  const handoffSigId = `SIG-${Date.now()}-${require('crypto').randomBytes(8).toString('hex')}`;
+                  await sigDb.run(
+                    `INSERT INTO blockchain_signatures (
+                      signature_id, blockchain_tx_id, entity_type, entity_id,
+                      chaincode_function, signer_org, signer_username,
+                      blockchain_timestamp, action_type, created_at
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), $8, NOW())
+                    ON CONFLICT (signature_id) DO NOTHING`,
+                    [
+                      handoffSigId,
+                      handoffTxId,
+                      'LC',
+                      generatedLcId,
+                      'RequestLC',
+                      'ECTAMSP',
+                      user?.username || 'ecta_admin',
+                      'LC_REQUESTED',
+                    ]
+                  );
+                  logger.info(`[LC HANDOFF] Blockchain signature stored for ${generatedLcId} (tx ${handoffTxId})`);
+                }
+              } catch (sigError) {
+                logger.warn(`[LC HANDOFF] Failed to store blockchain signature for ${generatedLcId}; blockchain request is committed:`, sigError);
+              }
 
               lcHandoff = {
                 status: 'created',
