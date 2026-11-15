@@ -5,6 +5,7 @@ import express, { Request, Response } from 'express';
 import { FabricService } from '../services/fabricService';
 import { LCService } from '../services/lcService';
 import { ForexService } from '../services/forexService';
+import { PaymentService } from '../services/paymentService';
 import { BlockchainSignatureService } from '../services/blockchainSignatureService';
 import { DatabaseService } from '../services/databaseService';
 import { logger } from '../utils/logger';
@@ -21,6 +22,7 @@ const router = express.Router();
 const fabricService = FabricService.getInstance();
 const lcService = LCService.getInstance();
 const forexService = ForexService.getInstance();
+const paymentService = PaymentService.getInstance();
 const signatureService = BlockchainSignatureService.getInstance();
 const dbService = DatabaseService.getInstance();
 
@@ -3454,10 +3456,33 @@ router.post('/payment/:paymentID/settle',
           metadata: { exchangeRate, retentionRate, payingBank, swiftReference, nbeApprovalRef, blockchainTxId: result.txId || null },
         }, `payment ${paymentID} settle`);
 
+        // Settle-sig follow-up: this route's SettlePayment call never
+        // left a blockchain_signatures row — the /payments/:id/settle
+        // route records one (recordSettleSignature, leftover 2), this
+        // one did not. Record it best-effort (recordChainSignature
+        // catches internally and dedupes by txId) so a failed PG write
+        // cannot turn a committed settlement into a 500.
+        await paymentService.recordSettleSignature({
+          paymentID,
+          txId: result.txId || null,
+          signerUsername: (req as any).user?.username || 'bank_admin',
+        });
+
+        // Settle-sig follow-up: carry blockchainTxId alongside txId,
+        // top-level and under data when data is an object — the way
+        // the /payments/:id/settle route does. This route returned
+        // txId only, so the portal could not read the settle tx back
+        // from the response.
+        const settleData: any = result.data;
+        if (settleData && typeof settleData === 'object' && !Array.isArray(settleData)) {
+          settleData.blockchainTxId = result.txId || null;
+        }
+
         res.json({
           success: true,
-          data: result.data,
+          data: settleData,
           txId: result.txId,
+          blockchainTxId: result.txId || null,
           message: 'Payment settled successfully',
           timestamp: new Date().toISOString(),
         });
