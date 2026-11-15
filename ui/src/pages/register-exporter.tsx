@@ -317,7 +317,6 @@ const RegisterExporterPage = () => {
       });
       if (!res.data.success) throw new Error(res.data.error?.message || 'Submission failed');
       const appId = res.data.data.applicationId;
-<<<<<<< Updated upstream
       // LEG 1 (F2): keep the real applicationId + credentials the
       // server returned — the success screen shows these, not an
       // invented APP-Date.now() id.
