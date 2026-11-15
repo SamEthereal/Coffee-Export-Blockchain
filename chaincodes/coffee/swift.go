@@ -1419,7 +1419,12 @@ func (c *CoffeeContract) ValidateSWIFTMessageComplete(ctx contractapi.Transactio
 		return nil, err
 	}
 
-	var errors []string
+	// errors must start as an EMPTY slice, never nil: a valid message
+	// returns no errors, and encoding/json marshals a nil slice as null,
+	// which fails the contract-api response schema ("return.errors:
+	// Expected: array, given: null") and makes /swift/.../validate 400
+	// on every valid message (live 2026-11-15).
+	errors := make([]string, 0)
 
 	// Validate based on message type
 	switch msg.MessageType {

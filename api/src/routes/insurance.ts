@@ -55,21 +55,60 @@ router.post('/register',
         expiryDate,
         beneficiary,
         coverageDetails,
+        contractId: bodyContractId,
+        quantity: bodyQuantity,
+        vesselName,
+        voyageNumber,
+        containerNumber,
+        portOfLoading,
+        portOfDischarge,
+        goodsDescription,
+        incoterm,
       } = req.body;
 
       logger.info(`[INSURANCE] Registering policy: ${policyNumber} for shipment: ${shipmentID}`);
 
-      const result = await fabricService.invokeChaincode('RegisterInsurancePolicy', [
+      // Bug (probe round, 2026-11-15): this route invoked
+      // 'RegisterInsurancePolicy', which does not exist in the chaincode —
+      // every register 400'd with 'Function RegisterInsurancePolicy not
+      // found in contract CoffeeContract'. The chaincode's insurance
+      // function is IssueInsuranceCertificate (insurance.go), which takes
+      // the same core data (policy, shipment, insurer, value, currency,
+      // cover) plus certificate fields. Map onto it: contractId/quantity
+      // are read from the shipment when the caller does not supply them,
+      // incoterm defaults to CIF (the chaincode only warns for non-CIF).
+      let contractId = bodyContractId || '';
+      let quantity = bodyQuantity != null ? String(bodyQuantity) : '';
+      if (!contractId || !quantity) {
+        const ship = await fabricService.queryChaincode('ReadShipment', [shipmentID]);
+        const shipData: any = (ship as any)?.data || (ship as any);
+        if (shipData) {
+          if (!contractId && shipData.contractId) contractId = String(shipData.contractId);
+          if (!quantity && shipData.quantity != null) quantity = String(shipData.quantity);
+        }
+      }
+      if (!quantity) quantity = '0';
+      const issuedBy = (req as any).user?.username || (req as any).user?.email || '';
+
+      const result = await fabricService.invokeChaincode('IssueInsuranceCertificate', [
         policyNumber,
         shipmentID,
+        contractId,
+        policyNumber,
         insuranceCompany,
         coverageAmount.toString(),
         currency,
         policyType || 'MARINE_CARGO',
-        effectiveDate || new Date().toISOString().split('T')[0],
-        expiryDate || new Date(Date.now() + 180 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+        vesselName || '',
+        voyageNumber || '',
+        containerNumber || '',
+        portOfLoading || '',
+        portOfDischarge || '',
+        goodsDescription || 'Coffee',
+        quantity,
+        incoterm || 'CIF',
         beneficiary || '',
-        coverageDetails || 'Standard marine cargo insurance',
+        issuedBy,
       ]);
 
       if (result.success) {
@@ -127,7 +166,9 @@ router.get('/:policyNumber',
     try {
       const { policyNumber } = req.params;
 
-      const result = await fabricService.queryChaincode('ReadInsurancePolicy', [policyNumber]);
+      // 'ReadInsurancePolicy' does not exist in the chaincode either;
+      // the read function is ReadInsuranceCertificate (insurance.go).
+      const result = await fabricService.queryChaincode('ReadInsuranceCertificate', [policyNumber]);
 
       if (result.success) {
         res.json({
@@ -176,12 +217,14 @@ router.post('/:policyNumber/claim',
 
       logger.info(`[INSURANCE] Filing claim for policy: ${policyNumber}`);
 
-      const result = await fabricService.invokeChaincode('FileInsuranceClaim', [
+      // 'FileInsuranceClaim' does not exist in the chaincode; the claim
+      // function is RecordInsuranceClaim(insuranceID, claimReason,
+      // claimAmount). It records no incident date or supporting
+      // documents, so those are carried in the audit metadata instead.
+      const result = await fabricService.invokeChaincode('RecordInsuranceClaim', [
         policyNumber,
-        claimAmount.toString(),
         claimReason,
-        incidentDate || new Date().toISOString().split('T')[0],
-        JSON.stringify(supportingDocuments || []),
+        claimAmount.toString(),
       ]);
 
       if (result.success) {
@@ -193,7 +236,13 @@ router.post('/:policyNumber/claim',
           entityId: policyNumber,
           action: 'FILE_CLAIM',
           blockchainTxId: result.txId || undefined,
-          metadata: { blockchainTxId: result.txId || null },
+          metadata: {
+            blockchainTxId: result.txId || null,
+            claimAmount: claimAmount?.toString() || null,
+            claimReason: claimReason || null,
+            incidentDate: incidentDate || null,
+            supportingDocuments: supportingDocuments || [],
+          },
         }, `insurance ${policyNumber} claim`);
 
         res.json({
@@ -236,7 +285,9 @@ router.get('/shipment/:shipmentID',
     try {
       const { shipmentID } = req.params;
 
-      const result = await fabricService.queryChaincode('QueryInsuranceByShipment', [shipmentID]);
+      // 'QueryInsuranceByShipment' does not exist in the chaincode; the
+      // query is QueryInsuranceCertificatesByShipment (insurance.go).
+      const result = await fabricService.queryChaincode('QueryInsuranceCertificatesByShipment', [shipmentID]);
 
       if (result.success) {
         res.json({
