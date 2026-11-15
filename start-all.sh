@@ -1482,13 +1482,13 @@ async function runMigrations() {
 runMigrations();
 MIGRATION_EOF
                 
-                # Copy script to container and run it
-                docker cp /tmp/run-migrations-host.js cecbs-api:/tmp/run-migrations.js
-                docker exec cecbs-api node /tmp/run-migrations.js "$DATABASE_URL"
+                # Copy script to container's working directory and run it
+                docker cp /tmp/run-migrations-host.js cecbs-api:/app/run-migrations.js
+                docker exec -w /app cecbs-api node run-migrations.js "$DATABASE_URL"
                 local migration_result=$?
                 
                 # Cleanup
-                docker exec cecbs-api rm -f /tmp/run-migrations.js 2>/dev/null
+                docker exec cecbs-api rm -f /app/run-migrations.js 2>/dev/null
                 rm -f /tmp/run-migrations-host.js
                 
                 if [ $migration_result -eq 0 ]; then
