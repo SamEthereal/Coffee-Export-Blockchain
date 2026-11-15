@@ -3438,7 +3438,6 @@ The exporter can reapply once all requirements are met.`,
         </form>
       </PortalDialog>
 
-<<<<<<< Updated upstream
       {/* Application Details Dialog */}
       <PortalDialog brand="ECTA" title="Application Details" subtitle={selectedApplication ? `${selectedApplication.application_id} — ${selectedApplication.company_name}` : undefined} open={!!selectedApplication && !approveDialogOpen && !rejectDialogOpen && !approveConfirmOpen && !rejectConfirmOpen} onClose={() => setSelectedApplication(null)} maxWidth="md" contentSx={{ bgcolor: '#f8f9fa' }} actions={<>
 
