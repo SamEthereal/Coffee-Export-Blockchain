@@ -162,7 +162,7 @@ router.get('/origin', authMiddleware, async (req: Request, res: Response) => {
 router.post('/phyto', authMiddleware,
   requireRole('ECTA', 'ECTA_ADMIN'), async (req: Request, res: Response) => {
   try {
-    const { certificateId, contractId, shipmentId, exporterId, status, treatmentType, inspectionResult } = req.body;
+    const { certificateId, contractId, shipmentId, exporterId, status, treatmentType, inspectionResult, quantity: bodyQuantity } = req.body;
 
     logger.info(`[CERTIFICATES] Creating phytosanitary certificate: ${certificateId}`);
 
@@ -192,12 +192,32 @@ router.post('/phyto', authMiddleware,
         timestamp: new Date().toISOString()
       });
     }
+    // Bug (probe round, 2026-11-15): the quantity argument was hardcoded
+    // to '0' and RequestPhytosanitaryCertificate requires quantity > 0,
+    // so every request 400'd with 'quantity must be positive, got: 0.00'.
+    // Use the caller-supplied quantity when present, else the shipment's
+    // quantity from Postgres; refuse honestly rather than passing 0.
+    let quantity = bodyQuantity != null ? String(bodyQuantity) : '';
+    if (!quantity) {
+      const shipRow = await dbService.get(
+        `SELECT quantity FROM shipments WHERE shipment_id = $1`,
+        [shipment]
+      );
+      quantity = shipRow?.quantity != null ? String(shipRow.quantity) : '';
+    }
+    if (!quantity || Number(quantity) <= 0) {
+      return res.status(400).json({
+        success: false,
+        error: { code: 'VALIDATION_ERROR', message: 'quantity is required and must be positive to create a phytosanitary certificate on the ledger' },
+        timestamp: new Date().toISOString()
+      });
+    }
     const chainResult = await fabricService.invokeChaincode('RequestPhytosanitaryCertificate', [
       certificateId,
       shipment,
       exporter,
       'Coffee beans (Coffea arabica)',
-      '0',
+      quantity,
       treatmentType || 'Fumigation',
       '', '', '', '', '', '', '',
     ]);
