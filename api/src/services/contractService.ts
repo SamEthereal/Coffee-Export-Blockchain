@@ -129,7 +129,7 @@ export class ContractService {
         contractData.buyerBank || '',      // 11
         contractData.exporterBank || '',   // 12
         contractData.paymentMethod,        // 13 - CORRECT POSITION!
-        (contractData.documents || []).join(','), // 14
+        JSON.stringify(contractData.documents || []), // 14 - JSON array format for chaincode
         // LEG 1 (F3): trade/contact fields, args 15-23 of
         // RegisterSalesContractWithPaymentMethod (chaincode seq 8+).
         contractData.buyerEmail || '',                    // 15
