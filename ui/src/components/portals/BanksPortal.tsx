@@ -5125,13 +5125,14 @@ const BanksPortal: React.FC = () => {
             <CircularProgress size={20} sx={{ ml: 2, verticalAlign: 'middle' }} />
           )}</>} icon={<Description />} actions={<>
           <GhostButton brand="BANKS" onClick={handleCloseDialog}>Close</GhostButton>
+          {/* REQUESTED status: Show Approve and Reject buttons */}
           {selectedLC && selectedLC.status === 'REQUESTED' && (
             <>
               <PrimaryButton brand="BANKS"
                 startIcon={<CheckCircle />}
                 loadingLabel="Approving…"
                 ledgerWrite
-                onClick={() => handleApproveLC(selectedLC.lcId)}
+                onClick={() => handleApproveLC(selectedLC.lcId, selectedLC.exporterId)}
               >
                 Approve LC
               </PrimaryButton>
@@ -5144,6 +5145,39 @@ const BanksPortal: React.FC = () => {
                 Reject LC
               </DangerButton>
             </>
+          )}
+          {/* APPROVED status: Show Issue button */}
+          {selectedLC && selectedLC.status === 'APPROVED' && (
+            <PrimaryButton brand="BANKS"
+              startIcon={<AccountBalance />}
+              loadingLabel="Issuing…"
+              ledgerWrite
+              onClick={async () => {
+                try {
+                  const token = localStorage.getItem('authToken');
+                  const response = await apiFetch(`/banking/lc/${selectedLC.lcId}/issue`, {
+                    method: 'POST',
+                    headers: {
+                      'Authorization': `Bearer ${token}`,
+                      'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ terms: selectedLC.terms || '' }),
+                  });
+                  const result = await response.json();
+                  if (result.success) {
+                    showSuccess('LC Issued', `LC ${selectedLC.lcId} has been issued successfully`);
+                    loadBankingData();
+                    handleCloseDialog();
+                  } else {
+                    showError('LC Issue Failed', result.error?.message || 'Failed to issue LC');
+                  }
+                } catch (error: any) {
+                  showError('Network Error', 'Failed to issue LC', error.message);
+                }
+              }}
+            >
+              Issue LC
+            </PrimaryButton>
           )}
           {selectedLC && selectedLC.status === 'ISSUED' && (
             <>
