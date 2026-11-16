@@ -462,6 +462,86 @@ router.post('/lc/request',
 
 /**
  * @swagger
+ * /api/v1/banking/lc/{lcID}/document-checklist:
+ *   get:
+ *     summary: Get LC document compliance checklist
+ *     tags: [Banking]
+ */
+router.get('/lc/:lcID/document-checklist', authMiddleware, async (req, res) => {
+  try {
+    const { lcID } = req.params;
+    const { stage } = req.query;
+
+    // Get LC and contract info
+    const lc = await dbService.get(
+      'SELECT lc_id, contract_id, exporter_id, status FROM letters_of_credit WHERE lc_id = $1',
+      [lcID]
+    );
+
+    if (!lc) {
+      return res.status(404).json({
+        success: false,
+        error: { code: 'NOT_FOUND', message: 'LC not found' },
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    const { lcDocumentValidationService } = await import('../services/lcDocumentValidationService');
+
+    // Determine stage based on LC status if not provided
+    let validationStage: 'APPROVAL' | 'ISSUANCE' | 'PAYMENT_RELEASE' = 'APPROVAL';
+    if (stage) {
+      validationStage = String(stage).toUpperCase() as any;
+    } else {
+      // Auto-determine stage from LC status
+      const lcStatus = String(lc.status).toUpperCase();
+      if (lcStatus === 'REQUESTED') {
+        validationStage = 'APPROVAL';
+      } else if (lcStatus === 'APPROVED') {
+        validationStage = 'ISSUANCE';
+      } else if (lcStatus === 'ISSUED') {
+        validationStage = 'PAYMENT_RELEASE';
+      }
+    }
+
+    // Get document checklist
+    const checklist = await lcDocumentValidationService.getDocumentChecklist(
+      validationStage,
+      lc.contract_id
+    );
+
+    // Get validation status
+    let validationStatus;
+    if (validationStage === 'APPROVAL') {
+      validationStatus = await lcDocumentValidationService.canApproveLCRequest(lcID, lc.contract_id);
+    } else if (validationStage === 'ISSUANCE') {
+      validationStatus = await lcDocumentValidationService.canIssueLCRequest(lcID, lc.contract_id, lc.exporter_id);
+    }
+
+    res.json({
+      success: true,
+      data: {
+        lcId: lcID,
+        contractId: lc.contract_id,
+        currentStage: validationStage,
+        lcStatus: lc.status,
+        checklist,
+        validation: validationStatus,
+      },
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error: any) {
+    logger.error('[BANKING] Error getting LC document checklist:', error);
+    res.status(500).json({
+      success: false,
+      error: { code: 'INTERNAL_ERROR', message: error.message },
+      timestamp: new Date().toISOString(),
+    });
+  }
+});
+
+/**
+ * @swagger
  * /api/v1/banking/lc/{lcID}/approve:
  *   post:
  *     summary: Approve Letter of Credit
@@ -477,6 +557,42 @@ router.post('/lc/:lcID/approve',
   async (req, res) => {
     try {
       const { lcID } = req.params;
+      
+      // ✅ VALIDATE DOCUMENT REQUIREMENTS BEFORE APPROVAL
+      const { lcDocumentValidationService } = await import('../services/lcDocumentValidationService');
+      
+      // Get LC and contract info for validation
+      const lc = await dbService.get(
+        'SELECT lc_id, contract_id, exporter_id, status FROM letters_of_credit WHERE lc_id = $1',
+        [lcID]
+      );
+
+      if (!lc) {
+        return res.status(404).json({
+          success: false,
+          error: { code: 'NOT_FOUND', message: 'LC not found' },
+          timestamp: new Date().toISOString(),
+        });
+      }
+
+      // Check if all required documents are available
+      const documentValidation = await lcDocumentValidationService.canApproveLCRequest(lcID, lc.contract_id);
+      
+      if (!documentValidation.canApprove) {
+        logger.warn(`[LC APPROVE] Cannot approve LC ${lcID}: ${documentValidation.reason}`);
+        return res.status(400).json({
+          success: false,
+          error: {
+            code: 'DOCUMENT_REQUIREMENTS_NOT_MET',
+            message: documentValidation.reason || 'Required documents not available',
+            missingDocuments: documentValidation.missingDocuments,
+            details: documentValidation.validationDetails,
+          },
+          timestamp: new Date().toISOString(),
+        });
+      }
+
+      logger.info(`[LC APPROVE] ✅ Document validation passed for LC ${lcID}`);
       
       // Get the logged-in user's bank organization
       const user = (req as any).user;
@@ -1428,6 +1544,46 @@ router.post('/lc/:lcID/issue',
       const { lcID } = req.params;
       const { terms, contractID, exporterID, amount, currency } = req.body;
       const user = (req as any).user; // Get authenticated user info
+
+      // ✅ VALIDATE ISSUANCE REQUIREMENTS BEFORE ISSUING
+      const { lcDocumentValidationService } = await import('../services/lcDocumentValidationService');
+      
+      // Get LC and contract info for validation
+      const lc = await dbService.get(
+        'SELECT lc_id, contract_id, exporter_id, status FROM letters_of_credit WHERE lc_id = $1',
+        [lcID]
+      );
+
+      if (!lc) {
+        return res.status(404).json({
+          success: false,
+          error: { code: 'NOT_FOUND', message: 'LC not found' },
+          timestamp: new Date().toISOString(),
+        });
+      }
+
+      // Check if all requirements for issuance are met
+      const issuanceValidation = await lcDocumentValidationService.canIssueLCRequest(
+        lcID,
+        lc.contract_id,
+        lc.exporter_id
+      );
+      
+      if (!issuanceValidation.canIssue) {
+        logger.warn(`[LC ISSUE] Cannot issue LC ${lcID}: ${issuanceValidation.reason}`);
+        return res.status(400).json({
+          success: false,
+          error: {
+            code: 'ISSUANCE_REQUIREMENTS_NOT_MET',
+            message: issuanceValidation.reason || 'Requirements for LC issuance not met',
+            missingRequirements: issuanceValidation.missingRequirements,
+            details: issuanceValidation.validationDetails,
+          },
+          timestamp: new Date().toISOString(),
+        });
+      }
+
+      logger.info(`[LC ISSUE] ✅ Issuance validation passed for LC ${lcID}`);
 
       // Log which organization (bank) is issuing the LC
       logger.info(`[${user?.org || 'BANKS'}] Issuing LC: ${lcID}`, {
