@@ -2068,8 +2068,17 @@ func (c *CoffeeContract) CreateShipment(ctx contractapi.TransactionContextInterf
 					fmt.Printf("CreateShipment: LC %s validated (status: %s)\n", lc.LCID, lc.Status)
 					break
 				} else {
-					fmt.Printf("CreateShipment ERROR: LC %s status is %s, must be FOREX_ALLOCATED or later\n", lc.LCID, lc.Status)
-					return fmt.Errorf("CreateShipment: LC for contract %s must have forex allocated before shipment creation (current LC status: %s)", contractID, lc.Status)
+					// F-A (2026-11-16): a non-qualifying LC for this contract
+					// must NOT stop the scan. At contract approval the ECTA
+					// handoff creates a REQUESTED record with id
+					// LC-<contractID> that stays REQUESTED forever, while
+					// the real LC is a separate record; whichever sorts
+					// first in the range decides. Keep scanning — another
+					// LC for this contract may already be FOREX_ALLOCATED.
+					// If none qualifies, the !lcValidated check below
+					// still refuses the shipment.
+					fmt.Printf("CreateShipment: LC %s status is %s, not yet allocated — continuing scan\n", lc.LCID, lc.Status)
+					continue
 				}
 			}
 		}

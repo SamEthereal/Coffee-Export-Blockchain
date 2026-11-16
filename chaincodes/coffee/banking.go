@@ -1848,8 +1848,18 @@ func (c *CoffeeContract) LinkShipmentToLC(ctx contractapi.TransactionContextInte
 	return nil
 }
 
-// SubmitLCDocuments - Update LC status when exporter submits shipping documents
-// This moves LC from SHIPPED to DOCUMENTS_SUBMITTED status
+// SubmitLCDocuments - Attach shipping documents to an LC.
+// F-D (2026-11-16): this deliberately does NOT change the LC status.
+// DOCUMENTS_SUBMITTED is a *payment* status (payment.go), not an LC
+// status: it appears nowhere in validLCTransitions (banking.go:1076),
+// FOREX_ALLOCATED may only go to UTILIZED/EXPIRED, and the downstream
+// gates require the old status — ExamineLCDocuments accepts only
+// ISSUED/FOREX_ALLOCATED (banking.go:1602) and ReleaseLCPayment requires
+// UTILIZED, reached via examination (banking.go:1696). Setting the
+// status here would strand the LC: examine would refuse it and release
+// could never be reached. The status stays ISSUED/FOREX_ALLOCATED and
+// the documents are attached; migrate.go:121 records the same rule
+// (DOCUMENTS_SUBMITTED -> ISSUED).
 func (c *CoffeeContract) SubmitLCDocuments(ctx contractapi.TransactionContextInterface,
 	lcID string, documentIDs []string) error {
 
@@ -1868,7 +1878,8 @@ func (c *CoffeeContract) SubmitLCDocuments(ctx contractapi.TransactionContextInt
 		return fmt.Errorf("failed to unmarshal LC: %v", err)
 	}
 
-	// Only update if LC is ISSUED (documents can be submitted after shipment is linked)
+	// Only ISSUED or FOREX_ALLOCATED LCs can have documents submitted
+	// (documents can be submitted after shipment is linked)
 	if lc.Status != "ISSUED" && lc.Status != "FOREX_ALLOCATED" {
 		return fmt.Errorf("LC status must be ISSUED to submit documents, current: %s", lc.Status)
 	}
@@ -1880,9 +1891,9 @@ func (c *CoffeeContract) SubmitLCDocuments(ctx contractapi.TransactionContextInt
 	}
 	txTime := time.Unix(txTimestamp.Seconds, int64(txTimestamp.Nanos)).UTC()
 
-	// Update LC status and attach documents
-	// Keep status as ISSUED - documents submitted but not yet verified
-	// lc.Status remains "ISSUED"
+	// Attach documents; the LC status is deliberately unchanged (see the
+	// function comment above — DOCUMENTS_SUBMITTED is a payment status,
+	// and examine/release require ISSUED/FOREX_ALLOCATED then UTILIZED).
 	lc.Documents = documentIDs
 	lc.UpdatedAt = txTime
 
@@ -1906,7 +1917,7 @@ func (c *CoffeeContract) SubmitLCDocuments(ctx contractapi.TransactionContextInt
 	eventJSON, _ := json.Marshal(event)
 	ctx.GetStub().SetEvent("LCDocumentsSubmitted", eventJSON)
 
-	fmt.Printf("SubmitLCDocuments: LC %s documents submitted, status updated to DOCUMENTS_SUBMITTED\n", lcID)
+	fmt.Printf("SubmitLCDocuments: LC %s documents submitted, status remains %s (documents attached, not yet verified)\n", lcID, lc.Status)
 	return nil
 }
 
