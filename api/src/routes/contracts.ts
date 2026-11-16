@@ -1533,10 +1533,13 @@ router.post('/:contractID/approve',
       }
       
       // Use ContractService for approval
+      // Map ADMIN users to use ECTAMSP for blockchain operations (ADMIN org doesn't exist on chain)
+      const approverOrg = (userRole === 'ADMIN') ? 'ECTAMSP' : (user.org || 'ECTAMSP');
+      
       const result = await contractService.approveContract({
         contractID,
         approvedBy: user.username,
-        approverOrg: user.org || 'ECTAMSP'
+        approverOrg
       });
 
       if (result.success) {
