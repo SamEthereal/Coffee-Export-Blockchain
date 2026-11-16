@@ -182,6 +182,9 @@ interface LetterOfCredit {
   // ✅ Documents attached to LC
   documents?: any[];
   
+  // ✅ Related shipments for this LC's contract
+  relatedShipments?: any[];
+  
   // ✅ Actor tracking fields (WHO performed actions)
   approvedBy?: string;
   approvedByMsp?: string;
@@ -1290,27 +1293,45 @@ const BanksPortal: React.FC = () => {
     setLcDetailsLoading(true); // Show loading indicator
     
     try {
-      // Fetch complete LC data from API (includes all enriched fields)
-      const response = await apiFetch(`/banking/lc/${encodeURIComponent(lc.lcId)}`, {
-        headers: getAuthHeaders(),
-      });
+      // Fetch complete LC data and related shipments
+      const [lcResponse, shipmentsResult] = await Promise.all([
+        apiFetch(`/banking/lc/${encodeURIComponent(lc.lcId)}`, {
+          headers: getAuthHeaders(),
+        }),
+        // Fetch all shipments and filter by contractId client-side
+        api.getShipments({})
+      ]);
 
-      if (response.ok) {
-        const result = await response.json();
+      // Process LC data
+      if (lcResponse.ok) {
+        const result = await lcResponse.json();
         if (result.success && result.data) {
           devLog('[BANKS] ✅ Fetched complete LC data:', result.data);
-          setSelectedLC(result.data);
+          
+          // Filter shipments for this LC's contract
+          const relatedShipments = (shipmentsResult.success && shipmentsResult.data)
+            ? shipmentsResult.data.filter((s: any) => s.contractId === result.data.contractId)
+            : [];
+          
+          devLog('[BANKS] ✅ Found', relatedShipments.length, 'shipments for contract:', result.data.contractId);
+          
+          // Attach shipments to LC data
+          setSelectedLC({
+            ...result.data,
+            relatedShipments
+          });
         } else {
           console.warn('[BANKS] ⚠️ API returned no data, using cached LC');
-          // Keep the initial LC data
+          setSelectedLC(lc);
         }
       } else {
         console.warn('[BANKS] ⚠️ API fetch failed, using cached LC');
-        // Keep the initial LC data
+        setSelectedLC(lc);
       }
     } catch (error) {
       console.error('[BANKS] ❌ Error fetching LC details:', error);
       // Keep the initial LC data as fallback
+      setSelectedLC(lc);
     } finally {
       setLcDetailsLoading(false); // Hide loading indicator
     }
@@ -5416,6 +5437,93 @@ const BanksPortal: React.FC = () => {
                         </Typography>
                       </Grid>
                     </Grid>
+                  </Paper>
+                </Grid>
+
+                {/* Recent Shipments Section */}
+                <Grid item xs={12}>
+                  <Typography variant="subtitle2" color="black" gutterBottom sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                    <LocalShipping />
+                    Recent Shipments
+                  </Typography>
+                  <Paper sx={{ p: 2, bgcolor: 'grey.50' }}>
+                    {selectedLC.relatedShipments && selectedLC.relatedShipments.length > 0 ? (
+                      <TableContainer>
+                        <Table size="small">
+                          <TableHead>
+                            <TableRow>
+                              <TableCell><strong>Shipment ID</strong></TableCell>
+                              <TableCell><strong>Status</strong></TableCell>
+                              <TableCell><strong>Transport</strong></TableCell>
+                              <TableCell><strong>Date</strong></TableCell>
+                            </TableRow>
+                          </TableHead>
+                          <TableBody>
+                            {selectedLC.relatedShipments.slice(0, 5).map((shipment: any) => {
+                              // Normalize status - handle various field names
+                              const shipmentStatus = (
+                                shipment.status || 
+                                shipment.Status || 
+                                shipment.shipmentStatus || 
+                                'UNKNOWN'
+                              ).toUpperCase();
+                              
+                              const statusColors: Record<string, any> = {
+                                'CREATED': 'default',
+                                'PENDING': 'default',
+                                'QUALITY_CONTROL': 'info',
+                                'APPROVED': 'warning',
+                                'REQUESTED': 'warning',
+                                'SHIPPED': 'info',
+                                'IN_TRANSIT': 'info',
+                                'DELIVERED': 'success',
+                                'CUSTOMS_CLEARED': 'success',
+                                'UNKNOWN': 'error'
+                              };
+                              
+                              return (
+                                <TableRow key={shipment.shipmentId || shipment.id}>
+                                  <TableCell>
+                                    <Typography variant="body2" fontWeight={600}>
+                                      {shipment.shipmentId || shipment.id || 'N/A'}
+                                    </Typography>
+                                  </TableCell>
+                                  <TableCell>
+                                    <Chip 
+                                      label={shipmentStatus.replace(/_/g, ' ')} 
+                                      size="small"
+                                      color={statusColors[shipmentStatus] || 'default'}
+                                    />
+                                  </TableCell>
+                                  <TableCell>
+                                    <Typography variant="body2">
+                                      {shipment.transportMode === 'AIR' ? '✈️ Air' : 
+                                       shipment.transportMode === 'SEA' ? '🚢 Sea' : 
+                                       shipment.transportMode || 'In Transit'}
+                                    </Typography>
+                                  </TableCell>
+                                  <TableCell>
+                                    <Typography variant="body2">
+                                      {shipment.actualDeparture ? 
+                                        new Date(shipment.actualDeparture).toLocaleDateString() : 
+                                        shipment.estimatedDeparture ? 
+                                        new Date(shipment.estimatedDeparture).toLocaleDateString() :
+                                        shipment.createdAt ? 
+                                        new Date(shipment.createdAt).toLocaleDateString() : 
+                                        'N/A'}
+                                    </Typography>
+                                  </TableCell>
+                                </TableRow>
+                              );
+                            })}
+                          </TableBody>
+                        </Table>
+                      </TableContainer>
+                    ) : (
+                      <Alert severity="info">
+                        No shipments recorded for this LC yet. Shipments will appear here once the exporter creates them.
+                      </Alert>
+                    )}
                   </Paper>
                 </Grid>
 
