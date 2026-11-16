@@ -277,6 +277,13 @@ router.post('/:shipmentId/lc-settlement',
         res.json({
           success: true,
           message: 'LC settlement recorded successfully',
+          data: {
+            lcSettled: result.lcSettled ?? result.blockchainSettled ?? false,
+            blockchainSettled: result.blockchainSettled ?? false,
+            settleTxId: result.settleTxId ?? null,
+            alreadySettled: result.alreadySettled ?? false,
+            postDeliveryRecordFound: result.postDeliveryRecordFound ?? true,
+          },
           timestamp: new Date().toISOString()
         });
       } else {

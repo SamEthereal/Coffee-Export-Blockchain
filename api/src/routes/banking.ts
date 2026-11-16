@@ -2619,8 +2619,8 @@ router.get('/lc/:lcID', authMiddleware, async (req, res) => {
         try {
           logger.debug(`[BANKING] 📎 Fetching ALL documents for LC ${lcID}, Contract ${contractId}`);
           const docs = await dbService.all(`
-            SELECT document_id, document_type, file_name, file_path, status, verification_status, 
-                   uploaded_at, uploaded_by, entity_type, entity_id, verification_notes, verified_at, verified_by
+            SELECT document_id, document_type, file_name, file_path, status, verification_status,
+                   uploaded_at, uploaded_by, entity_type, entity_id
             FROM documents 
             WHERE status = 'active'
               AND (
@@ -2656,7 +2656,48 @@ router.get('/lc/:lcID', authMiddleware, async (req, res) => {
           logger.warn('[BANKING] ⚠️  Could not fetch documents:', docError);
         }
       }
-      
+
+      // F-E (2026-11-16): the ledger LC carries the document IDs
+      // submitted via SubmitLCDocuments in its own `documents` field
+      // ([]string on the chaincode struct), but this endpoint only
+      // ever returned the PG `documents` table rows — so after T9b
+      // the detail response showed `documents: []` while CouchDB
+      // listed the 3 IDs. The chaincode never writes those IDs into
+      // the PG table, so merge the ledger IDs here: any ID not
+      // already present as a PG row is appended in the same object
+      // shape, flagged source 'ledger'. The raw ID list is also
+      // exposed as `ledgerDocuments` so callers can see exactly what
+      // the ledger holds.
+      const ledgerDocIds: string[] = [];
+      {
+        const rawDocs: any = (lcData as any)?.documents ?? (lcData as any)?.Documents ?? [];
+        const ids = Array.isArray(rawDocs) ? rawDocs : [];
+        for (const d of ids) {
+          const id = typeof d === 'string' ? d : (d?.documentId || d?.documentID || d?.id || '');
+          if (id && !ledgerDocIds.includes(id)) ledgerDocIds.push(id);
+        }
+        const knownIds = new Set(allDocuments.map((d: any) => d.documentId));
+        for (const id of ledgerDocIds) {
+          if (!knownIds.has(id)) {
+            allDocuments.push({
+              documentId: id,
+              documentType: '',
+              fileName: '',
+              filePath: '',
+              status: 'submitted',
+              uploadedAt: null,
+              uploadedBy: '',
+              entityType: 'LC',
+              entityId: lcID,
+              source: 'ledger',
+            });
+          }
+        }
+        if (ledgerDocIds.length > 0) {
+          logger.info(`[BANKING] 📎 LC ${lcID}: merged ${ledgerDocIds.length} ledger-attached document IDs into detail response`);
+        }
+      }
+
       // 4. Merge data from all sources
       const requiredFields = {
         lcId: lcData?.lcId || lcData?.LCID || lcData?.id || lcID,
@@ -2682,6 +2723,7 @@ router.get('/lc/:lcID', authMiddleware, async (req, res) => {
         approvalDate: lcData?.approvalDate || lcData?.approval_date || pgData?.approval_date || null,
         issueDate: lcData?.issueDate || lcData?.issue_date || pgData?.issue_date || null,
         documents: allDocuments,  // ✅ ALL DOCUMENTS (LC + Contract + Shipment + Customs)
+        ledgerDocuments: ledgerDocIds,  // F-E: raw document IDs attached to the LC on the ledger (SubmitLCDocuments)
         terms: lcData?.terms || pgData?.terms || '',
         amendments: lcData?.amendments || [],
         amendmentCount: lcData?.amendmentCount ?? (lcData?.amendments ? lcData.amendments.length : 0),

@@ -382,19 +382,33 @@ export class PostDeliveryWorkflowService {
     shipmentId: string,
     lcReference: string,
     userId: string
-  ): Promise<{ success: boolean; error?: string; status?: number; code?: string }> {
+  ): Promise<{ success: boolean; error?: string; status?: number; code?: string; blockchainSettled?: boolean; settleTxId?: string | null; alreadySettled?: boolean; postDeliveryRecordFound?: boolean; lcSettled?: boolean }> {
     try {
       logger.info(`📄 Recording LC settlement for shipment: ${shipmentId}`);
 
       // --- Blockchain settlement: settle the bridged Payment entity ---
       const paymentID = `PAY_${lcReference}`;
       let blockchainSettled = false;
+      let settleTxId: string | null = null;
+      let alreadySettled = false;
 
       try {
         const paymentResult = await this.fabricService.queryChaincode('ReadPayment', [paymentID]);
         if (paymentResult.success && paymentResult.data) {
           const payment = paymentResult.data;
-          if (payment.status === 'VERIFIED' || payment.status === 'SWIFT_RECEIVED') {
+          if (payment.status === 'SETTLED') {
+            // F-B (2026-11-16): a retry after a successful settle (e.g. the
+            // first call returned 404 on the missing post-delivery row
+            // even though the ledger moved) must not be misreported as
+            // "not found" either — the settlement already happened, so
+            // this call is an idempotent success, not a new chain write.
+            // The SWIFT guard and rate checks below are deliberately
+            // skipped here: they exist to refuse BEFORE a chain write,
+            // and no chain write happens on this path.
+            blockchainSettled = true;
+            alreadySettled = true;
+            logger.info(`📄 Payment ${paymentID} is already SETTLED on-chain — treating lc-settlement as an idempotent success (no new chain write)`);
+          } else if (payment.status === 'VERIFIED' || payment.status === 'SWIFT_RECEIVED') {
             const payingBank = payment.payingBank || 'Issuing Bank';
             const payingBankBIC = payment.payingBankBic || '';
             const swiftReference = payment.swiftDetails?.swiftReference || `SETTLE-${lcReference}`;
@@ -496,6 +510,7 @@ export class PostDeliveryWorkflowService {
 
             if (settleResult.success) {
               blockchainSettled = true;
+              settleTxId = (settleResult as any)?.txId || null;
               logger.info(`✅ Blockchain: Payment ${paymentID} settled, LC ${lcReference} cascaded to SETTLED`);
               // Audit: this SettlePayment chain write in the close flow
               // never wrote an audit_trail row. Best-effort — a failed
@@ -535,6 +550,19 @@ export class PostDeliveryWorkflowService {
         logger.warn(`⚠️ Blockchain settlement failed for ${paymentID}: ${blockchainError.message} — continuing with DB update`);
       }
 
+      // F-C (2026-11-16): SettlePayment cascades the LC to SETTLED
+      // on-chain, but nothing mirrored that into PG, so
+      // letters_of_credit stayed PAYMENT_RELEASED while the ledger said
+      // SETTLED. Same pattern as the tab-0 settle mirror in
+      // payments.ts: read the LC's actual ledger status and mirror it
+      // only when it really is SETTLED. Best-effort — the settlement
+      // already committed — and it runs even when the post-delivery
+      // row below is absent, so the F-B case still gets its mirror.
+      let lcSettled = false;
+      if (blockchainSettled) {
+        lcSettled = await this.mirrorLcSettled(lcReference);
+      }
+
       // --- Database update (kept for post-delivery tracking) ---
       const query = `
         UPDATE post_delivery_tracking
@@ -550,6 +578,18 @@ export class PostDeliveryWorkflowService {
 
       const lcUpdate = await this.db.query(query, [shipmentId, lcReference, userId]);
       if (!lcUpdate.rowCount) {
+        // F-B (2026-11-16): the old code reported the UPDATE's 0-row
+        // result as the call's outcome even when the chain settle above
+        // had already succeeded — a completed settlement surfaced as
+        // HTTP 404 "Post-delivery record not found", and a retry got
+        // 404 again (payment no longer VERIFIED). The 404 is only
+        // correct when no settlement happened; a settled ledger is a
+        // success, with the absent tracking row reported honestly in
+        // the payload instead of as the outcome.
+        if (blockchainSettled) {
+          logger.info(`✅ LC settlement recorded for ${shipmentId} on-chain (tx ${settleTxId || 'already-settled'}) with no post-delivery tracking row — returning success, not 404`);
+          return { success: true, blockchainSettled: true, settleTxId, alreadySettled, postDeliveryRecordFound: false, lcSettled };
+        }
         return { success: false, error: 'Post-delivery record not found' };
       }
 
@@ -560,10 +600,44 @@ export class PostDeliveryWorkflowService {
 
       logger.info(`✅ LC settlement recorded for ${shipmentId} (blockchain: ${blockchainSettled ? 'settled' : 'skipped'})`);
 
-      return { success: true };
+      return { success: true, blockchainSettled, settleTxId, alreadySettled, postDeliveryRecordFound: true, lcSettled };
     } catch (error: any) {
       logger.error('Failed to record LC settlement:', error);
       return { success: false, error: error.message };
+    }
+  }
+
+  /**
+   * Mirror a ledger-SETTLED LC into Postgres (F-C). Ledger-first: the
+   * LC's actual on-chain status is read and only SETTLED is mirrored,
+   * so a settle that did NOT cascade changes nothing. Best-effort —
+   * returns false (never throws) when the read or the write fails, so
+   * a mirror error can never turn a committed settlement into a
+   * failure. Same rule as the tab-0 settle mirror in payments.ts.
+   */
+  private async mirrorLcSettled(lcReference: string): Promise<boolean> {
+    try {
+      const lcRead = await this.fabricService.queryChaincode('ReadLC', [lcReference]);
+      const lcStatus = lcRead?.success && lcRead.data
+        ? String((lcRead.data as any).status || (lcRead.data as any).Status || '')
+        : '';
+      if (lcStatus === 'SETTLED') {
+        await this.db.query(
+          `UPDATE letters_of_credit SET status = 'SETTLED', updated_at = NOW() WHERE lc_id = $1`,
+          [lcReference]
+        );
+        logger.info(`✅ Post-delivery: mirrored LC ${lcReference} → SETTLED in Postgres`);
+        return true;
+      }
+      if (lcStatus) {
+        logger.warn(`📄 Post-delivery: LC ${lcReference} is ${lcStatus} on-chain, not SETTLED — leaving PG letters_of_credit untouched`);
+      } else {
+        logger.warn(`📄 Post-delivery: could not read LC ${lcReference} from the ledger — leaving PG letters_of_credit untouched`);
+      }
+      return false;
+    } catch (err: any) {
+      logger.warn(`📄 Post-delivery: could not mirror LC ${lcReference} → SETTLED into PG (non-fatal):`, err?.message || err);
+      return false;
     }
   }
 
