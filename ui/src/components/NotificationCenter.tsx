@@ -785,7 +785,7 @@ const NotificationCenter: React.FC<NotificationCenterProps> = ({ userRole }) => 
           <Badge badgeContent={unreadCount} color="error" max={99}>
             <Notifications
               fontSize="small"
-              sx={userRole === 'BANKS' ? { color: '#FFD700' } : undefined}
+              sx={userRole === 'BANKS' ? { color: '#FFD700' } : { color: '#ffffff' }}
             />
           </Badge>
         </IconButton>

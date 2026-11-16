@@ -466,7 +466,7 @@ const NavigationBar: React.FC = () => {
 
             {/* User Info - Desktop Only */}
             <Box sx={{ display: { xs: 'none', md: 'flex' }, flexDirection: 'column', alignItems: 'flex-end', mx: 1 }}>
-              <Typography variant="body2" sx={{ fontWeight: 600, lineHeight: 1.2, fontSize: '0.85rem' }}>
+              <Typography variant="body2" sx={{ fontWeight: 600, lineHeight: 1.2, fontSize: '0.85rem', color: '#ffffff' }}>
                 {user.fullName || user.username}
               </Typography>
               <Typography variant="caption" sx={{ color: 'rgba(255, 255, 255, 0.7)', fontSize: '0.7rem' }}>
