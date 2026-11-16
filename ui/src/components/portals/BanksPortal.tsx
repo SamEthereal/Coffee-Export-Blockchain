@@ -5126,14 +5126,24 @@ const BanksPortal: React.FC = () => {
           )}</>} icon={<Description />} actions={<>
           <GhostButton brand="BANKS" onClick={handleCloseDialog}>Close</GhostButton>
           {selectedLC && selectedLC.status === 'REQUESTED' && (
-            <DangerButton brand="BANKS"
-              startIcon={<Cancel />}
-              loadingLabel="Rejecting…"
-              ledgerWrite
-              onClick={() => handleRejectLC(selectedLC.lcId)}
-            >
-              Reject LC
-            </DangerButton>
+            <>
+              <PrimaryButton brand="BANKS"
+                startIcon={<CheckCircle />}
+                loadingLabel="Approving…"
+                ledgerWrite
+                onClick={() => handleApproveLC(selectedLC.lcId)}
+              >
+                Approve LC
+              </PrimaryButton>
+              <DangerButton brand="BANKS"
+                startIcon={<Cancel />}
+                loadingLabel="Rejecting…"
+                ledgerWrite
+                onClick={() => handleRejectLC(selectedLC.lcId)}
+              >
+                Reject LC
+              </DangerButton>
+            </>
           )}
           {selectedLC && selectedLC.status === 'ISSUED' && (
             <>
