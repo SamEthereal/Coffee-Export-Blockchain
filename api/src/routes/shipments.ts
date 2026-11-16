@@ -2294,7 +2294,7 @@ router.post('/:shipmentID/delivery',
  * @swagger
  * /api/v1/shipments/{shipmentID}/lc-documents:
  *   post:
- *     summary: Submit LC documents after shipment (updates LC to DOCUMENTS_SUBMITTED)
+ *     summary: Submit LC documents after shipment (attaches documents to the LC; LC status stays FOREX_ALLOCATED/ISSUED — DOCUMENTS_SUBMITTED is not an LC status)
  *     tags: [Shipments, LC]
  *     parameters:
  *       - in: path
