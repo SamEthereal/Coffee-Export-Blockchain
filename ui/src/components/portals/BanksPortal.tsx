@@ -1307,6 +1307,8 @@ const BanksPortal: React.FC = () => {
         const result = await lcResponse.json();
         if (result.success && result.data) {
           devLog('[BANKS] ✅ Fetched complete LC data:', result.data);
+          devLog('[BANKS] 📎 LC Documents count:', result.data.documents?.length || 0);
+          devLog('[BANKS] 📎 LC Documents:', result.data.documents);
           
           // Filter shipments for this LC's contract
           const relatedShipments = (shipmentsResult.success && shipmentsResult.data)

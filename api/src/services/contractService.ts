@@ -206,7 +206,28 @@ export class ContractService {
         ]
       );
 
-      // 3. Auto-log audit trail
+      // 3. Link documents to this contract
+      if (contractData.documents && contractData.documents.length > 0) {
+        logger.info(`[ContractService] Linking ${contractData.documents.length} documents to contract ${contractData.contractID}`);
+        for (const docId of contractData.documents) {
+          try {
+            await this.dbService.run(
+              `UPDATE documents 
+               SET entity_type = 'CONTRACT', 
+                   entity_id = $1, 
+                   contract_id = $1,
+                   updated_at = NOW()
+               WHERE document_id = $2`,
+              [contractData.contractID, docId]
+            );
+          } catch (docErr) {
+            logger.warn(`[ContractService] Failed to link document ${docId} to contract ${contractData.contractID}:`, docErr);
+          }
+        }
+        logger.info(`[ContractService] ✅ Documents linked to contract ${contractData.contractID}`);
+      }
+
+      // 4. Auto-log audit trail
       await this.auditService.log({
         entityType: 'CONTRACT',
         entityId: contractData.contractID,
