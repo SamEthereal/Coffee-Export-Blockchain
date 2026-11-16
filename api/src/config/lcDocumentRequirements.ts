@@ -34,7 +34,7 @@ export const LC_DOCUMENT_REQUIREMENTS: Record<string, LCDocumentRequirement[]> =
   // === STAGE 1: LC APPROVAL (Before LC is issued) ===
   APPROVAL: [
     {
-      documentType: 'SALES_CONTRACT',
+      documentType: 'CONTRACT_SIGNED',
       required: true,
       stage: 'APPROVAL',
       description: 'Signed sales contract between buyer and seller',
@@ -74,16 +74,17 @@ export const LC_DOCUMENT_REQUIREMENTS: Record<string, LCDocumentRequirement[]> =
       category: 'TRADE',
     },
     {
-      documentType: 'ICO_CERTIFICATE',
+      documentType: 'PURCHASE_ORDER',
       required: true,
       stage: 'APPROVAL',
-      description: 'International Coffee Organization certificate',
+      description: 'Purchase order from buyer',
       validationRules: [
-        'Must be valid ICO certificate',
-        'Must match quantity in contract',
-        'Must show coffee grade and type',
+        'Must match contract details',
+        'Must include buyer information',
+        'Must specify quantity and price',
+        'Must include payment terms',
       ],
-      category: 'QUALITY',
+      category: 'LEGAL',
     },
     {
       documentType: 'QUALITY_CERTIFICATE',

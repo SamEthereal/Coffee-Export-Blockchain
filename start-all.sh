@@ -1776,6 +1776,42 @@ show_final_status() {
 }
 
 ################################################################################
+# PHASE 7: Initialize NBE Data (If API is Running)
+################################################################################
+
+initialize_nbe_data() {
+    write_header "Phase 7: Initializing NBE Exchange Rate & Retention Policy"
+    
+    write_info "NBE data (exchange rate & retention policy) will be set automatically"
+    write_info "when the API starts, using scripts/set-nbe-initial-data.sh"
+    echo ""
+    
+    write_step "Checking if API is already running..."
+    
+    # Check if API is accessible
+    if curl -s --max-time 2 http://localhost:${API_PORT}/health >/dev/null 2>&1; then
+        write_success "API is running - setting NBE data now..."
+        
+        # Run the NBE initialization script
+        if [ -f "$SCRIPTS_DIR/set-nbe-initial-data.sh" ]; then
+            bash "$SCRIPTS_DIR/set-nbe-initial-data.sh" || {
+                write_warning "NBE data may already be configured (this is normal on restart)"
+            }
+        else
+            write_warning "NBE initialization script not found"
+        fi
+    else
+        write_info "API not yet running - NBE data will be set when you start the API"
+        write_info "The API will run scripts/set-nbe-initial-data.sh on first startup"
+        echo ""
+        write_step "To manually initialize NBE data after starting the API:"
+        echo "  cd $PROJECT_ROOT"
+        echo "  bash scripts/set-nbe-initial-data.sh"
+        echo ""
+    fi
+}
+
+################################################################################
 # Main Execution
 ################################################################################
 
@@ -1809,6 +1845,7 @@ main() {
     create_channel
     initialize_chaincode
     initialize_database
+    initialize_nbe_data
 
     # SKIP AUTOMATIC API AND UI STARTUP - start them manually
     # start_api_server    # COMMENTED OUT - Manual startup
@@ -1876,6 +1913,14 @@ show_manual_startup_instructions() {
     echo -e "  ${COLOR_BLUE}API:${COLOR_RESET}             http://localhost:${API_PORT}"
     echo -e "  ${COLOR_BLUE}API Health:${COLOR_RESET}      http://localhost:${API_PORT}/health"
     echo -e "  ${COLOR_BLUE}API Docs:${COLOR_RESET}        http://localhost:${API_PORT}/api-docs"
+    echo ""
+    
+    echo -e "${COLOR_CYAN}${COLOR_BOLD}After API starts - Initialize NBE Data (First time only):${COLOR_RESET}"
+    echo -e "  ${COLOR_YELLOW}bash scripts/set-nbe-initial-data.sh${COLOR_RESET}"
+    echo -e "  ${COLOR_MAGENTA}This sets:${COLOR_RESET}"
+    echo -e "    • Exchange Rate: ~119 ETB/USD"
+    echo -e "    • Retention Policy: 40% USD, 60% ETB"
+    echo -e "  ${COLOR_MAGENTA}Required for banks to allocate forex${COLOR_RESET}"
     echo ""
     
     echo -e "${COLOR_CYAN}${COLOR_BOLD}Default Login Credentials:${COLOR_RESET}"

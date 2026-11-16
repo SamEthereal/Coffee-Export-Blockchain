@@ -32,13 +32,13 @@ export class LCDocumentValidationService {
     try {
       logger.info(`[LC_VALIDATION] Checking approval eligibility for LC ${lcId}`);
 
-      // Get all documents for this contract
+      // Get all documents for this contract (include both 'active' and 'approved')
       const documents = await this.dbService.all(
         `SELECT document_id, document_type, file_name, status, verification_status
          FROM documents
          WHERE entity_type = 'CONTRACT' 
            AND entity_id = $1 
-           AND status = 'active'`,
+           AND status IN ('active', 'approved')`,
         [contractId]
       );
 
@@ -127,9 +127,11 @@ export class LCDocumentValidationService {
           'SELECT status FROM exporter_applications WHERE exporter_id = $1',
           [exporterId]
         );
-        if (!application || application.status !== 'APPROVED') {
+        if (!application || application.status.toUpperCase() !== 'APPROVED') {
           missingRequirements.push('Valid exporter license (application not approved)');
           validationDetails.exporterLicenseStatus = application?.status || 'NOT_FOUND';
+        } else {
+          validationDetails.exporterLicenseStatus = 'APPROVED';
         }
       } else if (exporter.license_status !== 'ACTIVE') {
         missingRequirements.push(`Exporter license must be ACTIVE (current: ${exporter.license_status})`);
@@ -207,7 +209,9 @@ export class LCDocumentValidationService {
    */
   async getDocumentChecklist(
     stage: 'APPROVAL' | 'ISSUANCE' | 'PAYMENT_RELEASE',
-    contractId: string
+    contractId: string,
+    exporterId?: string,
+    lcId?: string
   ): Promise<{
     stage: string;
     requirements: Array<{
@@ -223,13 +227,13 @@ export class LCDocumentValidationService {
     try {
       const requiredDocs = getRequiredDocuments(stage);
 
-      // Get available documents
+      // Get available documents (include both 'active' and 'approved' status)
       const documents = await this.dbService.all(
         `SELECT document_id, document_type, file_name
          FROM documents
          WHERE entity_type = 'CONTRACT' 
            AND entity_id = $1 
-           AND status = 'active'`,
+           AND status IN ('active', 'approved')`,
         [contractId]
       );
 
@@ -237,18 +241,76 @@ export class LCDocumentValidationService {
         documents.map((d: any) => [d.document_type, { id: d.document_id, name: d.file_name }])
       );
 
+      // For ISSUANCE stage, check system statuses
+      const systemChecks = new Map<string, boolean>();
+      if (stage === 'ISSUANCE' && exporterId) {
+        // Check exporter license
+        const exporter = await this.dbService.get(
+          'SELECT license_status FROM exporters WHERE exporter_id = $1',
+          [exporterId]
+        );
+        if (!exporter) {
+          // Fallback to exporter_applications
+          const application = await this.dbService.get(
+            "SELECT status FROM exporter_applications WHERE exporter_id = $1",
+            [exporterId]
+          );
+          systemChecks.set('EXPORTER_LICENSE', application && application.status.toUpperCase() === 'APPROVED');
+        } else {
+          systemChecks.set('EXPORTER_LICENSE', exporter.license_status === 'ACTIVE');
+        }
+
+        // Check contract approval
+        const contract = await this.dbService.get(
+          'SELECT status FROM contracts WHERE contract_id = $1',
+          [contractId]
+        );
+        systemChecks.set('CONTRACT_APPROVAL', contract?.status === 'APPROVED');
+
+        // Check forex allocation (optional)
+        if (lcId) {
+          const forex = await this.dbService.get(
+            `SELECT status FROM forex_allocations 
+             WHERE contract_id = $1 AND status IN ('ALLOCATED', 'PARTIALLY_UTILIZED', 'UTILIZED')`,
+            [contractId]
+          );
+          systemChecks.set('FOREX_ALLOCATION', !!forex);
+        }
+      }
+
       const requirements = requiredDocs.map(req => {
+        // Check if this is a system requirement (ISSUANCE stage)
+        if (systemChecks.has(req.documentType)) {
+          const available = systemChecks.get(req.documentType);
+          const status: 'AVAILABLE' | 'MISSING' | 'OPTIONAL' = available
+            ? 'AVAILABLE'
+            : req.required
+            ? 'MISSING'
+            : 'OPTIONAL';
+          return {
+            documentType: req.documentType,
+            required: req.required,
+            description: req.description,
+            category: req.category,
+            status,
+            documentId: undefined,
+            fileName: available ? '✓ System Verified' : undefined,
+          };
+        }
+
+        // Regular document check
         const available = documentMap.get(req.documentType);
+        const status: 'AVAILABLE' | 'MISSING' | 'OPTIONAL' = available
+          ? 'AVAILABLE'
+          : req.required
+          ? 'MISSING'
+          : 'OPTIONAL';
         return {
           documentType: req.documentType,
           required: req.required,
           description: req.description,
           category: req.category,
-          status: available
-            ? 'AVAILABLE'
-            : req.required
-            ? 'MISSING'
-            : 'OPTIONAL',
+          status,
           documentId: available?.id,
           fileName: available?.name,
         };

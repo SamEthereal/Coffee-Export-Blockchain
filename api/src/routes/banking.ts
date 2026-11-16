@@ -507,7 +507,9 @@ router.get('/lc/:lcID/document-checklist', authMiddleware, async (req, res) => {
     // Get document checklist
     const checklist = await lcDocumentValidationService.getDocumentChecklist(
       validationStage,
-      lc.contract_id
+      lc.contract_id,
+      lc.exporter_id,
+      lcID
     );
 
     // Get validation status
@@ -1667,12 +1669,14 @@ router.post('/lc/:lcID/issue',
                 // existed only on the ledger / in the API log). Persist
                 // the operation txId and write both trail rows,
                 // best-effort: a trail failure must not fail the issue.
+                // Also set expiry_date to match LC expiry (90 days from now).
+                const forexExpiryDate = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
                 await dbService.run(
                   `INSERT INTO forex_allocations (
                     allocation_id, forex_id, lc_id, contract_id, exporter_id,
-                    amount_usd, currency, status, blockchain_tx_id,
+                    amount_usd, requested_amount, currency, status, expiry_date, blockchain_tx_id,
                     created_at, updated_at
-                  ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), NOW())
+                  ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW(), NOW())
                   ON CONFLICT (forex_id) DO NOTHING`,
                   [
                     allocationId,
@@ -1681,8 +1685,10 @@ router.post('/lc/:lcID/issue',
                     lcContractID,
                     lcExporterID,
                     parseFloat(lcAmount.toString()),
+                    parseFloat(lcAmount.toString()), // Also set requested_amount
                     lcCurrency,
                     'REQUESTED',
+                    forexExpiryDate,
                     forexResult.txId || null
                   ]
                 );
@@ -2233,11 +2239,15 @@ router.get('/lc', async (req, res) => {
         // Document Examination queue (LCs with documents, ISSUED or
         // FOREX_ALLOCATED) and the Payment Release queue (UTILIZED with
         // verified documents) could never fill in dev mode.
+        // ✅ FIXED: Also load documents linked to the LC's CONTRACT (entity_type='CONTRACT')
+        // since exporters upload documents to the contract, not the LC itself.
         const pgDocs = await dbService.all(
           `SELECT document_id, document_type, file_name, file_path, status,
                   verification_status, verified, uploaded_at, uploaded_by,
-                  entity_type, entity_id
-           FROM documents WHERE status = 'active' AND entity_type = 'LC'`,
+                  entity_type, entity_id, contract_id
+           FROM documents 
+           WHERE status = 'active' 
+             AND (entity_type = 'LC' OR entity_type = 'CONTRACT')`,
           []
         );
         const docsByLC = new Map<string, any[]>();
@@ -2254,10 +2264,22 @@ router.get('/lc', async (req, res) => {
             uploadedBy: d.uploaded_by,
             entityType: d.entity_type,
             entityId: d.entity_id,
+            contractId: d.contract_id,
           };
-          const list = docsByLC.get(d.entity_id) || [];
-          list.push(doc);
-          docsByLC.set(d.entity_id, list);
+          
+          // Map LC documents directly by entity_id (the LC ID)
+          if (d.entity_type === 'LC') {
+            const list = docsByLC.get(d.entity_id) || [];
+            list.push(doc);
+            docsByLC.set(d.entity_id, list);
+          }
+          
+          // Map CONTRACT documents by contract_id (will be matched to LCs later)
+          if (d.entity_type === 'CONTRACT' && d.entity_id) {
+            const list = docsByLC.get(d.entity_id) || [];
+            list.push(doc);
+            docsByLC.set(d.entity_id, list);
+          }
         }
 
         // Customs clearance per contract: the Payment Release queue requires
@@ -2297,6 +2319,7 @@ router.get('/lc', async (req, res) => {
           documents: [
             ...(docsByLC.get(lc.lc_id) || []),
             ...(lc.lc_number && lc.lc_number !== lc.lc_id ? (docsByLC.get(lc.lc_number) || []) : []),
+            ...(lc.contract_id ? (docsByLC.get(lc.contract_id) || []) : []),
           ],
           customsClearanceStatus: clearedContracts.has(lc.contract_id) ? 'CLEARED' : '',
           customsCleared: clearedContracts.has(lc.contract_id),

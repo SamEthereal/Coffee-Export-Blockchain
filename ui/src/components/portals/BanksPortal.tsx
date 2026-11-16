@@ -67,6 +67,7 @@ import {
   LocalShipping,
   Edit,
   Cancel,
+  Close,
   Message as MessageOutlined,
   Send as SendOutlined,
   Assessment,
@@ -261,6 +262,7 @@ const BanksPortal: React.FC = () => {
   const [uploadEntityType, setUploadEntityType] = useState<string>('');
   const [selectedContract, setSelectedContract] = useState<SalesContract | null>(null);
   const [selectedLC, setSelectedLC] = useState<LetterOfCredit | null>(null);
+  const [documentChecklist, setDocumentChecklist] = useState<any>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [dialogType, setDialogType] = useState<'lc' | 'forex' | 'permit' | 'lcDetails' | 'lcAmend' | 'cad' | 'advance' | 'consignment' | null>(null);
   
@@ -278,6 +280,8 @@ const BanksPortal: React.FC = () => {
   const [paymentReleaseOpen, setPaymentReleaseOpen] = useState(false);
   const [lcAmendmentOpen, setLcAmendmentOpen] = useState(false);
   const [forexDetailsOpen, setForexDetailsOpen] = useState(false);
+  const [utilizeDialogOpen, setUtilizeDialogOpen] = useState(false);
+  const [utilizeForm, setUtilizeForm] = useState({ forexId: '', maxAmount: 0, utilizedAmount: 0 });
   const [paymentDetailsOpen, setPaymentDetailsOpen] = useState(false);
   // Settle Payment dialog state (slice-6 fix: POST /payments/:id/settle
   // had no UI caller anywhere in the app)
@@ -896,6 +900,9 @@ const BanksPortal: React.FC = () => {
           .then(result => {
             if (result.success) {
               devLog(`[BANKS] ⚡ Forex loaded: ${result.data?.length || 0}`);
+              if (result.data && result.data.length > 0) {
+                devLog(`[BANKS] 🔍 Forex statuses:`, result.data.map((f: any) => ({ id: f.forexId, status: f.status })));
+              }
               return result.data || [];
             }
             return [];
@@ -1291,15 +1298,25 @@ const BanksPortal: React.FC = () => {
     setDialogType('lcDetails');
     setDialogOpen(true);
     setLcDetailsLoading(true); // Show loading indicator
+    setDocumentChecklist(null); // Reset checklist
     
     try {
       // Fetch complete LC data and related shipments
-      const [lcResponse, shipmentsResult] = await Promise.all([
+      const token = localStorage.getItem('authToken');
+      
+      const [lcResponse, shipmentsResult, checklistResponse] = await Promise.all([
         apiFetch(`/banking/lc/${encodeURIComponent(lc.lcId)}`, {
-          headers: getAuthHeaders(),
+          headers: token ? { 'Authorization': `Bearer ${token}` } : undefined,
         }),
         // Fetch all shipments and filter by contractId client-side
-        api.getShipments({})
+        api.getShipments({}),
+        // Fetch document checklist
+        apiFetch(`/banking/lc/${encodeURIComponent(lc.lcId)}/document-checklist`, {
+          headers: token ? { 'Authorization': `Bearer ${token}` } : undefined,
+        }).catch(err => {
+          console.warn('[BANKS] Document checklist fetch failed:', err);
+          return null;
+        })
       ]);
 
       // Process LC data
@@ -1329,6 +1346,15 @@ const BanksPortal: React.FC = () => {
       } else {
         console.warn('[BANKS] ⚠️ API fetch failed, using cached LC');
         setSelectedLC(lc);
+      }
+
+      // Process document checklist
+      if (checklistResponse && checklistResponse.ok) {
+        const checklistResult = await checklistResponse.json();
+        if (checklistResult.success && checklistResult.data) {
+          devLog('[BANKS] ✅ Document checklist loaded:', checklistResult.data);
+          setDocumentChecklist(checklistResult.data);
+        }
       }
     } catch (error) {
       console.error('[BANKS] ❌ Error fetching LC details:', error);
@@ -2258,35 +2284,48 @@ const BanksPortal: React.FC = () => {
   // Utilise Forex — POST /forex/utilize (BANKS). Chaincode UtilizeForex:
   // ALLOCATED → UTILIZED, amount > 0 and <= AllocatedAmount.
   const handleUtilizeForex = async (forex: any) => {
-    const token = localStorage.getItem('authToken');
-    if (!token) {
-      showError('Authentication Required', 'You are not authenticated');
-      return;
-    }
     const max = Number(forex.allocatedAmount) || 0;
     if (max <= 0) {
       showError('Nothing To Utilise', `Forex ${forex.forexId} has no allocated amount.`);
       return;
     }
-    const input = window.prompt(
-      `Utilise forex ${forex.forexId} — enter the amount in USD (max ${max.toLocaleString()}):`,
-      String(max)
-    );
-    if (input === null) return;
-    const utilizedAmount = Number(input);
-    if (!Number.isFinite(utilizedAmount) || utilizedAmount <= 0 || utilizedAmount > max) {
-      showError('Invalid Amount', `Enter an amount greater than 0 and no more than ${max.toLocaleString()} USD.`);
+    
+    // Open utilize dialog with pre-filled max amount
+    setUtilizeForm({
+      forexId: forex.forexId,
+      maxAmount: max,
+      utilizedAmount: max // Default to full amount
+    });
+    setUtilizeDialogOpen(true);
+  };
+  
+  const confirmUtilizeForex = async () => {
+    const token = localStorage.getItem('authToken');
+    if (!token) {
+      showError('Authentication Required', 'You are not authenticated');
       return;
     }
+    
+    const { forexId, maxAmount, utilizedAmount } = utilizeForm;
+    
+    // Convert to number in case it's a string from the input
+    const amount = Number(utilizedAmount);
+    
+    if (!Number.isFinite(amount) || amount <= 0 || amount > maxAmount) {
+      showError('Invalid Amount', `Enter an amount greater than 0 and no more than ${maxAmount.toLocaleString()} USD.`);
+      return;
+    }
+    
     try {
       const response = await apiFetch('/forex/utilize', {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ forexId: forex.forexId, utilizedAmount }),
+        body: JSON.stringify({ forexId, utilizedAmount: amount }),
       });
       const result = await response.json();
       if (result.success) {
-        showSuccess('Forex Utilised', `${utilizedAmount.toLocaleString()} USD of forex ${forex.forexId} utilised.`);
+        showSuccess('Forex Utilised', `${amount.toLocaleString()} USD of forex ${forexId} utilised.`);
+        setUtilizeDialogOpen(false);
         setForexDetailsOpen(false);
         loadBankingData();
       } else {
@@ -3902,13 +3941,9 @@ const BanksPortal: React.FC = () => {
                               View Details
                             </SecondaryButton>
                             
-                            {forex.status === 'REQUESTED' && (
-                              <Chip size="small" color="warning" label="Awaiting NBE confirmation" />
-                            )}
-                            
                             <PrimaryButton brand="BANKS"
                               size="small"
-                              disabled={!forex.isDraft && forex.status !== 'CONFIRMED'}
+                              disabled={!forex.isDraft && forex.status !== 'REQUESTED' && forex.status !== 'CONFIRMED'}
                               startIcon={<CheckCircle />}
                               loadingLabel="Allocating…"
                               ledgerWrite
@@ -3935,14 +3970,18 @@ const BanksPortal: React.FC = () => {
                                   }
                                   setSelectedForex(forex);
                                   setAllocationPolicyReady(true);
+                                
+                                // Auto-generate approval reference with timestamp
+                                const approvalRef = `FOREX-ALLOC-${Date.now()}`;
+                                
                                 setAllocationForm({
                                   forexId: forex.forexId,
                                   lcId: forex.lcId || '',
                                   amount: forex.requestedAmount || forex.allocatedAmount || 0,
                                   exchangeRate: activeRate,
                                   retentionRate,
-                                  officer: user?.username || user?.fullName || 'Bank Officer',
-                                  approvalRef: '',
+                                  officer: user?.fullName || user?.username || 'Bank Officer',
+                                  approvalRef: approvalRef,
                                   expiryDate: forex.expiryDate || new Date(Date.now() + 90 * 24 * 60 * 60 * 1000).toISOString(),
                                 });
                                 setAllocationDialogOpen(true);
@@ -3951,7 +3990,7 @@ const BanksPortal: React.FC = () => {
                                 }
                               }}
                             >
-                              {forex.isDraft ? 'Request Forex' : forex.status === 'REQUESTED' ? 'Await NBE' : 'Allocate Forex'}
+                              {forex.isDraft ? 'Request Forex' : 'Allocate Forex'}
                             </PrimaryButton>
 
                             {/* Reject: REQUESTED/CONFIRMED → REJECTED
@@ -4452,12 +4491,80 @@ const BanksPortal: React.FC = () => {
       {/* Forex Allocation Details Dialog */}
             <PortalDialog brand="BANKS" open={forexDetailsOpen} onClose={() => setForexDetailsOpen(false)} maxWidth="md" title="Forex Allocation Details" icon={<CurrencyExchange />} actions={<>
           <GhostButton brand="BANKS" onClick={() => setForexDetailsOpen(false)}>Close</GhostButton>
-          {/* No "Confirm" button here: ConfirmForex is NBE-only
-              (POST /forex/:id/confirm, NBEMSP) — a bank calling it would
-              403, and the old button only showed a success toast without
-              calling anything. The real bank actions on a forex are
-              Reject (REQUESTED/CONFIRMED) and Utilise (ALLOCATED). */}
-          {selectedForex && (selectedForex.status === 'REQUESTED' || selectedForex.status === 'CONFIRMED') && (
+          {/* Bank actions on forex: Allocate (REQUESTED), Reject (REQUESTED/CONFIRMED), Utilise (ALLOCATED) */}
+          {selectedForex && selectedForex.status === 'REQUESTED' && (
+            <>
+              <PrimaryButton 
+                brand="BANKS"
+                onClick={async () => {
+                  // Close details dialog and open allocation dialog
+                  setForexDetailsOpen(false);
+                  
+                  // Fetch NBE exchange rate and retention policy
+                  setAllocationPolicyReady(false);
+                  try {
+                    const token = localStorage.getItem('authToken');
+                    const currency = String(selectedForex.currency || 'USD').toUpperCase();
+                    
+                    const [rateResponse, policyResponse] = await Promise.all([
+                      apiFetch(`/forex/rates/${encodeURIComponent(currency)}/current`, {
+                        method: 'GET',
+                        headers: token ? { 'Authorization': `Bearer ${token}` } : undefined,
+                      }),
+                      apiFetch('/forex/retention-policy/COFFEE', {
+                        method: 'GET',
+                        headers: token ? { 'Authorization': `Bearer ${token}` } : undefined,
+                      }),
+                    ]);
+                    
+                    const [rateResult, policyResult] = await Promise.all([
+                      rateResponse.json(),
+                      policyResponse.json()
+                    ]);
+                    
+                    const activeRate = Number(rateResult.data?.midRate ?? rateResult.data?.MidRate);
+                    const retentionRate = Number(policyResult.data?.retentionRate ?? policyResult.data?.RetentionRate);
+                    
+                    if (!rateResult.success || !policyResult.success || !Number.isFinite(activeRate) || activeRate <= 0 || !Number.isFinite(retentionRate) || retentionRate < 0) {
+                      showError('NBE Ledger Data Required', 'An active exchange rate and COFFEE retention policy are required before forex can be allocated.');
+                      return;
+                    }
+                    
+                    // Auto-generate approval reference with timestamp
+                    const approvalRef = `FOREX-ALLOC-${Date.now()}`;
+                    
+                    setAllocationForm({
+                      forexId: selectedForex.forexId,
+                      lcId: selectedForex.lcId || '',
+                      amount: selectedForex.requestedAmount || 0,
+                      exchangeRate: activeRate,
+                      retentionRate: retentionRate,
+                      officer: user?.fullName || user?.username || 'Bank Officer',
+                      approvalRef: approvalRef,
+                      expiryDate: selectedForex.expiryDate || new Date(Date.now() + 90 * 24 * 60 * 60 * 1000).toISOString(),
+                    });
+                    setAllocationPolicyReady(true);
+                  } catch (error) {
+                    showError('NBE Ledger Data Required', 'Unable to load the current exchange rate and retention policy.');
+                  }
+                  
+                  setAllocationDialogOpen(true);
+                }}
+                startIcon={<CheckCircle />}
+              >
+                Allocate Forex
+              </PrimaryButton>
+              <DangerButton brand="BANKS"
+                onClick={() => handleRejectForex(selectedForex)}
+                loadingLabel="Rejecting…"
+                ledgerWrite
+                color="error"
+              >
+                Reject
+              </DangerButton>
+            </>
+          )}
+          {selectedForex && selectedForex.status === 'CONFIRMED' && (
             <DangerButton brand="BANKS"
               onClick={() => handleRejectForex(selectedForex)}
               loadingLabel="Rejecting…"
@@ -4525,13 +4632,13 @@ const BanksPortal: React.FC = () => {
                 {/* Exchange Rate */}
                 <Grid item xs={12} md={6}>
                   <Typography variant="body2" color="text.secondary">Exchange Rate</Typography>
-                  {selectedForex.status === 'REQUESTED' || selectedForex.exchangeRate === 0 ? (
+                  {selectedForex.status === 'REQUESTED' || !selectedForex.exchangeRate || selectedForex.exchangeRate === 0 ? (
                     <Typography variant="h6" fontWeight={600} color="warning.main">
                       Pending Allocation
                     </Typography>
                   ) : (
                     <Typography variant="h6" fontWeight={600}>
-                      {selectedForex.exchangeRate.toFixed(2)} ETB/USD
+                      {Number(selectedForex.exchangeRate).toFixed(2)} ETB/USD
                     </Typography>
                   )}
                 </Grid>
@@ -4540,9 +4647,9 @@ const BanksPortal: React.FC = () => {
                 <Grid item xs={12} md={6}>
                   <Paper sx={{ p: 2, bgcolor: '#f5f5f5', border: '1px solid #e0e0e0' }}>
                     <Typography variant="body2" color="text.secondary">
-                      {selectedForex.retentionRate}% USD Retention
+                      {selectedForex.retentionRate || 0}% USD Retention
                     </Typography>
-                    {selectedForex.status === 'REQUESTED' || selectedForex.retentionRate === 0 ? (
+                    {selectedForex.status === 'REQUESTED' || !selectedForex.retentionRate || selectedForex.retentionRate === 0 ? (
                       <>
                         <Typography variant="h5" fontWeight={700} color="warning.main">
                           Pending Allocation
@@ -5184,7 +5291,9 @@ const BanksPortal: React.FC = () => {
                       'Authorization': `Bearer ${token}`,
                       'Content-Type': 'application/json',
                     },
-                    body: JSON.stringify({ terms: selectedLC.terms || '' }),
+                    body: JSON.stringify({ 
+                      terms: selectedLC.terms || 'Standard UCP 600 terms and conditions apply' 
+                    }),
                   });
                   const result = await response.json();
                   if (result.success) {
@@ -5425,11 +5534,19 @@ const BanksPortal: React.FC = () => {
                       <Grid item xs={12} md={6}>
                         <Typography variant="body2" color="black">Expiry Date</Typography>
                         <Typography variant="body1" fontWeight={600}>
-                          {selectedLC.expiryDate ? new Date(selectedLC.expiryDate).toLocaleDateString('en-US', {
-                            year: 'numeric',
-                            month: 'long',
-                            day: 'numeric'
-                          }) : 'N/A'}
+                          {(() => {
+                            console.log('[BANKS] Expiry Date Debug:', {
+                              expiryDate: selectedLC.expiryDate,
+                              ExpiryDate: (selectedLC as any).ExpiryDate,
+                              expiry_date: (selectedLC as any).expiry_date,
+                              allKeys: Object.keys(selectedLC).filter(k => k.toLowerCase().includes('expiry'))
+                            });
+                            return selectedLC.expiryDate ? new Date(selectedLC.expiryDate).toLocaleDateString('en-US', {
+                              year: 'numeric',
+                              month: 'long',
+                              day: 'numeric'
+                            }) : 'N/A';
+                          })()}
                         </Typography>
                       </Grid>
                       <Grid item xs={12}>
@@ -5528,6 +5645,166 @@ const BanksPortal: React.FC = () => {
                     )}
                   </Paper>
                 </Grid>
+
+                {/* Document Compliance Check */}
+                {documentChecklist && (
+                  <Grid item xs={12}>
+                    <Divider sx={{ my: 2 }} />
+                    <Typography variant="h6" gutterBottom sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                      ✅ Document Compliance Check
+                    </Typography>
+                    
+                    {/* Validation Summary */}
+                    <Alert 
+                      severity={
+                        documentChecklist.validation?.canApprove || documentChecklist.validation?.canIssue
+                          ? 'success' 
+                          : 'warning'
+                      }
+                      sx={{ mb: 2 }}
+                      icon={
+                        documentChecklist.validation?.canApprove || documentChecklist.validation?.canIssue
+                          ? <CheckCircle />
+                          : <Warning />
+                      }
+                    >
+                      <Typography variant="body2" fontWeight={600}>
+                        {documentChecklist.validation?.canApprove || documentChecklist.validation?.canIssue
+                          ? `✅ All requirements met for ${documentChecklist.currentStage}`
+                          : `⚠️ ${documentChecklist.validation?.missingDocuments?.length || documentChecklist.validation?.missingRequirements?.length || 0} requirement(s) not met`
+                        }
+                      </Typography>
+                      {documentChecklist.validation?.reason && (
+                        <Typography variant="body2" sx={{ mt: 0.5 }}>
+                          {documentChecklist.validation.reason}
+                        </Typography>
+                      )}
+                    </Alert>
+
+                    {/* Current Stage Badge */}
+                    <Box sx={{ mb: 2 }}>
+                      <Chip 
+                        label={`Current Stage: ${documentChecklist.currentStage}`}
+                        color={
+                          documentChecklist.currentStage === 'APPROVAL' ? 'warning' :
+                          documentChecklist.currentStage === 'ISSUANCE' ? 'info' :
+                          'success'
+                        }
+                        sx={{ fontWeight: 600 }}
+                      />
+                    </Box>
+
+                    {/* Requirements Checklist Table */}
+                    <TableContainer component={Paper}>
+                      <Table size="small">
+                        <TableHead>
+                          <TableRow>
+                            <TableCell width="40%"><strong>Requirement</strong></TableCell>
+                            <TableCell width="20%"><strong>Category</strong></TableCell>
+                            <TableCell width="15%"><strong>Required</strong></TableCell>
+                            <TableCell width="25%"><strong>Status</strong></TableCell>
+                          </TableRow>
+                        </TableHead>
+                        <TableBody>
+                          {documentChecklist.checklist?.requirements?.map((req: any, index: number) => (
+                            <TableRow 
+                              key={req.documentType + index}
+                              sx={{ 
+                                bgcolor: req.status === 'MISSING' && req.required ? 'error.lighter' : 'transparent'
+                              }}
+                            >
+                              <TableCell>
+                                <Box>
+                                  <Typography variant="body2" fontWeight={600}>
+                                    {req.documentType.replace(/_/g, ' ')}
+                                  </Typography>
+                                  <Typography variant="caption" color="text.secondary">
+                                    {req.description}
+                                  </Typography>
+                                  {req.fileName && (
+                                    <Typography variant="caption" display="block" color="success.main" sx={{ mt: 0.5 }}>
+                                      📄 {req.fileName}
+                                    </Typography>
+                                  )}
+                                </Box>
+                              </TableCell>
+                              <TableCell>
+                                <Chip 
+                                  label={req.category} 
+                                  size="small"
+                                  variant="outlined"
+                                  sx={{ fontSize: '0.7rem' }}
+                                />
+                              </TableCell>
+                              <TableCell>
+                                {req.required ? (
+                                  <Chip label="Required" size="small" color="error" />
+                                ) : (
+                                  <Chip label="Optional" size="small" color="default" />
+                                )}
+                              </TableCell>
+                              <TableCell>
+                                <Chip 
+                                  label={req.status}
+                                  size="small"
+                                  color={
+                                    req.status === 'AVAILABLE' ? 'success' :
+                                    req.status === 'MISSING' ? 'error' : 
+                                    'default'
+                                  }
+                                  icon={
+                                    req.status === 'AVAILABLE' ? <CheckCircle sx={{ fontSize: 16 }} /> :
+                                    req.status === 'MISSING' ? <Close sx={{ fontSize: 16 }} /> :
+                                    undefined
+                                  }
+                                />
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </TableContainer>
+
+                    {/* Additional Validation Details */}
+                    {documentChecklist.validation?.validationDetails && (
+                      <Box sx={{ mt: 2, p: 2, bgcolor: 'grey.100', borderRadius: 1 }}>
+                        <Typography variant="caption" fontWeight={600} display="block" gutterBottom>
+                          Validation Details:
+                        </Typography>
+                        <Grid container spacing={1}>
+                          {documentChecklist.validation.validationDetails.contractStatus && (
+                            <Grid item xs={6}>
+                              <Typography variant="caption">
+                                Contract Status: <strong>{documentChecklist.validation.validationDetails.contractStatus}</strong>
+                              </Typography>
+                            </Grid>
+                          )}
+                          {documentChecklist.validation.validationDetails.exporterLicenseStatus && (
+                            <Grid item xs={6}>
+                              <Typography variant="caption">
+                                License Status: <strong>{documentChecklist.validation.validationDetails.exporterLicenseStatus}</strong>
+                              </Typography>
+                            </Grid>
+                          )}
+                          {documentChecklist.validation.validationDetails.requiredCount !== undefined && (
+                            <Grid item xs={6}>
+                              <Typography variant="caption">
+                                Required Documents: <strong>{documentChecklist.validation.validationDetails.requiredCount}</strong>
+                              </Typography>
+                            </Grid>
+                          )}
+                          {documentChecklist.validation.validationDetails.availableCount !== undefined && (
+                            <Grid item xs={6}>
+                              <Typography variant="caption">
+                                Available Documents: <strong>{documentChecklist.validation.validationDetails.availableCount}</strong>
+                              </Typography>
+                            </Grid>
+                          )}
+                        </Grid>
+                      </Box>
+                    )}
+                  </Grid>
+                )}
 
                 {/* Exporter Historical Trend - Show before approval */}
                 {selectedLC.status === 'REQUESTED' && selectedLC.exporterId && (
@@ -6026,6 +6303,83 @@ const BanksPortal: React.FC = () => {
           });
         }}
       />
+
+      {/* Utilize Forex Dialog */}
+      <PortalDialog
+        brand="BANKS"
+        open={utilizeDialogOpen}
+        onClose={() => setUtilizeDialogOpen(false)}
+        title="Utilize Forex"
+        icon={<CheckCircle />}
+        actions={
+          <>
+            <GhostButton brand="BANKS" onClick={() => setUtilizeDialogOpen(false)}>
+              Cancel
+            </GhostButton>
+            <PrimaryButton
+              brand="BANKS"
+              onClick={confirmUtilizeForex}
+              startIcon={<CheckCircle />}
+            >
+              Confirm Utilization
+            </PrimaryButton>
+          </>
+        }
+      >
+        <Box sx={{ pt: 2 }}>
+          <Typography variant="body2" color="text.secondary" gutterBottom>
+            Enter the amount to utilize from this forex allocation. You can utilize the full amount or a partial amount.
+          </Typography>
+          
+          <Grid container spacing={2} sx={{ mt: 1 }}>
+            <Grid item xs={12}>
+              <TextField
+                fullWidth
+                label="Forex ID"
+                value={utilizeForm.forexId}
+                disabled
+                size="small"
+              />
+            </Grid>
+            
+            <Grid item xs={12} md={6}>
+              <TextField
+                fullWidth
+                label="Available Amount (USD)"
+                value={`$${utilizeForm.maxAmount.toLocaleString()}`}
+                disabled
+                size="small"
+              />
+            </Grid>
+            
+            <Grid item xs={12} md={6}>
+              <TextField
+                fullWidth
+                label="Amount to Utilize (USD)"
+                type="number"
+                value={utilizeForm.utilizedAmount || ''}
+                onChange={(e) => {
+                  const val = e.target.value === '' ? 0 : Number(e.target.value);
+                  setUtilizeForm({ ...utilizeForm, utilizedAmount: val });
+                }}
+                inputProps={{
+                  min: 0,
+                  max: utilizeForm.maxAmount,
+                  step: 0.01
+                }}
+                size="small"
+                helperText={`Maximum: $${utilizeForm.maxAmount.toLocaleString()}`}
+                required
+              />
+            </Grid>
+          </Grid>
+          
+          <Alert severity="info" sx={{ mt: 2 }}>
+            <strong>Forex Utilization:</strong> This marks the forex as used for the shipment/payment. 
+            Once utilized, the amount is considered spent and cannot be reused.
+          </Alert>
+        </Box>
+      </PortalDialog>
 
       {/* SWIFT Compose Dialog */}
       <SwiftComposeDialog
@@ -7114,23 +7468,23 @@ const BanksPortal: React.FC = () => {
               {/* LC Summary */}
               <Alert severity="info" sx={{ mb: 3 }}>
                 <Grid container spacing={2}>
-                  <Grid item xs={3}>
+                  <Grid item xs={12} sm={6} md={3}>
                     <Typography variant="caption" color="text.secondary">LC Amount:</Typography>
                     <Typography variant="body1" fontWeight="bold">
                       ${selectedLC.amount?.toLocaleString()} {selectedLC.currency}
                     </Typography>
                   </Grid>
-                  <Grid item xs={3}>
+                  <Grid item xs={12} sm={6} md={3}>
                     <Typography variant="caption" color="text.secondary">Exporter:</Typography>
-                    <Typography variant="body1">{selectedLC.exporterId}</Typography>
+                    <Typography variant="body1" sx={{ wordBreak: 'break-word' }}>{selectedLC.exporterId}</Typography>
                   </Grid>
-                  <Grid item xs={3}>
+                  <Grid item xs={12} sm={6} md={3}>
                     <Typography variant="caption" color="text.secondary">Buyer:</Typography>
-                    <Typography variant="body1">{selectedLC.buyerName || 'N/A'}</Typography>
+                    <Typography variant="body1" sx={{ wordBreak: 'break-word' }}>{selectedLC.buyerName || 'N/A'}</Typography>
                   </Grid>
-                  <Grid item xs={3}>
+                  <Grid item xs={12} sm={6} md={3}>
                     <Typography variant="caption" color="text.secondary">Status:</Typography>
-                    <Typography variant="body1" fontWeight="bold">{selectedLC.status}</Typography>
+                    <Typography variant="body1" fontWeight="bold" sx={{ wordBreak: 'break-word' }}>{selectedLC.status}</Typography>
                   </Grid>
                 </Grid>
               </Alert>
