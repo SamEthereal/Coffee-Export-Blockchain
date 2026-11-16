@@ -440,17 +440,20 @@ export class PostDeliveryWorkflowService {
             // '0' relying on the chaincode's auto-map from the forex
             // allocation — but the chaincode looks the allocation up as
             // GetState("FOREX_" + lcID) while the real allocation key is
-            // FOREX_<lcID>_REQUEST, so the lookup always misses and
-            // SettlePayment refuses honestly ("exchange rate must be
-            // positive"). The chaincode key is out of scope for this API
-            // fix, so resolve the rates here and pass them explicitly:
-            // ledger first (ReadForex <lcID>_REQUEST), PG mirror as
-            // fallback. If neither yields positive rates, refuse before
-            // any chain write, like the SWIFT guard above.
+            // FOREX_FOREX_<lcID>_REQUEST (double prefix: the API passes
+            // forexID FOREX_<lcID>_REQUEST to RequestForex and the
+            // chaincode stores it at "FOREX_" + forexID — verified in
+            // CouchDB, single-prefix keys 404). The chaincode key is out
+            // of scope for this API fix, so resolve the rates here and
+            // pass them explicitly: ledger first (ReadForex with the
+            // forexID FOREX_<lcID>_REQUEST, which ReadForex prefixes
+            // again to the real key), PG mirror as fallback. If neither
+            // yields positive rates, refuse before any chain write, like
+            // the SWIFT guard above.
             let exchangeRate = 0;
             let retentionRate = 0;
             try {
-              const forexResult = await this.fabricService.queryChaincode('ReadForex', [`${lcReference}_REQUEST`]);
+              const forexResult = await this.fabricService.queryChaincode('ReadForex', [`FOREX_${lcReference}_REQUEST`]);
               const fx = forexResult?.success ? forexResult.data : null;
               const fxRate = Number(fx?.exchangeRate ?? fx?.ExchangeRate ?? 0);
               const fxRet = Number(fx?.retentionRate ?? fx?.RetentionRate ?? 0);
