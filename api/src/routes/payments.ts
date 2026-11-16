@@ -339,11 +339,27 @@ router.post('/initiate',
       try {
         const existingPayment = await fabricService.queryChaincode('ReadPayment', [paymentID]);
         if (existingPayment.success && existingPayment.data) {
+          // Obs. 5 (2026-11-16): this idempotent re-initiate path
+          // returned 200 with no txId, although the initiate tx is
+          // stored on the PG row. Surface it (best-effort PG lookup)
+          // the way the fresh-initiate 201 below does.
+          let existingTxId: string | null = null;
+          try {
+            const pgRow: any = await postgresDb.get(
+              `SELECT blockchain_tx_id FROM payments WHERE payment_id = $1`,
+              [paymentID]
+            );
+            existingTxId = pgRow?.blockchain_tx_id || null;
+          } catch (txLookupErr) {
+            logger.warn(`[PAYMENT] Could not look up initiate txId for existing payment ${paymentID}:`, txLookupErr);
+          }
           return res.status(200).json({
             success: true,
             alreadyExists: true,
             message: 'Payment already initiated for this shipment',
-            data: existingPayment.data,
+            data: withTxId(existingPayment.data, existingTxId),
+            txId: existingTxId,
+            blockchainTxId: existingTxId,
             timestamp: new Date().toISOString(),
           });
         }
@@ -1174,10 +1190,15 @@ router.post('/:paymentID/settle',
         // Mirror into Postgres: the old handler only updated the chain, so
         // the payments row kept its pre-settlement status. Best-effort —
         // the settlement already committed on-chain.
+        // Obs. 2 (2026-11-16): the mirror updated status only, so the row
+        // kept blockchain_tx_id from InitiatePayment even after settle.
+        // Point it at the settle tx too (COALESCE keeps the old tx when
+        // the settle result carries none) — the same way the initiate
+        // handler sets it.
         try {
           await postgresDb.run(
-            `UPDATE payments SET status = 'SETTLED' WHERE payment_id = $1`,
-            [paymentID]
+            `UPDATE payments SET status = 'SETTLED', blockchain_tx_id = COALESCE($2, blockchain_tx_id) WHERE payment_id = $1`,
+            [paymentID, result.txId || null]
           );
         } catch (mirrorErr) {
           logger.warn(`[PAYMENT] Could not mirror settlement of ${paymentID} to Postgres:`, mirrorErr);

@@ -3,11 +3,13 @@
 
 import express from 'express';
 import { FabricService } from '../services/fabricService';
+import { DatabaseService } from '../services/databaseService';
 import { logger } from '../utils/logger';
 import { authMiddleware } from '../middleware/auth';
 
 const router = express.Router();
 const fabricService = FabricService.getInstance();
+const postgresDb = DatabaseService.getInstance();
 
 /**
  * @swagger
@@ -184,25 +186,92 @@ export default router;
 /**
  * GET /api/v1/blockchain/history/:entityId
  * Get blockchain transaction history for a specific entity
+ *
+ * Obs. 3 (2026-11-16): this returned `data: [], totalTransactions: 0`
+ * for a shipment with many on-chain transactions. Root cause: it called
+ * auditService.getBlockchainAuditLogs({ entityId }) with NO entityType,
+ * and that method only queries the chaincode (QueryAuditLogsByEntity,
+ * keyed AUDIT_<entityType>_<entityId>_) when BOTH are given — with
+ * entityType missing it fell through to `return []`. The audit logs
+ * exist; the handler never asked for them by type.
+ *
+ * Fix: resolve the entity's type(s) first — from the PG audit_trail
+ * mirror (the authoritative list of types recorded for this id), falling
+ * back to the id-prefix convention (SHIP- → SHIPMENT, PAY- → PAYMENT,
+ * …) when PG has no rows — then query the ledger per type and merge.
  */
+const HISTORY_PREFIX_ENTITY_TYPES: Record<string, string[]> = {
+  SHIP: ['SHIPMENT'],
+  PAY: ['PAYMENT'],
+  LC: ['LC'],
+  CONT: ['CONTRACT'],
+  FOREX: ['FOREX', 'FOREX_ALLOCATION'],
+  DECL: ['CUSTOMS_DECLARATION'],
+  QI: ['QUALITY_INSPECTION'],
+  PERMIT: ['PERMIT'],
+  EXP: ['EXPORTER'],
+  APP: ['EXPORTER_APPLICATION'],
+  SWMSG: ['SWIFT_MESSAGE'],
+  DOC: ['DOCUMENT'],
+  REP: ['REPATRIATION'],
+  ECX: ['ECX_LOT'],
+};
+
 router.get('/history/:entityId', authMiddleware, async (req, res) => {
   try {
     const { entityId } = req.params;
-    
+
     logger.info(`[BLOCKCHAIN] Fetching transaction history for entity: ${entityId}`);
-    
+
     // Get audit logs from blockchain that reference this entity
     const auditService = (await import('../services/auditService')).default;
-    
-    const blockchainLogs = await auditService.getBlockchainAuditLogs({
-      entityId
-    });
-    
+
+    // Resolve entity type(s): PG audit_trail first (types actually
+    // recorded for this id), prefix convention as fallback.
+    let entityTypes: string[] = [];
+    try {
+      const typeRows = await postgresDb.all(
+        `SELECT DISTINCT entity_type FROM audit_trail WHERE entity_id = $1`,
+        [entityId]
+      );
+      entityTypes = typeRows.map((r: any) => r.entity_type).filter(Boolean);
+    } catch (typeErr: any) {
+      logger.warn(`[BLOCKCHAIN] Could not resolve entity types for ${entityId} from audit_trail:`, typeErr?.message);
+    }
+    if (entityTypes.length === 0) {
+      const prefix = Object.keys(HISTORY_PREFIX_ENTITY_TYPES)
+        .sort((a, b) => b.length - a.length)
+        .find((p) => entityId === p || entityId.startsWith(`${p}-`) || entityId.startsWith(`${p}_`));
+      if (prefix) entityTypes = HISTORY_PREFIX_ENTITY_TYPES[prefix];
+    }
+
+    let blockchainLogs: any[] = [];
+    if (entityTypes.length > 0) {
+      const perType = await Promise.all(
+        entityTypes.map((entityType) => auditService.getBlockchainAuditLogs({ entityType, entityId }))
+      );
+      const seen = new Set<string>();
+      for (const logs of perType) {
+        for (const log of logs || []) {
+          const key = log?.logId || log?.LogID || JSON.stringify(log?.signature || log);
+          if (seen.has(key)) continue;
+          seen.add(key);
+          blockchainLogs.push(log);
+        }
+      }
+      blockchainLogs.sort((a: any, b: any) =>
+        Date.parse(a?.signature?.timestamp || a?.createdAt || '') - Date.parse(b?.signature?.timestamp || b?.createdAt || '')
+      );
+    } else {
+      logger.info(`[BLOCKCHAIN] No entity type resolved for ${entityId}; returning empty history`);
+    }
+
     res.json({
       success: true,
       data: blockchainLogs || [],
       metadata: {
         entityId,
+        entityTypes,
         totalTransactions: blockchainLogs?.length || 0
       },
       timestamp: new Date().toISOString()

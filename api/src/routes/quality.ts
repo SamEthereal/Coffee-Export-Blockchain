@@ -491,21 +491,25 @@ router.post('/inspections',
       // auto-create before its removal) from tripping the guard: an explicit
       // request for such a shipment proceeds to a real on-chain inspection.
       const pendingInspection = await postgresDb.get(
-        'SELECT inspection_id FROM quality_inspections WHERE shipment_id = $1 AND status = $2 AND blockchain_tx_id IS NOT NULL',
+        'SELECT inspection_id, blockchain_tx_id FROM quality_inspections WHERE shipment_id = $1 AND status = $2 AND blockchain_tx_id IS NOT NULL',
         [shipmentID, 'PENDING']
       );
 
       if (pendingInspection) {
         // Return the existing inspection instead of an error — a genuine
         // duplicate while a real on-chain inspection is PENDING.
+        // Obs. 5: carry its chain txId, like the fresh-request path.
         logger.info(`Shipment ${shipmentID} already has inspection ${pendingInspection.inspection_id}, returning existing`);
         return res.status(200).json({
           success: true,
-          data: { 
-            inspectionID: pendingInspection.inspection_id, 
+          data: {
+            inspectionID: pendingInspection.inspection_id,
             status: 'PENDING',
+            blockchain_tx_id: pendingInspection.blockchain_tx_id || null,
+            txId: pendingInspection.blockchain_tx_id || null,
             message: 'Inspection already exists for this shipment'
           },
+          txId: pendingInspection.blockchain_tx_id || null,
           timestamp: new Date().toISOString()
         });
       }
@@ -560,6 +564,7 @@ router.post('/inspections',
           return res.json({
             success: true,
             data: { inspectionID, status: 'PENDING', blockchain_tx_id: null, blockchainSynced: true, recoveredFromLedger: true },
+            txId: null,
             timestamp: new Date().toISOString()
           });
         }
@@ -620,7 +625,8 @@ router.post('/inspections',
 
       res.json({
         success: true,
-        data: { inspectionID, status: 'PENDING', blockchain_tx_id, blockchainSynced: true },
+        data: { inspectionID, status: 'PENDING', blockchain_tx_id, blockchainSynced: true, txId: blockchain_tx_id },
+        txId: blockchain_tx_id,
         timestamp: new Date().toISOString()
       });
     } catch (error: any) {
@@ -982,8 +988,10 @@ ${remarks || 'No additional remarks'}
           overall: resolvedOverall,
           cupQuality: cupQualityScores,
           blockchain_tx_id,
+          txId: blockchain_tx_id,
           blockchainSynced: true
         },
+        txId: blockchain_tx_id,
         timestamp: new Date().toISOString()
       });
     } catch (error: any) {
@@ -1197,10 +1205,12 @@ router.post('/inspections/:inspectionID/approve',
           status: 'APPROVED', 
           certificateNo: certificateNumber,
           blockchain_tx_id: chainSync.blockchain_tx_id,
+          txId: chainSync.blockchain_tx_id,
           blockchainSynced: chainSync.blockchainSynced,
           blockchainWarning: chainSync.blockchainWarning,
           customsAutoTriggered: true
         },
+        txId: chainSync.blockchain_tx_id,
         timestamp: new Date().toISOString()
       });
     } catch (error: any) {

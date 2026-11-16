@@ -2211,10 +2211,12 @@ router.post('/declaration/:declarationId/review',
           status: 'UNDER_INSPECTION',
           assignedOfficer: officerName,
           blockchain_tx_id,
+          txId: blockchain_tx_id,
           blockchainSynced,
           blockchainError,
           message: 'Inspection scheduled successfully'
         },
+        txId: blockchain_tx_id,
         timestamp: new Date().toISOString()
       });
     } catch (error: any) {
@@ -2462,10 +2464,12 @@ router.post('/declaration/:declarationId/complete-inspection',
           status: 'UNDER_REVIEW',
           inspectionResult: inspectionResult || 'PASSED',
           blockchain_tx_id,
+          txId: blockchain_tx_id,
           blockchainSynced,
           blockchainError,
           message: 'Inspection completed successfully. Declaration moved to UNDER_REVIEW for final clearance.'
         },
+        txId: blockchain_tx_id,
         timestamp: new Date().toISOString()
       });
     } catch (error: any) {
@@ -2821,6 +2825,7 @@ router.post('/declaration/:declarationId/clear',
           status: 'CLEARED',
           clearedBy: clearedBy || user.username,
           blockchain_tx_id: result.blockchainTxId || null,
+          txId: result.blockchainTxId || null,
           blockchainSynced: result.blockchainSynced,
           blockchainError: result.blockchainError,
           message: 'Declaration cleared successfully',
@@ -2829,6 +2834,7 @@ router.post('/declaration/:declarationId/clear',
             shipmentIdValue: declaration.shipment_id
           }
         },
+        txId: result.blockchainTxId || null,
         timestamp: new Date().toISOString()
       });
     } catch (error: any) {

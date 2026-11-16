@@ -382,7 +382,7 @@ export class PostDeliveryWorkflowService {
     shipmentId: string,
     lcReference: string,
     userId: string
-  ): Promise<{ success: boolean; error?: string }> {
+  ): Promise<{ success: boolean; error?: string; status?: number; code?: string }> {
     try {
       logger.info(`📄 Recording LC settlement for shipment: ${shipmentId}`);
 
@@ -398,6 +398,42 @@ export class PostDeliveryWorkflowService {
             const payingBank = payment.payingBank || 'Issuing Bank';
             const payingBankBIC = payment.payingBankBic || '';
             const swiftReference = payment.swiftDetails?.swiftReference || `SETTLE-${lcReference}`;
+
+            // F17 (2026-11-16): the tab-0 settle route (payments.ts
+            // checkSwiftForSettle) refuses settlement when the SWIFT
+            // message for the reference is REJECTED, but this
+            // post-delivery path invoked SettlePayment directly with no
+            // such lookup — a REJECTED message blocked tab 0 but not
+            // tab 5. SettlePayment itself never looks at any SWIFT
+            // message, so the API must check here too, with the same
+            // rule and the same two lookups (by reference, and by the
+            // messages linked to this payment, so a fresh reference
+            // cannot dodge a rejected one). Refusal returns before any
+            // chain write AND before the DB update below, so a blocked
+            // settlement leaves lc_settled false.
+            try {
+              const byReference = await this.fabricService.queryChaincode('QuerySWIFTMessagesByReference', [swiftReference]);
+              const byPayment = await this.fabricService.queryChaincode('QuerySWIFTMessagesByPayment', [paymentID]);
+              if (!byReference.success || !byPayment.success) {
+                const lookupErr = !byReference.success ? byReference.error : byPayment.error;
+                logger.warn(`⚠️ SWIFT lookup failed for post-delivery settlement of ${paymentID}: ${lookupErr} — refusing to settle blind`);
+                return { success: false, error: `Could not verify SWIFT message for reference ${swiftReference} on the ledger: ${lookupErr || 'query failed'}`, status: 503, code: 'SWIFT_LOOKUP_FAILED' };
+              }
+              const swiftMessages: any[] = [
+                ...(Array.isArray(byReference.data) ? byReference.data : []),
+                ...(Array.isArray(byPayment.data) ? byPayment.data : []),
+              ];
+              const rejected = swiftMessages.find((m: any) => (m?.status || m?.Status) === 'REJECTED');
+              if (rejected) {
+                const rejectedId = rejected.messageId || rejected.MessageID || rejected.messageID || swiftReference;
+                const reason = rejected.rejectionReason || rejected.RejectionReason;
+                logger.warn(`⛔ Post-delivery settlement of ${paymentID} refused: SWIFT message ${rejectedId} is REJECTED`);
+                return { success: false, error: `Cannot settle payment: SWIFT message ${rejectedId} (reference ${swiftReference}) is REJECTED${reason ? `: ${reason}` : ''}`, status: 400, code: 'SWIFT_MESSAGE_REJECTED' };
+              }
+            } catch (swiftGuardErr: any) {
+              logger.warn(`⚠️ SWIFT guard failed for post-delivery settlement of ${paymentID}: ${swiftGuardErr?.message} — refusing to settle blind`);
+              return { success: false, error: `Could not verify SWIFT message for reference ${swiftReference} on the ledger: ${swiftGuardErr?.message || 'lookup failed'}`, status: 503, code: 'SWIFT_LOOKUP_FAILED' };
+            }
 
             const settleResult = await this.fabricService.invokeChaincode('SettlePayment', [
               paymentID,
