@@ -170,13 +170,9 @@ const NavigationBar: React.FC = () => {
   const canManageUsers = canManageUsersRole(user?.role);
 
   const getOrganizationLogo = (role: string) => {
-    // One consistent header lockup for every portal: same image height,
-    // natural width per logo, quiet white chip (see OrganizationLogo).
-    return (
-      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-        <OrganizationLogo role={role} height={40} />
-      </Box>
-    );
+    // Full header lockup for every portal: emblem in its white chip +
+    // organisation name + portal subtitle (see OrganizationLogo).
+    return <OrganizationLogo role={role} height={40} />;
   };
 
   const getRoleColor = (role: string) => {
