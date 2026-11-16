@@ -12,7 +12,7 @@ import {
 import {
   Add, Warehouse, Assignment, CheckCircle, LocalShipping,
   Coffee, TrendingUp, Assessment, Visibility, Refresh,
-  AttachMoney, Warning, Science, Person, Cancel,
+  AttachMoney, Warning, Science, Cancel,
 } from '@mui/icons-material';
 import { DataGrid, GridColDef } from '@mui/x-data-grid';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, ResponsiveContainer, BarChart, Bar } from 'recharts';
@@ -29,7 +29,6 @@ import { NotificationDialog } from '@/components/common/NotificationDialog';
 import AuditTrailViewer from './AuditTrailViewer';
 import { DocumentValidationDialog } from './DocumentValidationDialog';
 import { apiFetch } from '@/config/api.config';
-import UserManagement from '@/components/admin/UserManagement';
 import { useAuth } from '@/contexts/AuthContext';
 import { BlockchainBadge } from '@/components/blockchain';
 import BlockchainSignatureVerification from '@/components/documents/BlockchainSignatureVerification';
@@ -478,7 +477,9 @@ const ECXPortal: React.FC = () => {
       { index: 0, label: `Coffee Lots`, icon: <Coffee sx={{ fontSize: 20 }} />, roles: ['ECX', 'ADMIN', 'ECX Officer', 'Grading Officer', 'Warehouse Officer', 'Registration Officer', 'Release Officer'] },
       { index: 1, label: 'Market Prices', icon: <TrendingUp sx={{ fontSize: 20 }} />, roles: ['ECX', 'ADMIN', 'ECX Officer'] },
       { index: 2, label: 'Grading Standards', icon: <Science sx={{ fontSize: 20 }} />, roles: ['ECX', 'ADMIN', 'ECX Officer', 'Grading Officer'] },
-      { index: 3, label: 'User Management', icon: <Person sx={{ fontSize: 20 }} />, roles: ['ADMIN', 'ECX', 'ECX Portal Administrator'] },
+      // User Management used to be tab 3 here. It moved to the account
+      // menu (Settings → User Management, /settings?section=users); the
+      // ?tab= redirect below keeps old deep-links working.
     ];
     
     if (isSuperAdmin) return allTabs;
@@ -493,8 +494,11 @@ const ECXPortal: React.FC = () => {
     }
   }, [tabValue, visibleTabs]);
 
-  // ?tab=<index> deep-link from global search results.
-  useTabFromQuery(setTabValue, visibleTabs.map((tab) => tab.index));
+  // ?tab=<index> deep-link from global search results. Old links to the
+  // moved User Management tab (3) redirect to Settings.
+  useTabFromQuery(setTabValue, visibleTabs.map((tab) => tab.index), {
+    3: '/settings?section=users',
+  });
 
   const stats = {
     warehoused: lots.filter(l => l.status === 'WAREHOUSED').length,
@@ -541,11 +545,12 @@ const ECXPortal: React.FC = () => {
             { icon: <Assignment />, label: 'Grade 3-4 (Good)', value: allLots.filter(l => ['Grade 3', 'Grade 4'].includes(l.grade || '')).length, color: '#ff9800' },
             { icon: <Warning />, label: 'Grade 5 (Fair)', value: allLots.filter(l => l.grade === 'Grade 5').length, color: '#f44336' },
           ] : [
-            // Tab 3: User Management - Show user stats
-            { icon: <Person />, label: 'Total Users', value: '0', color: BRAND_COLOR },
-            { icon: <CheckCircle />, label: 'Active Users', value: '0', color: '#4caf50' },
-            { icon: <Assessment />, label: 'Admins', value: '0', color: '#ff9800' },
-            { icon: <Person />, label: 'Inactive', value: '0', color: '#9e9e9e' },
+            // Fallback (no tab matches): grade KPIs. The old final branch
+            // was the removed User Management tab's hardcoded '0' stats.
+            { icon: <Science />, label: 'Grade 1 (Premium)', value: allLots.filter(l => l.grade === 'Grade 1').length, color: '#4caf50' },
+            { icon: <Coffee />, label: 'Grade 2 (High)', value: allLots.filter(l => l.grade === 'Grade 2').length, color: BRAND_COLOR },
+            { icon: <Assignment />, label: 'Grade 3-4 (Good)', value: allLots.filter(l => ['Grade 3', 'Grade 4'].includes(l.grade || '')).length, color: '#ff9800' },
+            { icon: <Warning />, label: 'Grade 5 (Fair)', value: allLots.filter(l => l.grade === 'Grade 5').length, color: '#f44336' },
           ];
 
           return kpis.map((kpi, index) => (
@@ -742,11 +747,6 @@ const ECXPortal: React.FC = () => {
           <Typography variant="body2" color="text.secondary" sx={{ mt: 2 }}>
             Source: GET /ecx/grading-standards (ECX Grading Manual 2024). Chaincode: moisture above 12% rejects the lot for every grade — there is no grade with a 13% limit.
           </Typography>
-        </PortalTabPanel>
-
-        <PortalTabPanel value={tabValue} index={3}>
-          {/* User Management Tab */}
-          <UserManagement />
         </PortalTabPanel>
       </PortalCard>
 

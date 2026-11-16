@@ -54,7 +54,6 @@ import { GridColDef } from '@mui/x-data-grid';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
 import api, { formatDate, formatCurrency, getStatusColor } from '@/utils/api';
 import { apiFetch, getAuthHeaders } from '@/config/api.config';
-import AuditTrailTable from './AuditTrailTable';
 import AuditTrailViewer from './AuditTrailViewer';
 import { useTabFromQuery } from '@/hooks/useTabFromQuery';
 
@@ -81,7 +80,6 @@ import PhoneInput from '@/components/common/PhoneInput';
 import { validatePhoneNumber } from '@/utils/fieldValidation';
 import { CustomsClearedShipments } from './CustomsClearedShipments';
 import { DocumentUploadDialog } from './DocumentUploadDialog';
-import UserManagement from '@/components/admin/UserManagement';
 import { DocumentManagementPanel } from '@/components/documents';
 import BlockchainSignatureVerification from '@/components/documents/BlockchainSignatureVerification';
 import { BlockchainStatusIcon, BlockchainTxChip, BlockchainBadge } from '@/components/blockchain';
@@ -168,8 +166,10 @@ const CustomsPortal: React.FC = () => {
       { index: 3, label: 'Cleared', icon: <CheckCircle />, roles: ['CUSTOMS', 'ADMIN', 'CUSTOMS Portal Administrator', 'Customs Officer', 'Clearance Officer'] },
       { index: 4, label: 'Rejected', icon: <Cancel />, roles: ['CUSTOMS', 'ADMIN', 'CUSTOMS Portal Administrator', 'Customs Officer'] },
       { index: 5, label: 'Border Crossing', icon: <DirectionsBoat />, roles: ['CUSTOMS', 'ADMIN', 'CUSTOMS Portal Administrator', 'Customs Officer', 'Border Officer', 'Inspection Officer'] },
-      { index: 6, label: 'User Management', icon: <Person />, roles: ['ADMIN', 'CUSTOMS', 'CUSTOMS Portal Administrator'] },
-      { index: 7, label: 'Audit Trail', icon: <Assessment />, roles: ['CUSTOMS', 'ADMIN', 'CUSTOMS Portal Administrator', 'Customs Officer', 'Inspection Officer', 'Clearance Officer'] },
+      // User Management (6) and Audit Trail (7) used to be tabs here.
+      // They moved to the account menu (Settings → User Management /
+      // System Management, /settings?section=users | system); the
+      // ?tab= redirect below keeps old deep-links working.
     ];
     
     if (isSuperAdmin) return allTabs;
@@ -184,8 +184,12 @@ const CustomsPortal: React.FC = () => {
     }
   }, [tabValue, visibleTabs]);
 
-  // ?tab=<index> deep-link from global search results.
-  useTabFromQuery(setTabValue, visibleTabs.map((tab) => tab.index));
+  // ?tab=<index> deep-link from global search results. Old links to the
+  // moved tabs (6 User Management, 7 Audit Trail) redirect to Settings.
+  useTabFromQuery(setTabValue, visibleTabs.map((tab) => tab.index), {
+    6: '/settings?section=users',
+    7: '/settings?section=system',
+  });
   
   
   // Auto-mapped data for inspection scheduling
@@ -750,16 +754,11 @@ ${solution}`);
     }
   };
 
-  // Audit Trail State
+  // Audit Trail State (entity-scoped viewer dialog; the tab moved to
+  // Settings → System Management, so the tab's stats state is gone).
   const [showAuditTrail, setShowAuditTrail] = useState(false);
   const [auditEntityType, setAuditEntityType] = useState<'DECLARATION' | 'SHIPMENT' | 'INSPECTION'>('DECLARATION');
   const [auditEntityId, setAuditEntityId] = useState<string>('');
-  const [auditStats, setAuditStats] = useState({
-    totalActivities: 0,
-    todaysActions: 0,
-    blockchainVerified: 0,
-    organizationsInvolved: 0,
-  });
   const [rejectionDetailsDialogOpen, setRejectionDetailsDialogOpen] = useState(false);
 
   // API-computed duty for the declaration in the clearance dialog.
@@ -1136,11 +1135,8 @@ ${solution}`);
     loadBorderCrossingStats();
   }, []);
 
-  useEffect(() => {
-    if (tabValue === 7) {
-      loadAuditStats();
-    }
-  }, [tabValue]);
+  // (Audit Trail moved to Settings → System Management; its stats
+  // loader and state were removed with the tab.)
 
   const loadCustomsOfficers = async () => {
     const token = localStorage.getItem('authToken');
@@ -1346,41 +1342,6 @@ ${solution}`);
       setDeclarations([]);
     } finally {
       setLoading(false);
-    }
-  };
-
-  const loadAuditStats = async () => {
-    try {
-      const response = await apiFetch('/audit/portal/recent?limit=1000', {
-        headers: getAuthHeaders()
-      });
-      
-      const data = await response.json();
-      
-      if (data.success && data.data) {
-        const logs = data.data.logs || [];
-        
-        const totalActivities = logs.length;
-        const todaysActions = logs.filter((log: any) => {
-          const logDate = new Date(log.created_at);
-          const oneDayAgo = new Date();
-          oneDayAgo.setDate(oneDayAgo.getDate() - 1);
-          return logDate >= oneDayAgo;
-        }).length;
-        const blockchainVerified = logs.filter((log: any) => log.metadata?.blockchainVerified === true).length;
-        const organizationsInvolved = new Set(
-          logs.map((log: any) => log.performed_by_org).filter(Boolean)
-        ).size;
-        
-        setAuditStats({
-          totalActivities,
-          todaysActions,
-          blockchainVerified,
-          organizationsInvolved,
-        });
-      }
-    } catch (error) {
-      console.error('[CUSTOMS] Failed to load audit stats:', error);
     }
   };
 
@@ -2315,18 +2276,6 @@ ${rejectionForm.officerNotes ? '\n[INTERNAL NOTES - NOT VISIBLE TO EXPORTER]:\n'
           { icon: <LocalShipping />, key: 'active-crossings-5', label: 'Active Crossings', value: borderCrossingStats.active, color: '#ff9800', index: 5 },
           { icon: <CheckCircle />, key: 'cleared-5', label: 'Cleared', value: borderCrossingStats.cleared, color: '#4caf50', index: 5 },
         ];
-      case 6: // User Management
-        return [
-          { icon: <Person />, key: 'total-users-6', label: 'Total Users', value: customsOfficers.length, color: '#2196f3', index: 6 },
-          { icon: <Security />, key: 'active-officers-6', label: 'Active Officers', value: customsOfficers.filter(o => o.status === 'ACTIVE').length, color: '#4caf50', index: 6 },
-          { icon: <Assignment />, key: 'pending-approvals-6', label: 'Pending Approvals', value: 0, color: '#ff9800', index: 6 },
-        ];
-      case 7: // Audit Trail
-        return [
-          { icon: <Assessment />, key: 'total-activities-7', label: 'Total Activities', value: '—', color: '#2196f3', index: 7 },
-          { icon: <Security />, key: 'security-events-7', label: 'Security Events', value: '—', color: '#ff9800', index: 7 },
-          { icon: <Assignment />, key: 'todays-actions-7', label: 'Today\'s Actions', value: '—', color: '#4caf50', index: 7 },
-        ];
       default:
         return [
           { icon: <LocalShipping />, key: 'submitted-0', label: 'Submitted', value: stats.submitted, color: '#2196f3', index: 0 },
@@ -2539,22 +2488,6 @@ ${rejectionForm.officerNotes ? '\n[INTERNAL NOTES - NOT VISIBLE TO EXPORTER]:\n'
             </Typography>
             <BorderCrossingTab />
           </Box>
-        </PortalTabPanel>
-
-        <PortalTabPanel value={tabValue} index={6}>
-          {/* User Management Tab */}
-          <UserManagement />
-        </PortalTabPanel>
-
-        <PortalTabPanel value={tabValue} index={7}>
-          {/* Audit Trail Tab */}
-          <AuditTrailTable
-            title="Customs Portal - Complete Transaction History"
-            autoRefresh={true}
-            refreshInterval={60000}
-            showStats={false}
-            maxHeight={700}
-          />
         </PortalTabPanel>
       </Box>
 

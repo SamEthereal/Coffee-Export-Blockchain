@@ -22,12 +22,26 @@
 # an exporterId on the token — exporters.ts:1146 — and there is no seeded
 # exporter login; it needs an approved exporter account).
 #
-# Tab counts are current UI truth (61 top-level tabs): ECTA 11 (Phytosanitary
-# Certificates was added as tab 10, ECTAPortal.tsx:451), ECX 4, Exporter 8,
-# Banks 11, Customs 8, NBE 9, Shipping 10. NBE sub-tabs (NBEPortal.tsx:188-190):
-# forex All / Allocated / Requested (no Expired sub-tab — the code says so),
-# SWIFT All Messages / Analytics & Charts / Compliance Alerts,
-# Analytics Overview / Trends / Breakdown.
+# Tab counts are current UI truth (52 top-level portal tabs + 9 NBE sub-tabs
+# + 11 Settings checks = 72): ECTA 9, ECX 3, Exporter 7, Banks 9 (flat
+# tabIndex 0-6, 9, 10 — the hierarchy's System Management parent is gone,
+# see below), Customs 6, NBE 8, Shipping 10. NBE sub-tabs
+# (NBEPortal.tsx:188-190): forex All / Allocated / Requested (no Expired
+# sub-tab — the code says so), SWIFT All Messages / Analytics & Charts /
+# Compliance Alerts, Analytics Overview / Trends / Breakdown.
+#
+# 2026-11-16 layout move — User Management and Audit Trail left every
+# portal tab bar for the account menu (Settings → User Management /
+# System Management, pages/settings.tsx). The 11 per-portal checks of
+# those two tabs (GET /users × 6 roles, GET /audit/portal/recent × 5
+# roles) moved verbatim into the new SETTINGS section below: same
+# endpoints, same role tokens, no coverage lost — the count is unchanged
+# by the move. Two further corrections made while renumbering (the suite
+# had drifted from UI truth): NBE Payment Release was a real 10th tab
+# (now 7th) that was never checked, and Shipping Pre-Shipping was a real
+# 11th tab (now 10th) that the suite mislabelled "9 Users" — both are
+# checked now, which is why the total is 72, not 70. Pass criteria are
+# unchanged: HTTP 200 + non-error body, exit code = number of failures.
 # NOTE on the NBE forex sub-tabs: GET /forex reads no req.query at all
 # (forex.ts:122), so Allocated/Requested filtering is client-side in the
 # portal; the checks below hit the real alias GET /forex/allocations and
@@ -53,7 +67,7 @@ BLOCKED_TESTS=0
 UNCOVERED_COUNT=0
 
 echo "════════════════════════════════════════════════════════════════" | tee "$TEST_OUTPUT"
-echo "PORTAL TABS VERIFICATION - ALL 7 PORTALS, 61 TABS + 9 SUB-TABS" | tee -a "$TEST_OUTPUT"
+echo "PORTAL TABS VERIFICATION - ALL 7 PORTALS, 52 TABS + 9 SUB-TABS + 11 SETTINGS CHECKS" | tee -a "$TEST_OUTPUT"
 echo "API: $API_BASE" | tee -a "$TEST_OUTPUT"
 echo "Started: $(date)" | tee -a "$TEST_OUTPUT"
 echo "════════════════════════════════════════════════════════════════" | tee -a "$TEST_OUTPUT"
@@ -138,9 +152,12 @@ done
 echo "" | tee -a "$TEST_OUTPUT"
 
 # ==================================================================================
-# PORTAL 1: ECTA — 11 tabs (ECTAPortal.tsx allTabs :441-451)
+# PORTAL 1: ECTA — 9 tabs (ECTAPortal.tsx allTabs; User Management and
+# Audit Trail moved to Settings. Indices 7–8 stay RESERVED — Post-Delivery
+# Audits and Phytosanitary Certificates keep 9 and 10, so an old ?tab=7 /
+# ?tab=8 deep-link can never be mistaken for the new tabs.)
 # ==================================================================================
-echo "📋 PORTAL 1: ECTA - 11 TABS" | tee -a "$TEST_OUTPUT"
+echo "📋 PORTAL 1: ECTA - 9 TABS" | tee -a "$TEST_OUTPUT"
 echo "────────────────────────────────────────────────────────────────" | tee -a "$TEST_OUTPUT"
 check_tab "ECTA" "0 Pending Applications" "/exporters/exporter-applications?status=pending" "$TOKEN_ECTA"
 check_tab "ECTA" "1 Approved Exporters" "/exporters?status=approved" "$TOKEN_ECTA"
@@ -149,27 +166,24 @@ check_tab "ECTA" "3 Quality Control" "/quality/inspections?limit=500" "$TOKEN_EC
 check_tab "ECTA" "4 License Renewals" "/exporters/renewals" "$TOKEN_ECTA"
 check_tab "ECTA" "5 Analytics" "/analytics/dashboard" "$TOKEN_ECTA"
 check_tab "ECTA" "6 Pre-shipment Inspection" "/quality/pre-shipment" "$TOKEN_ECTA"
-check_tab "ECTA" "7 User Management" "/users" "$TOKEN_ECTA"
-check_tab "ECTA" "8 Audit Trail" "/audit/portal/recent" "$TOKEN_ECTA"
 check_tab "ECTA" "9 Post-Delivery Audits" "/quality/post-delivery" "$TOKEN_ECTA"
 check_tab "ECTA" "10 Phytosanitary Certificates" "/phytosanitary" "$TOKEN_ECTA"
 echo "" | tee -a "$TEST_OUTPUT"
 
 # ==================================================================================
-# PORTAL 2: ECX — 4 tabs (ECXPortal.tsx)
+# PORTAL 2: ECX — 3 tabs (ECXPortal.tsx; User Management moved to Settings)
 # ==================================================================================
-echo "📋 PORTAL 2: ECX - 4 TABS" | tee -a "$TEST_OUTPUT"
+echo "📋 PORTAL 2: ECX - 3 TABS" | tee -a "$TEST_OUTPUT"
 echo "────────────────────────────────────────────────────────────────" | tee -a "$TEST_OUTPUT"
 check_tab "ECX" "0 Coffee Lots" "/ecx/lots" "$TOKEN_ECX"
 check_tab "ECX" "1 Market Prices" "/ecx/market" "$TOKEN_ECX"
 check_tab "ECX" "2 Grading Standards" "/ecx/grading-standards" "$TOKEN_ECX"
-check_tab "ECX" "3 User Management" "/users" "$TOKEN_ECX"
 echo "" | tee -a "$TEST_OUTPUT"
 
 # ==================================================================================
-# PORTAL 3: EXPORTER — 8 tabs (ExporterPortal.tsx)
+# PORTAL 3: EXPORTER — 7 tabs (ExporterPortal.tsx; Audit Trail moved to Settings)
 # ==================================================================================
-echo "📋 PORTAL 3: EXPORTER - 8 TABS" | tee -a "$TEST_OUTPUT"
+echo "📋 PORTAL 3: EXPORTER - 7 TABS" | tee -a "$TEST_OUTPUT"
 echo "────────────────────────────────────────────────────────────────" | tee -a "$TEST_OUTPUT"
 check_tab "Exporter" "0 Dashboard" "/exporters/me/profile" "$TOKEN_EXPORTER"
 check_tab "Exporter" "1 Contracts" "/contracts" "$TOKEN_ADMIN"
@@ -178,13 +192,15 @@ check_tab "Exporter" "3 Shipments" "/shipments" "$TOKEN_ADMIN"
 check_tab "Exporter" "4 Customs" "/customs/declarations" "$TOKEN_ADMIN"
 check_tab "Exporter" "5 LC & Payments" "/banking/lc" "$TOKEN_ADMIN"
 check_tab "Exporter" "6 Reports" "/analytics/export-report" "$TOKEN_ADMIN"
-check_tab "Exporter" "7 Audit Trail" "/audit/portal/recent" "$TOKEN_ADMIN"
 echo "" | tee -a "$TEST_OUTPUT"
 
 # ==================================================================================
-# PORTAL 4: BANKS — 11 tabs (BanksPortal.tsx allTabs :615-628)
+# PORTAL 4: BANKS — 9 tabs (BanksPortal.tsx flat tabIndex 0-6, 9, 10; the
+# System Management parent group is gone — its only remaining child,
+# Analytics, is a parent of its own now — and User Management (7) /
+# Audit Trail (8) moved to Settings)
 # ==================================================================================
-echo "📋 PORTAL 4: BANKS - 11 TABS" | tee -a "$TEST_OUTPUT"
+echo "📋 PORTAL 4: BANKS - 9 TABS" | tee -a "$TEST_OUTPUT"
 echo "────────────────────────────────────────────────────────────────" | tee -a "$TEST_OUTPUT"
 check_tab "Banks" "0 Payment Methods" "/banking/lc" "$TOKEN_BANK"
 check_tab "Banks" "1 Forex Allocations" "/forex" "$TOKEN_BANK"
@@ -193,16 +209,15 @@ check_tab "Banks" "3 Payment Release" "/payments" "$TOKEN_BANK"
 check_tab "Banks" "4 SWIFT Messages" "/swift/messages" "$TOKEN_BANK"
 check_tab "Banks" "5 LC Settlements" "/shipments?status=DELIVERED" "$TOKEN_BANK"
 check_tab "Banks" "6 Analytics" "/analytics/dashboard" "$TOKEN_BANK"
-check_tab "Banks" "7 User Management" "/users" "$TOKEN_BANK"
-check_tab "Banks" "8 Audit Trail" "/audit/portal/recent" "$TOKEN_BANK"
 check_tab "Banks" "9 LC Discrepancies" "/banking/lc" "$TOKEN_BANK" "Tab fetches GET /banking/lc only (LCDiscrepancyTab.tsx:56); resolve/waive are POST /banking/lc/:id/discrepancy/:id/{resolve,waive} (banking.ts:3555,3612) and need a discrepancy id."
 check_tab "Banks" "10 All LCs" "/banking/lc" "$TOKEN_BANK"
 echo "" | tee -a "$TEST_OUTPUT"
 
 # ==================================================================================
-# PORTAL 5: CUSTOMS — 8 tabs (CustomsPortal.tsx allTabs :146-155)
+# PORTAL 5: CUSTOMS — 6 tabs (CustomsPortal.tsx allTabs; User Management
+# and Audit Trail moved to Settings)
 # ==================================================================================
-echo "📋 PORTAL 5: CUSTOMS - 8 TABS" | tee -a "$TEST_OUTPUT"
+echo "📋 PORTAL 5: CUSTOMS - 6 TABS" | tee -a "$TEST_OUTPUT"
 echo "────────────────────────────────────────────────────────────────" | tee -a "$TEST_OUTPUT"
 check_tab "Customs" "0 Submitted" "/customs/declarations?status=submitted" "$TOKEN_CUSTOMS"
 check_tab "Customs" "1 Inspecting" "/customs/declarations?status=inspecting" "$TOKEN_CUSTOMS"
@@ -210,14 +225,15 @@ check_tab "Customs" "2 Under Review" "/customs/declarations?status=under_review"
 check_tab "Customs" "3 Cleared" "/customs/declarations?status=cleared" "$TOKEN_CUSTOMS"
 check_tab "Customs" "4 Rejected" "/customs/declarations?status=rejected" "$TOKEN_CUSTOMS"
 check_tab "Customs" "5 Border Crossing" "/bordercrossing" "$TOKEN_CUSTOMS"
-check_tab "Customs" "6 User Management" "/users" "$TOKEN_CUSTOMS"
-check_tab "Customs" "7 Audit Trail" "/audit/portal/recent" "$TOKEN_CUSTOMS"
 echo "" | tee -a "$TEST_OUTPUT"
 
 # ==================================================================================
-# PORTAL 6: NBE — 9 tabs + 9 sub-tabs (NBEPortal.tsx allTabs :781-793, :188-190)
+# PORTAL 6: NBE — 8 tabs + 9 sub-tabs (NBEPortal.tsx allTabs; User
+# Management and Audit Trail moved to Settings. Index 7–8 stay RESERVED —
+# Payment Release keeps 9. It was a real tab that this script never
+# checked — it is checked now.)
 # ==================================================================================
-echo "📋 PORTAL 6: NBE - 9 TABS + 9 SUB-TABS" | tee -a "$TEST_OUTPUT"
+echo "📋 PORTAL 6: NBE - 8 TABS + 9 SUB-TABS" | tee -a "$TEST_OUTPUT"
 echo "────────────────────────────────────────────────────────────────" | tee -a "$TEST_OUTPUT"
 check_tab "NBE" "0 Forex Monitoring" "/forex" "$TOKEN_NBE"
 check_tab "NBE" "1 LC Monitoring" "/nbe/lc-monitoring" "$TOKEN_NBE"
@@ -226,8 +242,7 @@ check_tab "NBE" "3 SWIFT Monitoring" "/swift/messages" "$TOKEN_NBE"
 check_tab "NBE" "4 Forex Repatriation" "/repatriation" "$TOKEN_NBE"
 check_tab "NBE" "5 Policy & Compliance" "/forex/retention-policy/coffee" "$TOKEN_NBE" "Chaincode-backed with a 40% COFFEE default fallback (retention.ts:85), so it answers 200 without Fabric."
 check_tab "NBE" "6 Analytics" "/analytics/dashboard" "$TOKEN_NBE"
-check_tab "NBE" "7 User Management" "/users" "$TOKEN_NBE"
-check_tab "NBE" "8 Audit Trail" "/audit/portal/recent" "$TOKEN_NBE"
+check_tab "NBE" "9 Payment Release" "/payments/pending-release" "$TOKEN_NBE" "Tab loads GET /payments/pending-release (NBEPortal.tsx loadPendingRelease); never checked before 2026-11-16."
 echo "" | tee -a "$TEST_OUTPUT"
 echo "   NBE sub-tabs:" | tee -a "$TEST_OUTPUT"
 check_tab "NBE" "0 Forex sub-tab: All" "/forex" "$TOKEN_NBE"
@@ -242,7 +257,11 @@ check_tab "NBE" "6 Analytics sub-tab: Breakdown" "/analytics/breakdown" "$TOKEN_
 echo "" | tee -a "$TEST_OUTPUT"
 
 # ==================================================================================
-# PORTAL 7: SHIPPING — 10 tabs (ShippingPortal.tsx; tabs 0-8 are lifecycle statuses)
+# PORTAL 7: SHIPPING — 10 tabs (ShippingPortal.tsx mainTabs 0-9; the
+# Users tab (10) moved to Settings. The old script labelled tab 9 "Users"
+# — wrong: 9 is Pre-Shipping, which loads every shipment via
+# api.getShipments() (GET /shipments) and filters client-side, so the
+# check below hits GET /shipments unfiltered.)
 # ==================================================================================
 echo "📋 PORTAL 7: SHIPPING - 10 TABS" | tee -a "$TEST_OUTPUT"
 echo "────────────────────────────────────────────────────────────────" | tee -a "$TEST_OUTPUT"
@@ -255,7 +274,29 @@ check_tab "Shipping" "5 Departed" "/shipments?status=DEPARTED" "$TOKEN_SHIPPING"
 check_tab "Shipping" "6 In Transit" "/shipments?status=IN_TRANSIT" "$TOKEN_SHIPPING"
 check_tab "Shipping" "7 Destination Arrived" "/shipments?status=DESTINATION_ARRIVED" "$TOKEN_SHIPPING"
 check_tab "Shipping" "8 Delivered" "/shipments?status=DELIVERED" "$TOKEN_SHIPPING"
-check_tab "Shipping" "9 Users" "/users" "$TOKEN_SHIPPING"
+check_tab "Shipping" "9 Pre-Shipping" "/shipments" "$TOKEN_SHIPPING" "Tab shows CREATED / PERMIT_ISSUED / CUSTOMS_* / INSPECTION_* / CANCELLED rows from the unfiltered GET /shipments result (client-side filter)."
+echo "" | tee -a "$TEST_OUTPUT"
+
+# ==================================================================================
+# SETTINGS (account menu) — User Management + System Management, 11 checks
+# (pages/settings.tsx). These are the 11 per-portal tab checks removed
+# above (GET /users × 6 roles, GET /audit/portal/recent × 5 roles),
+# moved verbatim: same endpoints, same role tokens, same pass rule.
+# Nothing is double-counted and nothing is dropped.
+# ==================================================================================
+echo "⚙️  SETTINGS (account menu → Settings) - 11 CHECKS" | tee -a "$TEST_OUTPUT"
+echo "────────────────────────────────────────────────────────────────" | tee -a "$TEST_OUTPUT"
+check_tab "Settings" "User Management (ECTA admin)" "/users" "$TOKEN_ECTA"
+check_tab "Settings" "User Management (ECX admin)" "/users" "$TOKEN_ECX"
+check_tab "Settings" "User Management (Banks admin)" "/users" "$TOKEN_BANK"
+check_tab "Settings" "User Management (Customs admin)" "/users" "$TOKEN_CUSTOMS"
+check_tab "Settings" "User Management (NBE admin)" "/users" "$TOKEN_NBE"
+check_tab "Settings" "User Management (Shipping admin)" "/users" "$TOKEN_SHIPPING"
+check_tab "Settings" "System Management — Audit Trail (ECTA admin)" "/audit/portal/recent" "$TOKEN_ECTA"
+check_tab "Settings" "System Management — Audit Trail (Exporter)" "/audit/portal/recent" "$TOKEN_ADMIN"
+check_tab "Settings" "System Management — Audit Trail (Banks admin)" "/audit/portal/recent" "$TOKEN_BANK"
+check_tab "Settings" "System Management — Audit Trail (Customs admin)" "/audit/portal/recent" "$TOKEN_CUSTOMS"
+check_tab "Settings" "System Management — Audit Trail (NBE admin)" "/audit/portal/recent" "$TOKEN_NBE"
 echo "" | tee -a "$TEST_OUTPUT"
 
 # ==================================================================================
@@ -266,7 +307,7 @@ echo "════════════════════════�
 echo "📊 PORTAL TABS VERIFICATION SUMMARY" | tee -a "$TEST_OUTPUT"
 echo "════════════════════════════════════════════════════════════════" | tee -a "$TEST_OUTPUT"
 echo "" | tee -a "$TEST_OUTPUT"
-echo "Total Tabs Checked: $TOTAL_TESTS (69 checked + $UNCOVERED_COUNT uncovered = 70 tabs)" | tee -a "$TEST_OUTPUT"
+echo "Total Tabs Checked: $TOTAL_TESTS ($PASSED_TESTS passed + $FAILED_TESTS failed + $BLOCKED_TESTS blocked + $UNCOVERED_COUNT uncovered)" | tee -a "$TEST_OUTPUT"
 echo "✅ Passed: $PASSED_TESTS" | tee -a "$TEST_OUTPUT"
 echo "❌ Failed: $FAILED_TESTS" | tee -a "$TEST_OUTPUT"
 echo "⊘ Blocked (needs Fabric or seeded data): $BLOCKED_TESTS" | tee -a "$TEST_OUTPUT"
@@ -279,7 +320,7 @@ if [ "$FAILED_TESTS" -eq 0 ] && [ "$UNCOVERED_COUNT" -eq 0 ]; then
     if [ "$BLOCKED_TESTS" -gt 0 ]; then
         echo "⊘ NO FAILURES — $BLOCKED_TESTS tab check(s) blocked (need Fabric or seeded data)." | tee -a "$TEST_OUTPUT"
     else
-        echo "🎉 ALL 70 PORTAL TAB CHECKS PASSED!" | tee -a "$TEST_OUTPUT"
+        echo "🎉 ALL $TOTAL_TESTS PORTAL TAB CHECKS PASSED!" | tee -a "$TEST_OUTPUT"
     fi
     exit 0
 fi

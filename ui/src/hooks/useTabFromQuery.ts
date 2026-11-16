@@ -23,6 +23,18 @@
 // clicks (which do not change the query string) are untouched. Banks is
 // the exception: its tabs are a parent/child hierarchy, so it maps
 // `?tab=` to parent+child inline instead of using this hook.
+//
+// `redirects` maps a removed tab index to a URL: User Management and
+// Audit Trail moved out of every portal tab bar into the account menu
+// (Settings → /settings?section=users | system), so an old deep-link
+// such as /portals/ecta?tab=7 still lands on the same function instead
+// of silently opening the wrong tab. A redirected index is applied once
+// via router.replace and never selects a tab.
+//
+//   useTabFromQuery(setTabValue, visible, {
+//     7: '/settings?section=users',
+//     8: '/settings?section=system',
+//   });
 
 import { useEffect, useRef } from 'react';
 import { useRouter } from 'next/router';
@@ -30,6 +42,7 @@ import { useRouter } from 'next/router';
 export function useTabFromQuery(
   setTab: (index: number) => void,
   visibleIndices: number[],
+  redirects?: Record<number, string>,
 ): void {
   const router = useRouter();
   const appliedTab = useRef<number | null>(null);
@@ -37,6 +50,12 @@ export function useTabFromQuery(
   // Re-run when the visible set resolves (roles load async) or when the
   // `?tab=` query value changes (same-page client-side navigation).
   const visibleKey = visibleIndices.join(',');
+  const redirectKey = redirects
+    ? Object.keys(redirects)
+        .sort()
+        .map((k) => `${k}=${redirects[Number(k)]}`)
+        .join(',')
+    : '';
 
   useEffect(() => {
     if (visibleIndices.length === 0) return;
@@ -44,12 +63,21 @@ export function useTabFromQuery(
     const raw = router.query.tab;
     if (typeof raw !== 'string') return;
     const index = parseInt(raw, 10);
-    if (Number.isNaN(index) || !visibleIndices.includes(index)) return;
+    if (Number.isNaN(index)) return;
     if (appliedTab.current === index) return;
+    // A moved tab keeps its old deep-link working: redirect to the new
+    // home under Settings instead of selecting a (now different) tab.
+    const redirect = redirects?.[index];
+    if (redirect) {
+      appliedTab.current = index;
+      void router.replace(redirect);
+      return;
+    }
+    if (!visibleIndices.includes(index)) return;
     appliedTab.current = index;
     setTab(index);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [visibleKey, router.query.tab, router.isReady]);
+  }, [visibleKey, redirectKey, router.query.tab, router.isReady]);
 }
 
 export default useTabFromQuery;

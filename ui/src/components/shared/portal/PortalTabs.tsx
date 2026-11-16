@@ -7,6 +7,11 @@
 //  - 'child':    second-level bar (scrollable, minHeight 56, 0.875rem)
 // Panels use the same helper every portal already had locally:
 // a hidden <div> wrapping <Box sx={{ p: 3 }}>.
+//
+// Layout rule (2026-11-16): a bar with more than 6 tabs never squeezes
+// (fullWidth) — it scrolls with auto scroll buttons, and labels never
+// wrap: a wrapped 3-line label was the most visible "unprofessional"
+// defect on the 11-tab bars. Short bars keep the old fullWidth stretch.
 import React from 'react';
 import { Box, Tab, Tabs, alpha } from '@mui/material';
 import { getPortalBrand, PortalOrgKey } from './PortalBrand';
@@ -43,14 +48,23 @@ export const PortalTabBar: React.FC<PortalTabBarProps> = ({
   const b = getPortalBrand(brand);
   const isParent = variant === 'parent';
   const isChild = variant === 'child';
+  // Long bars scroll instead of squeezing: fullWidth with 9–11 tabs
+  // crushed every label to 2–3 wrapped lines. Parents keep fullWidth
+  // (4 items); the child bar was already scrollable.
+  const longBar = !isParent && tabs.length > 6;
+  const useScrollable = scrollable || longBar;
   return (
     <Tabs
       value={value}
       onChange={onChange}
       variant={
-        isParent || fullWidth ? 'fullWidth' : scrollable ? 'scrollable' : 'standard'
+        isParent || (fullWidth && !longBar)
+          ? 'fullWidth'
+          : useScrollable
+            ? 'scrollable'
+            : 'standard'
       }
-      scrollButtons={scrollable && !isParent && !fullWidth ? 'auto' : undefined}
+      scrollButtons={useScrollable && !isParent ? 'auto' : undefined}
       sx={{
         borderBottom: 2,
         borderColor: 'divider',
@@ -61,6 +75,10 @@ export const PortalTabBar: React.FC<PortalTabBarProps> = ({
           fontSize: isParent ? '1rem' : isChild ? '0.875rem' : '0.95rem',
           fontWeight: 600,
           color: isParent ? '#444' : '#666',
+          // One line, always: wrapped tab labels were the clearest
+          // unprofessional defect on the crowded bars.
+          whiteSpace: 'nowrap',
+          transition: 'background-color 150ms ease, color 150ms ease',
           ...(isParent ? { px: 3 } : {}),
           '&.Mui-selected': {
             color: b.primary,

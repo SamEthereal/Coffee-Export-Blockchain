@@ -69,7 +69,6 @@ import {
   FlightTakeoff,
   Payment,
   Delete,
-  Timeline,
   Category,
   History,
   VerifiedUser,
@@ -87,7 +86,6 @@ import { useForm, Controller } from 'react-hook-form';
 import { apiFetch, getAuthHeaders } from '@/config/api.config';
 import api from '@/utils/api';
 import { couchDBService } from '@/services/couchdbService';
-import AuditTrailTable from './AuditTrailTable';
 import PostDeliveryWorkflowPanel from '../shared/PostDeliveryWorkflowPanel';
 
 // Modern Components - 2026 Design
@@ -362,18 +360,6 @@ const ExporterPortal: React.FC = () => {
   const [allContracts, setAllContracts] = useState<ExportContract[]>([]);
   const [forexStatuses, setForexStatuses] = useState<ForexStatus[]>([]);
   
-  // Audit Trail Stats
-  const [auditStats, setAuditStats] = useState({
-    totalActivities: 0,
-    uniqueEntities: 0,
-    recentActions: 0,
-    blockchainVerified: 0,
-    organizationsInvolved: 0,
-    journeyStages: 0,
-    statusChanges: 0,
-    actionCounts: {} as Record<string, number>,
-    entityCounts: {} as Record<string, number>
-  });
   const [allForexStatuses, setAllForexStatuses] = useState<ForexStatus[]>([]);
   const [lcStatuses, setLCStatuses] = useState<LCStatus[]>([]);
   const [allLCStatuses, setAllLCStatuses] = useState<LCStatus[]>([]);
@@ -596,140 +582,13 @@ const ExporterPortal: React.FC = () => {
     console.log('[LC DIALOG STATE] lcRequestDialogOpen:', lcRequestDialogOpen, 'selectedContractForLC:', selectedContractForLC?.contractId);
   }, [lcRequestDialogOpen, selectedContractForLC]);
 
-  // Load audit trail stats when Audit Trail tab is active (tab 7, not 6 —
-  // tab 6 is Reports)
-  useEffect(() => {
-    console.log('[Exporter Portal] Tab changed to:', tabValue);
-    if (tabValue === 7) {
-      console.log('[Exporter Portal] Loading audit stats for Audit Trail tab');
-      loadAuditStats();
-    }
-  }, [tabValue]);
+  // ?tab=<index> deep-link from global search results (all 7 tabs are
+  // visible to every exporter, so the full 0–6 range is valid). Old links
+  // to the moved Audit Trail tab (7) redirect to Settings.
+  useTabFromQuery(setTabValue, [0, 1, 2, 3, 4, 5, 6], {
+    7: '/settings?section=system',
+  });
 
-  // ?tab=<index> deep-link from global search results (all 8 tabs are
-  // visible to every exporter, so the full 0–7 range is valid).
-  useTabFromQuery(setTabValue, [0, 1, 2, 3, 4, 5, 6, 7]);
-
-  const loadAuditStats = async () => {
-    try {
-      console.log('[Exporter Portal] === LOADING AUDIT STATS ===');
-      console.log('[Exporter Portal] Calling audit API...');
-      
-      const response = await apiFetch('/audit/portal/recent?limit=1000', {
-        headers: getAuthHeaders()
-      });
-      
-      console.log('[Exporter Portal] Response status:', response.status);
-      console.log('[Exporter Portal] Response ok?:', response.ok);
-      
-      if (!response.ok) {
-        console.error('[Exporter Portal] API request failed with status:', response.status);
-        const errorText = await response.text();
-        console.error('[Exporter Portal] Error response:', errorText);
-        return;
-      }
-      
-      const data = await response.json();
-      console.log('[Exporter Portal] === AUDIT STATS RAW RESPONSE ===');
-      console.log('[Exporter Portal] Full response:', JSON.stringify(data, null, 2));
-      console.log('[Exporter Portal] data.success:', data.success);
-      console.log('[Exporter Portal] data.data exists?:', !!data.data);
-      
-      if (data.success && data.data) {
-        const logs = data.data.logs || [];
-        console.log('[Exporter Portal] === AUDIT LOGS ===');
-        console.log('[Exporter Portal] Logs array length:', logs.length);
-        console.log('[Exporter Portal] First log:', logs[0]);
-        console.log('[Exporter Portal] All logs:', logs);
-        
-        // Calculate comprehensive stats
-        const totalActivities = logs.length;
-        
-        // Count unique entities (contracts, shipments, LCs, etc.)
-        const uniqueEntities = new Set(logs.map((log: any) => `${log.entity_type}-${log.entity_id}`)).size;
-        
-        // Count activities in last 7 days
-        const recentActions = logs.filter((log: any) => {
-          const logDate = new Date(log.created_at);
-          const weekAgo = new Date();
-          weekAgo.setDate(weekAgo.getDate() - 7);
-          return logDate >= weekAgo;
-        }).length;
-        
-        // Count blockchain verified activities
-        const blockchainVerified = logs.filter((log: any) => log.metadata?.blockchainVerified === true).length;
-        
-        // Count unique organizations involved (tracking the journey path)
-        const organizationsInvolved = new Set(
-          logs.map((log: any) => log.performed_by_org).filter(Boolean)
-        ).size;
-        
-        // Count by action types to show journey stages
-        const actionCounts = logs.reduce((acc: any, log: any) => {
-          acc[log.action] = (acc[log.action] || 0) + 1;
-          return acc;
-        }, {});
-        
-        // Count by entity types to show what's being tracked
-        const entityCounts = logs.reduce((acc: any, log: any) => {
-          acc[log.entity_type] = (acc[log.entity_type] || 0) + 1;
-          return acc;
-        }, {});
-        
-        // Journey stages completed (different actions represent different stages)
-        const journeyStages = Object.keys(actionCounts).length;
-        
-        // Status changes (tracks progress through the system)
-        const statusChanges = logs.filter((log: any) => 
-          log.action.includes('APPROVE') || 
-          log.action.includes('REGISTER') || 
-          log.action.includes('VERIFY') ||
-          log.action.includes('ISSUE') ||
-          log.action.includes('RELEASE')
-        ).length;
-        
-        const statsData = {
-          totalActivities,
-          uniqueEntities,
-          recentActions,
-          blockchainVerified,
-          organizationsInvolved,
-          journeyStages,
-          statusChanges,
-          actionCounts,
-          entityCounts
-        };
-        
-        console.log('[Exporter Portal] === CALCULATED STATS ===');
-        console.log('[Exporter Portal] Calculated audit stats:', statsData);
-        console.log('[Exporter Portal] Setting audit stats state...');
-        setAuditStats(statsData);
-        console.log('[Exporter Portal] ✅ Audit stats state updated successfully!');
-        
-        // Show success message
-        if (totalActivities > 0) {
-          showInfo('Audit Trail Loaded', `Loaded ${totalActivities} audit trail activities`);
-        } else {
-          showWarning('No Activities', 'No audit trail activities found for this account yet. Activities will appear here as you perform actions.');
-        }
-      } else {
-        console.error('[Exporter Portal] ❌ Audit stats API returned error or no data');
-        console.error('[Exporter Portal] data.success:', data.success);
-        console.error('[Exporter Portal] data.data:', data.data);
-        console.error('[Exporter Portal] Full data object:', data);
-        showError('Load Failed', 'Failed to load audit trail statistics');
-      }
-    } catch (error) {
-      console.error('[Exporter Portal] ❌ Failed to load audit stats - EXCEPTION:', error);
-      console.error('[Exporter Portal] Error details:', {
-        name: (error as Error).name,
-        message: (error as Error).message,
-        stack: (error as Error).stack
-      });
-      showError('Error Loading Audit Trail', `Error loading audit trail: ${(error as Error).message}`);
-    }
-  };
-  
   // "Has export permit" comes from the permit endpoint, never from an
   // inspection row: GET /permits/exporter/:exporterId (permits.ts:334,
   // chaincode QueryPermitsByExporter). The old code inferred it from a
@@ -2850,7 +2709,6 @@ const ExporterPortal: React.FC = () => {
       avgContractValue,
       successRate,
       
-      // Audit Trail (tab 7) - uses auditStats state
     };
   };
 
@@ -2870,7 +2728,6 @@ const ExporterPortal: React.FC = () => {
   console.log('[EXPORTER KPIs] Calculating dashboard metrics:', {
     tabValue,
     stats,
-    auditStats,
   });
   */
 
@@ -3453,14 +3310,6 @@ const ExporterPortal: React.FC = () => {
               { icon: <TrendingUp />, label: 'Avg Contract', value: `$${(stats.avgContractValue / 1000).toFixed(0)}K`, color: brandPrimary },
               { icon: <CheckCircle />, label: 'Success Rate', value: `${stats.successRate}%`, color: '#FFD700' },
             ]
-          ) : tabValue === 7 ? (
-            // Audit Trail - Audit Statistics
-            [
-              { icon: <Assessment />, label: 'Total Activities', value: auditStats.totalActivities, color: brandPrimary },
-              { icon: <Business />, label: 'Organizations', value: auditStats.organizationsInvolved, color: '#FFD700' },
-              { icon: <Timeline />, label: 'Status Changes', value: auditStats.statusChanges, color: '#b366cc' },
-              { icon: <VerifiedUser />, label: 'Blockchain Verified', value: auditStats.blockchainVerified, color: brandPrimary },
-            ]
           ) : []).map((kpi: any, idx: number) => (
             <Grid item xs={12} sm={6} md={3} key={idx}>
               <PortalKpiCard
@@ -3500,7 +3349,10 @@ const ExporterPortal: React.FC = () => {
       { label: `Customs (${shipments.length})`, icon: <Assignment sx={{ fontSize: 20 }} /> },
       { label: `LC & Payments (${lcStatuses.length})`, icon: <AttachMoney sx={{ fontSize: 20 }} /> },
       { label: 'Reports', icon: <TrendingUp sx={{ fontSize: 20 }} /> },
-      { label: 'Audit Trail', icon: <Assessment sx={{ fontSize: 20 }} /> },
+      // Audit Trail used to be the last tab here. It moved to the
+      // account menu (Settings → System Management,
+      // /settings?section=system); the ?tab= redirect below keeps old
+      // deep-links working.
             ]}
           />
         </Box>
@@ -5481,17 +5333,6 @@ const ExporterPortal: React.FC = () => {
             </Card>
           </Grid>
         </Grid>
-      </PortalTabPanel>
-
-      <PortalTabPanel value={tabValue} index={7}>
-        {/* Audit Trail Tab */}
-        <AuditTrailTable
-          title="Exporter Portal - Complete Transaction History"
-          autoRefresh={true}
-          refreshInterval={60000}
-          showStats={false}
-          maxHeight={700}
-        />
       </PortalTabPanel>
     </PortalShell>
 

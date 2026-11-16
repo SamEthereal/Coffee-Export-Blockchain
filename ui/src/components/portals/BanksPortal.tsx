@@ -2,6 +2,7 @@
 // Banks Portal - Letter of Credit, Forex & Export Permit Management
 
 import React, { useState, useEffect } from 'react';
+import { useRouter } from 'next/router';
 import {
   Box,
   Grid,
@@ -68,20 +69,14 @@ import {
   Cancel,
   Message as MessageOutlined,
   Send as SendOutlined,
-  Person,
   Assessment,
-  People,
-  PersonAdd,
   Security,
-  AdminPanelSettings,
   Timeline,
   VerifiedUser,
   Verified,
-  AccountTree,
   Error,
 } from '@mui/icons-material';
 import AuditTrailViewer from './AuditTrailViewer';
-import AuditTrailTable from './AuditTrailTable';
 import DocumentVerificationPanel from './DocumentVerificationPanel';
 import { DocumentUploadDialog } from './DocumentUploadDialog';
 import { DocumentValidationDialog } from './DocumentValidationDialog';
@@ -119,7 +114,6 @@ import { useNotification } from '@/hooks/useNotification';
 import { extractTxId } from '@/utils/txId';
 import { UnifiedPaymentWorkflow } from './UnifiedPaymentWorkflow';
 import { PaymentMethodTab } from './PaymentMethodTab';
-import UserManagement from '@/components/admin/UserManagement';
 import { useAuth } from '@/contexts/AuthContext';
 import AnalyticsDashboard from '@/components/analytics/AnalyticsDashboard';
 import { DocumentManagementPanel } from '@/components/documents';
@@ -467,22 +461,11 @@ const BanksPortal: React.FC = () => {
     permitAmount: '',
   });
 
-  // Audit Trail State
+  // Audit Trail State (entity-scoped viewer dialog; the tab moved to
+  // Settings → System Management, so the tab's stats state is gone).
   const [showAuditTrail, setShowAuditTrail] = useState(false);
   const [auditEntityType, setAuditEntityType] = useState<'LC' | 'PAYMENT' | 'FOREX'>('LC');
   const [auditEntityId, setAuditEntityId] = useState<string>('');
-  const [auditStats, setAuditStats] = useState({
-    totalActivities: 0,
-    todaysActions: 0,
-    blockchainVerified: 0,
-    organizationsInvolved: 0,
-  });
-  const [userStats, setUserStats] = useState({
-    totalUsers: 0,
-    activeUsers: 0,
-    bankRoles: 0,
-    administrators: 0,
-  });
   const [lcDiscrepancyStats, setLcDiscrepancyStats] = useState({
     total: 0,
     open: 0,
@@ -599,31 +582,23 @@ const BanksPortal: React.FC = () => {
         ]
       },
       {
-        id: 'system',
-        label: 'System Management',
-        icon: React.createElement(AdminPanelSettings),
+        // Was "System Management" (Analytics + User Management + Audit
+        // Trail). User Management and Audit Trail moved to the account
+        // menu (Settings → User Management / System Management,
+        // /settings?section=users | system), so only Analytics is left
+        // here — as its own parent. A parent with a single child shows
+        // no second bar (see the child-bar condition below).
+        id: 'analytics',
+        label: 'Analytics',
+        icon: React.createElement(Assessment),
         roles: ['BANKS', 'ADMIN', 'BANKS Portal Administrator', 'Bank Officer'],
         children: [
-          { 
-            id: 'analytics', 
-            label: 'Analytics', 
+          {
+            id: 'analytics',
+            label: 'Analytics',
             icon: React.createElement(Assessment),
             roles: ['BANKS', 'ADMIN', 'BANKS Portal Administrator', 'Bank Officer'],
             tabIndex: 6
-          },
-          { 
-            id: 'user-management', 
-            label: 'User Management', 
-            icon: React.createElement(Person),
-            roles: ['ADMIN', 'BANKS', 'BANKS Portal Administrator'],
-            tabIndex: 7
-          },
-          { 
-            id: 'audit-trail', 
-            label: 'Audit Trail', 
-            icon: React.createElement(Assessment),
-            roles: ['BANKS', 'ADMIN', 'BANKS Portal Administrator', 'Bank Officer', 'LC Officer', 'Payment Officer', 'Forex Officer', 'SWIFT Officer', 'Document Officer'],
-            tabIndex: 8
           },
         ]
       },
@@ -681,6 +656,7 @@ const BanksPortal: React.FC = () => {
   // Waits until the role-based structure is non-empty (userRole loads
   // async), applies once, and ignores an unknown / invisible tab.
   const tabFromQueryHandled = React.useRef(false);
+  const router = useRouter();
   React.useEffect(() => {
     if (tabFromQueryHandled.current) return;
     const structure = getHierarchicalTabStructure();
@@ -691,6 +667,16 @@ const BanksPortal: React.FC = () => {
     if (raw === null) return;
     const tabIndex = parseInt(raw, 10);
     if (Number.isNaN(tabIndex)) return;
+    // Old links to the moved tabs keep working: User Management and
+    // Audit Trail now live under Settings in the account menu.
+    if (tabIndex === 7) {
+      void router.replace('/settings?section=users');
+      return;
+    }
+    if (tabIndex === 8) {
+      void router.replace('/settings?section=system');
+      return;
+    }
     for (let p = 0; p < structure.length; p++) {
       const c = structure[p].children.findIndex((child) => child.tabIndex === tabIndex);
       if (c !== -1) {
@@ -714,8 +700,11 @@ const BanksPortal: React.FC = () => {
       { index: 4, label: `SWIFT Messages${swiftMessages.length > 0 ? ` (${swiftMessages.length})` : ''}`, icon: React.createElement(AccountBalance), roles: ['BANKS', 'ADMIN', 'BANKS Portal Administrator', 'Bank Officer', 'SWIFT Officer'] },
       { index: 5, label: `LC Settlements${deliveredShipments.length > 0 ? ` (${deliveredShipments.length})` : ''}`, icon: React.createElement(CheckCircle), roles: ['BANKS', 'ADMIN', 'BANKS Portal Administrator', 'Bank Officer', 'LC Officer', 'Payment Officer'] },
       { index: 6, label: 'Analytics', icon: React.createElement(Assessment), roles: ['BANKS', 'ADMIN', 'BANKS Portal Administrator', 'Bank Officer'] },
-      { index: 7, label: 'User Management', icon: React.createElement(Person), roles: ['ADMIN', 'BANKS', 'BANKS Portal Administrator'] },
-      { index: 8, label: 'Audit Trail', icon: React.createElement(Assessment), roles: ['BANKS', 'ADMIN', 'BANKS Portal Administrator', 'Bank Officer', 'LC Officer', 'Payment Officer', 'Forex Officer', 'SWIFT Officer', 'Document Officer'] },
+      // User Management (7) and Audit Trail (8) used to be tabs here.
+      // They moved to the account menu (Settings → User Management /
+      // System Management, /settings?section=users | system); the
+      // ?tab= redirect in the deep-link effect below keeps old
+      // deep-links working.
       { index: 9, label: 'LC Discrepancies', icon: React.createElement(Error), roles: ['BANKS', 'ADMIN', 'BANKS Portal Administrator', 'Bank Officer', 'LC Officer', 'Document Officer'] },
     ];
     
@@ -779,14 +768,8 @@ const BanksPortal: React.FC = () => {
     }
   }, [dialogOpen, dialogType, selectedContract]);
 
-  // Load audit stats when Audit Trail tab is active
-  useEffect(() => {
-    if (activeTab === 8) {  // Audit Trail now at index 8
-      loadAuditStats();
-    } else if (activeTab === 7) {  // User Management now at index 7
-      loadUserStats();
-    }
-  }, [activeTab]);
+  // (User Management and Audit Trail moved to Settings → the account
+  // menu; their stats loaders ran only for those tabs.)
 
   const loadBankingData = async () => {
     const token = localStorage.getItem('authToken');
@@ -1202,85 +1185,6 @@ const BanksPortal: React.FC = () => {
     } catch (error: any) {
       console.error('[BANKS] Loading failed:', error);
       showError('Data Loading Failed', 'Could not load banking data', (error as Error)?.message || String(error));
-    }
-  };
-
-  const loadUserStats = async () => {
-    try {
-      const response = await apiFetch('/users', {
-        headers: getAuthHeaders()
-      });
-      
-      const data = await response.json();
-      
-      if (data.success && data.data) {
-        const users = data.data || [];
-        
-        const totalUsers = users.length;
-        const activeUsers = users.filter((u: any) => u.is_active === true || u.status === 'active').length;
-        const bankRoles = users.filter((u: any) => {
-          const role = (u.role || '').toUpperCase();
-          const org = (u.organization || '').toUpperCase();
-          return role.includes('BANK') || org.includes('BANK');
-        }).length;
-        const administrators = users.filter((u: any) => {
-          const role = (u.role || '').toUpperCase();
-          const username = (u.username || '').toLowerCase();
-          const fullName = (u.full_name || '').toLowerCase();
-          return role === 'ADMIN' || username.includes('admin') || fullName.includes('admin');
-        }).length;
-        
-        setUserStats({
-          totalUsers,
-          activeUsers,
-          bankRoles,
-          administrators,
-        });
-      }
-    } catch (error) {
-      console.error('[BANKS] Failed to load user stats:', error);
-    }
-  };
-
-  const loadAuditStats = async () => {
-    try {
-      const response = await apiFetch('/audit/portal/recent?limit=1000', {
-        headers: getAuthHeaders()
-      });
-      
-      const data = await response.json();
-      
-      if (data.success && data.data) {
-        const logs = data.data.logs || [];
-        
-        // Calculate stats
-        const totalActivities = logs.length;
-        
-        // Count activities in last 24 hours
-        const todaysActions = logs.filter((log: any) => {
-          const logDate = new Date(log.created_at);
-          const oneDayAgo = new Date();
-          oneDayAgo.setDate(oneDayAgo.getDate() - 1);
-          return logDate >= oneDayAgo;
-        }).length;
-        
-        // Count blockchain verified activities
-        const blockchainVerified = logs.filter((log: any) => log.metadata?.blockchainVerified === true).length;
-        
-        // Count unique organizations
-        const organizationsInvolved = new Set(
-          logs.map((log: any) => log.performed_by_org).filter(Boolean)
-        ).size;
-        
-        setAuditStats({
-          totalActivities,
-          todaysActions,
-          blockchainVerified,
-          organizationsInvolved,
-        });
-      }
-    } catch (error) {
-      console.error('[BANKS] Failed to load audit stats:', error);
     }
   };
 
@@ -3092,82 +2996,6 @@ const BanksPortal: React.FC = () => {
                 color: '#1976d2',
                 clickable: false,
               },
-            ] : activeTab === 7 ? [
-              // Tab 7: User Management KPIs
-              { 
-                icon: <People />, 
-                label: 'Total Users', 
-                value: userStats.totalUsers,
-                color: '#1976d2',
-                subtitle: 'All Roles',
-                description: 'Total users in the system.',
-                clickable: false,
-              },
-              { 
-                icon: <PersonAdd />, 
-                label: 'Active Users', 
-                value: userStats.activeUsers,
-                color: '#4caf50',
-                subtitle: 'Currently Active',
-                description: 'Users who are currently active.',
-                clickable: false,
-              },
-              { 
-                icon: <Security />, 
-                label: 'Bank Roles', 
-                value: userStats.bankRoles,
-                color: '#ff9800',
-                subtitle: 'Bank Staff',
-                description: 'Users with bank roles.',
-                clickable: false,
-              },
-              { 
-                icon: <AdminPanelSettings />, 
-                label: 'Administrators', 
-                value: userStats.administrators,
-                color: '#9b30b7',
-                subtitle: 'Admin Access',
-                description: 'Users with administrator privileges.',
-                clickable: false,
-              },
-            ] : activeTab === 8 ? [
-              // Tab 8: Audit Trail KPIs
-              { 
-                icon: <Timeline />, 
-                label: 'Total Activities', 
-                value: auditStats.totalActivities, 
-                color: '#1976d2',
-                subtitle: 'All Transactions',
-                description: 'Total audit trail activities.',
-                clickable: false,
-              },
-              { 
-                icon: <Assessment />, 
-                label: 'Today\'s Actions', 
-                value: auditStats.todaysActions, 
-                color: '#4caf50',
-                subtitle: 'Last 24 Hours',
-                description: 'Activities in the last 24 hours.',
-                clickable: false,
-              },
-              { 
-                icon: <VerifiedUser />, 
-                label: 'Blockchain Verified', 
-                value: auditStats.blockchainVerified, 
-                color: '#9c27b0',
-                subtitle: 'Immutable Records',
-                description: 'Records stored on blockchain.',
-                clickable: false,
-              },
-              { 
-                icon: <AccountTree />, 
-                label: 'Organizations', 
-                value: auditStats.organizationsInvolved, 
-                color: '#ff9800',
-                subtitle: 'Participants',
-                description: 'Organizations involved in transactions.',
-                clickable: false,
-              },
             ] : activeTab === 9 ? [
               // Tab 9: LC Discrepancies KPIs
               { 
@@ -3410,8 +3238,11 @@ const BanksPortal: React.FC = () => {
             tabs={tabStructure.map((parent) => ({ label: parent.label, icon: parent.icon }))}
           />
           
-          {/* Child Tabs */}
-          {tabStructure[activeParentTab] && tabStructure[activeParentTab].children.length > 0 && (
+          {/* Child Tabs — only when the parent groups more than one
+              section. A single-child parent (Analytics, since User
+              Management / Audit Trail moved to Settings) opens its one
+              section directly instead of showing a redundant second bar. */}
+          {tabStructure[activeParentTab] && tabStructure[activeParentTab].children.length > 1 && (
             <PortalTabBar
               brand="BANKS"
               variant="child"
@@ -7005,22 +6836,6 @@ const BanksPortal: React.FC = () => {
       {/* Tab 6: Analytics */}
       {activeTab === 6 && (
         <AnalyticsDashboard />
-      )}
-
-      {/* Tab 7: User Management */}
-      {activeTab === 7 && (
-        <UserManagement />
-      )}
-
-      {/* Tab 8: Audit Trail */}
-      {activeTab === 8 && (
-        <AuditTrailTable
-          title="Banks Portal - Complete Transaction History"
-          autoRefresh={true}
-          refreshInterval={60000}
-          showStats={false}
-          maxHeight={700}
-        />
       )}
 
       {/* Tab 5: LC Settlements */}

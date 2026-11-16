@@ -50,7 +50,6 @@ import {
   Inventory,
   Anchor,
   Assessment,
-  Person,
   Info,
   Refresh,
 } from '@mui/icons-material';
@@ -61,7 +60,6 @@ import { apiFetch, getAuthHeaders, API_BASE_URL } from '@/config/api.config';
 import { useTabFromQuery } from '@/hooks/useTabFromQuery';
 import AuditTrailViewer from './AuditTrailViewer';
 import { DocumentValidationDialog } from './DocumentValidationDialog';
-import UserManagement from '@/components/admin/UserManagement';
 import { DocumentManagementPanel } from '@/components/documents';
 import BlockchainSignatureVerification from '@/components/documents/BlockchainSignatureVerification';
 import { BlockchainStatusIcon, BlockchainTxChip, BlockchainBadge } from '@/components/blockchain';
@@ -183,10 +181,7 @@ const ShippingPortal: React.FC = () => {
   const [billOfLadingDialogOpen, setBillOfLadingDialogOpen] = useState(false);
   const [bolAutoFilling, setBolAutoFilling] = useState(false);
 
-  // Get current user role from local storage
-  const userRole = JSON.parse(localStorage.getItem('user') || '{}')?.role || '';
-
-  // Main tab structure - one dedicated tab per shipping lifecycle status (matches KPI branches 0-9 + Users at 10)
+  // Main tab structure - one dedicated tab per shipping lifecycle status (KPI branches 0-9)
   const mainTabs = [
     { index: 0, label: 'Clearance', icon: <CheckCircle />, status: 'CUSTOMS_CLEARED', statuses: ['CUSTOMS_CLEARED', 'FREIGHT_BOOKED'], description: 'Customs cleared shipments ready for transport' },
     { index: 1, label: 'Land Transport', icon: <LocalShipping />, status: 'LAND_TRANSPORT', description: 'Addis Ababa → Djibouti (800km)' },
@@ -203,14 +198,17 @@ const ShippingPortal: React.FC = () => {
     // row is ever silently dropped. No action is offered — these shipments have
     // not cleared customs yet (or are rejected/cancelled).
     { index: 9, label: 'Pre-Shipping', icon: <Schedule />, status: 'CREATED', statuses: ['CREATED', 'PERMIT_ISSUED', 'CUSTOMS_DECLARED', 'INSPECTION_PENDING', 'INSPECTION_COMPLETE', 'CUSTOMS_REJECTED', 'CANCELLED'], description: 'Not yet cleared for shipping — permit / customs / inspection states' },
-    { index: 10, label: 'Users', icon: <Person />, status: '', description: 'User management', roles: ['ADMIN', 'SHIPPING', 'Shipping Portal Administrator'] },
+    // Users used to be tab 10 here. It moved to the account menu
+    // (Settings → User Management, /settings?section=users); the
+    // ?tab= redirect below keeps old deep-links working.
   ];
-  const visibleMainTabs = mainTabs.filter(tab =>
-    tab.index !== 10 || (tab.roles || []).includes(userRole)
-  );
+  const visibleMainTabs = mainTabs;
 
-  // ?tab=<index> deep-link from global search results.
-  useTabFromQuery(setTabValue, visibleMainTabs.map((tab) => tab.index));
+  // ?tab=<index> deep-link from global search results. Old links to the
+  // moved Users tab (10) redirect to Settings.
+  useTabFromQuery(setTabValue, visibleMainTabs.map((tab) => tab.index), {
+    10: '/settings?section=users',
+  });
 
   // Lifecycle progress and stage colors used by the per-status tab tables
   const lifecycleProgressMap: { [key: string]: number } = {
@@ -3139,19 +3137,6 @@ const ShippingPortal: React.FC = () => {
             )}
           </PortalTabPanel>
         ))}
-
-        {/* Tab 10: User Management */}
-        <PortalTabPanel value={tabValue} index={10}>
-          <Box sx={{ mb: 3 }}>
-            <Typography variant="h5" gutterBottom sx={{ fontWeight: 700, color: brandPrimary }}>
-              User Management
-            </Typography>
-            <Typography variant="body2" color="textSecondary">
-              Manage shipping portal users and permissions
-            </Typography>
-          </Box>
-          <UserManagement />
-        </PortalTabPanel>
 
       </PortalCard>
       {/* Comprehensive Shipping Record Detail Dialog */}

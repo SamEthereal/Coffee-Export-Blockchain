@@ -70,7 +70,6 @@ import {
   WarningAmber,
 } from '@mui/icons-material';
 import AuditTrailViewer from './AuditTrailViewer';
-import AuditTrailTable from './AuditTrailTable';
 import AnalyticsDashboard from '@/components/analytics/AnalyticsDashboard';
 import PostDeliveryWorkflowPanel from '../shared/PostDeliveryWorkflowPanel';
 
@@ -103,7 +102,6 @@ import {
   EmptyState,
   ThemeToggle,
 } from '@/components/modern';
-import UserManagement from '@/components/admin/UserManagement';
 import {
   PortalShell,
   PortalTabBar,
@@ -361,16 +359,11 @@ const ECTAPortal: React.FC = () => {
   // second, portal-local filter.
   const [themeMode, setThemeMode] = useState<'light' | 'dark'>('light');
 
-  // Audit Trail State
+  // Audit Trail State (entity-scoped viewer dialog; the tab moved to
+  // Settings → System Management, so the tab's stats state is gone).
   const [showAuditTrail, setShowAuditTrail] = useState(false);
   const [auditEntityType, setAuditEntityType] = useState<'EXPORTER' | 'SHIPMENT' | 'QUALITY' | 'PERMIT'>('EXPORTER');
   const [auditEntityId, setAuditEntityId] = useState<string>('');
-  const [auditStats, setAuditStats] = useState({
-    totalActivities: 0,
-    todaysActions: 0,
-    blockchainVerified: 0,
-    organizationsInvolved: 0,
-  });
   
   // Document Validation Dialog state
   const [validationDialogOpen, setValidationDialogOpen] = useState(false);
@@ -410,14 +403,8 @@ const ECTAPortal: React.FC = () => {
     }
   }, []);
 
-  // Audit Trail is tab 8 (not 6 — 6 is Pre-shipment Inspection); the KPI
-  // cards below are rendered under tabValue === 8 as well.
-  useEffect(() => {
-    if (tabValue === 8) {
-      loadAuditStats();
-    }
-  }, [tabValue]);
-
+  // (Audit Trail moved to Settings → System Management; its stats
+  // loader and state were removed with the tab.)
   useEffect(() => {
     if (!queryHandled && inspectionQuery && shipments.length > 0) {
       setQueryHandled(true);
@@ -559,8 +546,13 @@ const ECTAPortal: React.FC = () => {
       { index: 4, label: `License Renewals`, icon: <Warning sx={{ fontSize: 20 }} />, roles: ['ECTA', 'ADMIN', 'ECTA Officer', 'License Officer'] },
       { index: 5, label: 'Analytics', icon: <Assessment sx={{ fontSize: 20 }} />, roles: ['ECTA', 'ADMIN', 'ECTA Officer'] },
       { index: 6, label: 'Pre-shipment Inspection', icon: <Science sx={{ fontSize: 20 }} />, roles: ['ECTA', 'ADMIN', 'Quality Inspector', 'Lab Analyst', 'ECTA Officer', 'ECTA_SUPERVISOR', 'ECTA_INSPECTOR'] },
-      { index: 7, label: 'User Management', icon: <Person sx={{ fontSize: 20 }} />, roles: ['ADMIN', 'ECTA', 'ECTA Portal Administrator'] },
-      { index: 8, label: 'Audit Trail', icon: <Assessment sx={{ fontSize: 20 }} />, roles: ['ECTA', 'ADMIN', 'ECTA Officer', 'License Officer', 'Quality Inspector', 'Lab Analyst', 'Permit Officer', 'ECTA_SUPERVISOR', 'ECTA_INSPECTOR'] },
+      // User Management (7) and Audit Trail (8) used to be tabs here.
+      // They moved to the account menu (Settings → User Management /
+      // System Management, /settings?section=users | system); the
+      // ?tab= redirect below keeps old deep-links working. Indices 7–8
+      // stay RESERVED (not reused): Post-Delivery Audits and
+      // Phytosanitary Certificates keep 9 and 10, so an old
+      // ?tab=7/?tab=8 link can never be mistaken for the new tabs.
       { index: 9, label: 'Post-Delivery Audits', icon: <CheckCircle sx={{ fontSize: 20 }} />, roles: ['ECTA', 'ADMIN', 'ECTA Officer'] },
       { index: 10, label: 'Phytosanitary Certificates', icon: <Science sx={{ fontSize: 20 }} />, roles: ['ECTA', 'ADMIN', 'Quality Inspector', 'Lab Analyst', 'ECTA Officer', 'ECTA_SUPERVISOR', 'ECTA_INSPECTOR'] },
     ];
@@ -582,8 +574,12 @@ const ECTAPortal: React.FC = () => {
     }
   }, [tabValue, visibleTabs]);
 
-  // ?tab=<index> deep-link from global search results.
-  useTabFromQuery(setTabValue, visibleTabs.map((tab) => tab.index));
+  // ?tab=<index> deep-link from global search results. Old links to the
+  // moved tabs (7 User Management, 8 Audit Trail) redirect to Settings.
+  useTabFromQuery(setTabValue, visibleTabs.map((tab) => tab.index), {
+    7: '/settings?section=users',
+    8: '/settings?section=system',
+  });
 
   // 🎯 ROLE-BASED FILTERING: Show only items that need user's action
   const filterContractsForRole = (contracts: any[]) => {
@@ -810,41 +806,6 @@ const ECTAPortal: React.FC = () => {
     
     console.log('[ECTA] ⚡ All 6 parallel requests fired! Data will appear as each completes.');
     console.timeEnd('[ECTA] Total load time');
-  };
-
-  const loadAuditStats = async () => {
-    try {
-      const response = await apiFetch('/audit/portal/recent?limit=1000', {
-        headers: getAuthHeaders()
-      });
-      
-      const data = await response.json();
-      
-      if (data.success && data.data) {
-        const logs = data.data.logs || [];
-        
-        const totalActivities = logs.length;
-        const todaysActions = logs.filter((log: any) => {
-          const logDate = new Date(log.created_at);
-          const oneDayAgo = new Date();
-          oneDayAgo.setDate(oneDayAgo.getDate() - 1);
-          return logDate >= oneDayAgo;
-        }).length;
-        const blockchainVerified = logs.filter((log: any) => log.metadata?.blockchainVerified === true).length;
-        const organizationsInvolved = new Set(
-          logs.map((log: any) => log.performed_by_org).filter(Boolean)
-        ).size;
-        
-        setAuditStats({
-          totalActivities,
-          todaysActions,
-          blockchainVerified,
-          organizationsInvolved,
-        });
-      }
-    } catch (error) {
-      console.error('[ECTA] Failed to load audit stats:', error);
-    }
   };
 
   // View a document URL (e.g. `/api/v1/documents/:id/download`) through the
@@ -2025,8 +1986,11 @@ The exporter can reapply once all requirements are met.`,
                 }).length})` :
                 tab.index === 5 ? tab.label :
                 tab.index === 6 ? `${tab.label} (${allShipments.length})` :
-                tab.index === 7 ? tab.label :
-                tab.index === 8 ? `${tab.label} (${deliveredShipments.length})` :
+                // Post-Delivery Audits (9) carries the delivered count;
+                // Phytosanitary Certificates (10) has none. Indices 7–8
+                // are reserved (old User Management / Audit Trail) — the
+                // old code appended the delivered count to index 8 too,
+                // which showed it on the Audit Trail tab by mistake.
                 tab.index === 9 ? `${tab.label} (${deliveredShipments.length})` :
                 tab.label
               ,
@@ -3192,22 +3156,6 @@ The exporter can reapply once all requirements are met.`,
             </Typography>
             <InspectionRequestsTab />
           </Box>
-        </PortalTabPanel>
-
-        <PortalTabPanel value={tabValue} index={7}>
-          {/* User Management Tab */}
-          <UserManagement />
-        </PortalTabPanel>
-
-        <PortalTabPanel value={tabValue} index={8}>
-          {/* Audit Trail Tab */}
-          <AuditTrailTable
-            title="ECTA Portal - Complete Transaction History"
-            autoRefresh={true}
-            refreshInterval={60000}
-            showStats={false}
-            maxHeight={700}
-          />
         </PortalTabPanel>
 
         <PortalTabPanel value={tabValue} index={9}>

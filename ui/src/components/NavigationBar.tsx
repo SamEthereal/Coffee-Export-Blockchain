@@ -41,12 +41,15 @@ import {
   Description,
   VerifiedUser,
   Gavel,
+  Person,
+  AdminPanelSettings,
 } from '@mui/icons-material';
 import { useAuth } from '@/contexts/AuthContext';
 import { useRouter } from 'next/router';
 import NextLink from 'next/link';
 import NotificationCenter from '@/components/NotificationCenter';
 import OrganizationLogo from '@/components/OrganizationLogo';
+import { canManageUsers as canManageUsersRole } from '@/utils/roleGates';
 import api from '@/utils/api';
 
 // Global search (GET /api/v1/search) result shape — kept local to this
@@ -157,6 +160,15 @@ const NavigationBar: React.FC = () => {
     router.push('/settings');
   };
 
+  // Who sees User Management under Settings in the account menu: the
+  // same roles that used to see the User Management tab in their portal
+  // (ADMIN, the org role, or the org's Portal Administrator). Officer
+  // sub-roles never had that tab and do not get the menu item either.
+  // System Management (audit trail + system links) stays visible to
+  // every signed-in user — the Audit Trail tab was on all 7 portals,
+  // including Exporter — with its admin links gated inside the page.
+  const canManageUsers = canManageUsersRole(user?.role);
+
   const getOrganizationLogo = (role: string) => {
     // Use the reusable OrganizationLogo with professional styling
     return (
@@ -218,33 +230,25 @@ const NavigationBar: React.FC = () => {
           borderBottom: '1px solid rgba(255, 255, 255, 0.1)',
         }}
       >
-        <Toolbar sx={{ minHeight: { xs: 56, sm: 64 }, justifyContent: 'space-between', px: { xs: 1, sm: 2, md: 3 } }}>
+        <Toolbar sx={{ minHeight: { xs: 56, sm: 64 }, gap: { xs: 1, sm: 2 }, px: { xs: 1, sm: 2, md: 3 } }}>
           {/* Organization Logo - Left */}
-          <Box sx={{ display: 'flex', alignItems: 'center', minWidth: { xs: '80px', sm: '100px', md: '120px' }, flexShrink: 0, position: 'relative', zIndex: 10 }}>
+          <Box sx={{ display: 'flex', alignItems: 'center', flexShrink: 0 }}>
             {getOrganizationLogo(user.role)}
           </Box>
 
-          {/* Professional Title - CENTER */}
-          <Box 
-            sx={{ 
-              display: 'flex', 
-              flexDirection: 'column', 
+          {/* Professional Title - CENTER: a normal flex item, not an
+              absolutely-positioned overlay. The old overlay (left 50% +
+              translateX(-50%) inside a max-width 30% pill) collided with
+              the search box at desktop widths and clipped "BLOCKCHAIN". */}
+          <Box
+            sx={{
+              display: 'flex',
+              flexDirection: 'column',
               alignItems: 'center',
               justifyContent: 'center',
-              position: 'absolute',
-              left: '50%',
-              transform: 'translateX(-50%)',
+              flex: '1 1 auto',
+              minWidth: 0,
               textAlign: 'center',
-              zIndex: 0, // Behind other elements to avoid overlap
-              maxWidth: { xs: '40%', sm: '45%', md: '35%', lg: '30%' },
-              pointerEvents: 'none',
-              backgroundColor: 'rgba(0, 0, 0, 0.2)', // Lighter semi-transparent background
-              backdropFilter: 'blur(6px)', // Subtle blur effect
-              borderRadius: 2,
-              px: { xs: 1.5, sm: 2, md: 3 },
-              py: { xs: 0.5, sm: 0.75 },
-              border: '1px solid rgba(255, 255, 255, 0.08)', // More subtle border
-              boxShadow: '0 2px 8px rgba(0, 0, 0, 0.2)', // Lighter shadow
             }}
           >
             <Typography 
@@ -291,14 +295,11 @@ const NavigationBar: React.FC = () => {
           </Box>
 
           {/* Right Side Actions Container */}
-          <Box sx={{ 
-            display: 'flex', 
-            alignItems: 'center', 
+          <Box sx={{
+            display: 'flex',
+            alignItems: 'center',
             gap: { xs: 0.5, sm: 1 },
-            minWidth: { xs: '80px', sm: '100px', md: '120px' },
             flexShrink: 0,
-            position: 'relative',
-            zIndex: 10, // Higher z-index to stay on top
           }}>
             {/* Quick Actions - REMOVED to prevent overlap with title */}
             
@@ -327,7 +328,8 @@ const NavigationBar: React.FC = () => {
                   onFocus={() => setSearchOpen(true)}
                   onKeyDown={handleSearchKeyDown}
                   sx={{
-                    width: 280,
+                    width: { md: 220, lg: 280 },
+                    flexShrink: 0,
                     '& .MuiOutlinedInput-root': {
                       backgroundColor: 'rgba(255, 255, 255, 0.12)',
                       borderRadius: 2,
@@ -601,8 +603,40 @@ const NavigationBar: React.FC = () => {
               <ListItemIcon>
                 <Settings fontSize="small" />
               </ListItemIcon>
-              <ListItemText 
-                primary="Settings" 
+              <ListItemText
+                primary="Settings"
+                primaryTypographyProps={{ fontSize: '0.9rem', fontWeight: 500 }}
+              />
+            </MenuItem>
+            {/* Settings group — User Management and System Management
+                live here (account menu → Settings), not as portal tabs
+                and not as top-level navigation. Indented under Settings;
+                User Management is role-gated exactly as the old portal
+                tabs were, System Management is open to every role
+                (it holds the audit trail every portal used to show). */}
+            {canManageUsers && (
+              <MenuItem
+                onClick={() => { handleMenuClose(); router.push('/settings?section=users'); }}
+                sx={{ py: 1.25, pl: 5 }}
+              >
+                <ListItemIcon sx={{ minWidth: 32 }}>
+                  <Person fontSize="small" />
+                </ListItemIcon>
+                <ListItemText
+                  primary="User Management"
+                  primaryTypographyProps={{ fontSize: '0.9rem', fontWeight: 500 }}
+                />
+              </MenuItem>
+            )}
+            <MenuItem
+              onClick={() => { handleMenuClose(); router.push('/settings?section=system'); }}
+              sx={{ py: 1.25, pl: 5 }}
+            >
+              <ListItemIcon sx={{ minWidth: 32 }}>
+                <AdminPanelSettings fontSize="small" />
+              </ListItemIcon>
+              <ListItemText
+                primary="System Management"
                 primaryTypographyProps={{ fontSize: '0.9rem', fontWeight: 500 }}
               />
             </MenuItem>

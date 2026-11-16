@@ -34,10 +34,7 @@ import {
   FlightTakeoff,
   Assessment,
   Gavel,
-  Person,
-  Timeline,
   VerifiedUser,
-  AccountTree,
   AttachMoney,
   Category,
   AccessTime,
@@ -55,8 +52,6 @@ import { apiFetch } from '@/config/api.config';
 import SWIFTMonitoringWrapper from '@/components/nbe/SWIFTMonitoringWrapper';
 import { useTabFromQuery } from '@/hooks/useTabFromQuery';
 import AuditTrailViewer from './AuditTrailViewer';
-import AuditTrailTable from './AuditTrailTable';
-import UserManagement from '@/components/admin/UserManagement';
 import { useAuth } from '@/contexts/AuthContext';
 import AnalyticsDashboard from '@/components/analytics/AnalyticsDashboard';
 import { DocumentManagementPanel } from '@/components/documents';
@@ -168,16 +163,11 @@ const NBEPortal: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [selectedContract, setSelectedContract] = useState<ContractWithTransport | null>(null);
 
-  // Audit Trail State
+  // Audit Trail State (entity-scoped viewer dialog; the tab moved to
+  // Settings → System Management, so the tab's stats state is gone).
   const [showAuditTrail, setShowAuditTrail] = useState(false);
   const [auditEntityType, setAuditEntityType] = useState<'CONTRACT' | 'FOREX' | 'LC'>('CONTRACT');
   const [auditEntityId, setAuditEntityId] = useState<string>('');
-  const [auditStats, setAuditStats] = useState({
-    totalActivities: 0,
-    todaysActions: 0,
-    blockchainVerified: 0,
-    organizationsInvolved: 0,
-  });
   const [selectedForex, setSelectedForex] = useState<ForexAllocation | null>(null);
   const [detailsDialogOpen, setDetailsDialogOpen] = useState(false);
   const [forexDialogOpen, setForexDialogOpen] = useState(false);
@@ -438,9 +428,8 @@ const NBEPortal: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    if (tabValue === 8) {
-      loadAuditStats();
-    }
+    // Payment Release kept index 9 (indices 7–8 are reserved for the
+    // moved User Management / Audit Trail tabs — see allTabs above).
     if (tabValue === 9) {
       loadPendingRelease();
     }
@@ -621,48 +610,6 @@ const NBEPortal: React.FC = () => {
   const handleChangeRowsPerPage = (newRowsPerPage: number) => {
     setRowsPerPage(newRowsPerPage);
     setCurrentPage(0);
-  };
-
-  const loadAuditStats = async () => {
-    try {
-      const token = localStorage.getItem('authToken');
-      const response = await apiFetch('/audit/portal/recent?limit=1000', {
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Content-Type': 'application/json'
-        }
-      });
-      
-      const data = await response.json();
-      
-      if (data.success && data.data) {
-        const logs = data.data.logs || [];
-        
-        const totalActivities = logs.length;
-        
-        const todaysActions = logs.filter((log: any) => {
-          const logDate = new Date(log.created_at);
-          const oneDayAgo = new Date();
-          oneDayAgo.setDate(oneDayAgo.getDate() - 1);
-          return logDate >= oneDayAgo;
-        }).length;
-        
-        const blockchainVerified = logs.filter((log: any) => log.metadata?.blockchainVerified === true).length;
-        
-        const organizationsInvolved = new Set(
-          logs.map((log: any) => log.performed_by_org).filter(Boolean)
-        ).size;
-        
-        setAuditStats({
-          totalActivities,
-          todaysActions,
-          blockchainVerified,
-          organizationsInvolved,
-        });
-      }
-    } catch (error) {
-      console.error('[NBE] Failed to load audit stats:', error);
-    }
   };
 
   const getContractStats = () => {
@@ -1047,8 +994,12 @@ const NBEPortal: React.FC = () => {
       { index: 5, label: 'Policy & Compliance', icon: <Gavel sx={{ fontSize: 20 }} />, roles: ['NBE', 'ADMIN', 'NBE Officer', 'Compliance Officer', 'Screening Officer'] },
       // Analytics & Admin Tabs
       { index: 6, label: 'Analytics', icon: <Assessment sx={{ fontSize: 20 }} />, roles: ['NBE', 'ADMIN', 'NBE Officer'] },
-      { index: 7, label: 'User Management', icon: <Person sx={{ fontSize: 20 }} />, roles: ['ADMIN', 'NBE', 'NBE Portal Administrator'] },
-      { index: 8, label: 'Audit Trail', icon: <Assessment sx={{ fontSize: 20 }} />, roles: ['NBE', 'ADMIN', 'NBE Officer', 'Forex Officer', 'Exchange Rate Officer', 'Settlement Officer', 'Compliance Officer'] },
+      // User Management (7) and Audit Trail (8) used to be tabs here.
+      // They moved to the account menu (Settings → User Management /
+      // System Management, /settings?section=users | system); the
+      // ?tab= redirect below keeps old deep-links working. Indices 7–8
+      // stay RESERVED (not reused): Payment Release keeps 9, so an old
+      // ?tab=7/?tab=8 link can never be mistaken for it.
       { index: 9, label: 'Payment Release', icon: <AttachMoney sx={{ fontSize: 20 }} />, roles: ['NBE', 'ADMIN', 'NBE Officer', 'Settlement Officer'] },
     ];
     
@@ -1064,8 +1015,12 @@ const NBEPortal: React.FC = () => {
     }
   }, [tabValue, visibleTabs]);
 
-  // ?tab=<index> deep-link from global search results.
-  useTabFromQuery(setTabValue, visibleTabs.map((tab) => tab.index));
+  // ?tab=<index> deep-link from global search results. Old links to the
+  // moved tabs (7 User Management, 8 Audit Trail) redirect to Settings.
+  useTabFromQuery(setTabValue, visibleTabs.map((tab) => tab.index), {
+    7: '/settings?section=users',
+    8: '/settings?section=system',
+  });
 
   const contractColumns: GridColDef[] = [
     { field: 'contractId', headerName: 'Contract ID', width: 150 },
@@ -1424,12 +1379,10 @@ const NBEPortal: React.FC = () => {
               { icon: <Assessment />, label: 'By Transport', value: `${Math.round((allContracts.filter(c => (c as any).transportMode === 'AIR').length / (allContracts.length || 1)) * 100)}% Air`, color: '#ff9800' },
               { icon: <TrendingUp />, label: 'Top Destination', value: topDestination, color: '#1976d2' },
             ]
-          ) : tabValue === 8 ? [
-            { icon: <Timeline />, label: 'Total Activities', value: auditStats.totalActivities, color: '#1976d2' },
-            { icon: <Assessment />, label: 'Today\'s Actions', value: auditStats.todaysActions, color: '#4caf50' },
-            { icon: <VerifiedUser />, label: 'Blockchain Verified', value: auditStats.blockchainVerified, color: '#9c27b0' },
-            { icon: <AccountTree />, label: 'Organizations', value: auditStats.organizationsInvolved, color: '#ff9800' },
-          ] : [
+          ) : [
+            // Fallback (Payment Release, tab 7, has its own grid below):
+            // the old tabValue === 8 branch was the removed Audit Trail
+            // tab's stats; its loader and state were removed with it.
             { icon: <Assessment />, label: 'Total Forex (M)', value: Math.round(stats.totalValue / 1000000), color: BRAND_COLOR },
             { icon: <TrendingUp />, label: 'Allocations', value: forexAllocations.length, color: '#4caf50' },
             { icon: <CurrencyExchange />, label: 'Rate (ETB/USD)', value: currentRate ? currentRate.toFixed(2) : 'Unavailable', color: '#2196f3' },
@@ -2161,22 +2114,6 @@ const NBEPortal: React.FC = () => {
           <AnalyticsDashboard 
             activeSubTab={analyticsSubTab}
             onSubTabChange={setAnalyticsSubTab}
-          />
-        </PortalTabPanel>
-
-        <PortalTabPanel value={tabValue} index={7}>
-          {/* User Management Tab */}
-          <UserManagement />
-        </PortalTabPanel>
-
-        <PortalTabPanel value={tabValue} index={8}>
-          {/* Audit Trail Tab */}
-          <AuditTrailTable
-            title="NBE Portal - Complete Transaction History"
-            autoRefresh={true}
-            refreshInterval={60000}
-            showStats={false}
-            maxHeight={700}
           />
         </PortalTabPanel>
 
