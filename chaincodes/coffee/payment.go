@@ -755,8 +755,16 @@ func (c *CoffeeContract) SettlePayment(ctx contractapi.TransactionContextInterfa
 
 	if err != nil || err2 != nil || exchangeRate == 0 || retentionRate == 0 {
 		fmt.Printf("SettlePayment: Searching for forex allocation linked to LC %s...\n", payment.LCID)
-		forexID := "FOREX_" + payment.LCID
-		forexJSON, err := ctx.GetStub().GetState(forexID)
+		// The allocation is stored under the double-prefixed key
+		// FOREX_FOREX_<lcID>_REQUEST: callers invoke AllocateForex with
+		// forexID "FOREX_<lcID>_REQUEST" (api/src/routes/banking.ts:1484)
+		// and every forex read does GetState("FOREX_" + forexID)
+		// (forex.go ReadForex). The old lookup GetState("FOREX_" + lcID)
+		// never matched a stored allocation, so this documented
+		// zero-rate fallback always failed with "exchange rate must be
+		// positive". Read the key that actually exists.
+		forexID := "FOREX_" + payment.LCID + "_REQUEST"
+		forexJSON, err := ctx.GetStub().GetState("FOREX_" + forexID)
 		if err == nil && forexJSON != nil {
 			var forex ForexAllocation
 			if json.Unmarshal(forexJSON, &forex) == nil {
