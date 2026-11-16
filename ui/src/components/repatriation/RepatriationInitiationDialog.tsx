@@ -33,6 +33,7 @@ import {
 } from '@mui/icons-material';
 import { apiFetch, getAuthHeaders } from '@/config/api.config';
 import { useNotification } from '@/hooks/useNotification';
+import { bankAccountHelperText, validateBankAccount, validateBIC } from '@/utils/fieldValidation';
 
 const CBE_COLORS = {
   purple: '#9b30b7',
@@ -208,9 +209,20 @@ const RepatriationInitiationDialog: React.FC<RepatriationInitiationDialogProps> 
       newErrors.exportAmount = 'Valid export amount required';
     }
     if (!formData.currency) newErrors.currency = 'Currency is required';
+    // Field validation 2026-11-16: the FCY account must fit the named
+    // bank — CBE: exactly 13 digits starting with 1000; the BIC must be
+    // a valid 8/11-character SWIFT/BIC.
     if (!formData.fcyAccountNumber) newErrors.fcyAccountNumber = 'FCY account number is required';
+    else {
+      const acctCheck = validateBankAccount(formData.fcyBank, formData.fcyAccountNumber);
+      if (!acctCheck.valid) newErrors.fcyAccountNumber = acctCheck.error || 'Invalid FCY account number';
+    }
     if (!formData.fcyBank) newErrors.fcyBank = 'FCY bank is required';
     if (!formData.fcyBankBIC) newErrors.fcyBankBIC = 'BIC/SWIFT code is required';
+    else {
+      const bicCheck = validateBIC(formData.fcyBankBIC, 'FCY bank BIC');
+      if (!bicCheck.valid) newErrors.fcyBankBIC = bicCheck.error || 'Invalid BIC';
+    }
     if (!formData.shipmentDate) newErrors.shipmentDate = 'Shipment date is required';
 
     setErrors(newErrors);
@@ -466,9 +478,9 @@ const RepatriationInitiationDialog: React.FC<RepatriationInitiationDialogProps> 
                 fullWidth
                 label="FCY Account Number *"
                 value={formData.fcyAccountNumber}
-                onChange={(e) => handleInputChange('fcyAccountNumber', e.target.value)}
+                onChange={(e) => handleInputChange('fcyAccountNumber', e.target.value.replace(/\D/g, '').slice(0, 17))}
                 error={!!errors.fcyAccountNumber}
-                helperText={errors.fcyAccountNumber}
+                helperText={errors.fcyAccountNumber || bankAccountHelperText(formData.fcyBank)}
                 placeholder="e.g., 1000123456789"
               />
             </Grid>
@@ -488,9 +500,9 @@ const RepatriationInitiationDialog: React.FC<RepatriationInitiationDialogProps> 
                 fullWidth
                 label="Bank BIC/SWIFT Code *"
                 value={formData.fcyBankBIC}
-                onChange={(e) => handleInputChange('fcyBankBIC', e.target.value)}
+                onChange={(e) => handleInputChange('fcyBankBIC', e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 11))}
                 error={!!errors.fcyBankBIC}
-                helperText={errors.fcyBankBIC}
+                helperText={errors.fcyBankBIC || '8 or 11 characters, e.g. CBETETAA'}
                 placeholder="e.g., CBETETAA"
               />
             </Grid>

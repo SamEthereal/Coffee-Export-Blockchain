@@ -17,6 +17,24 @@ import { requireRole } from '../middleware/rbac';
 import { dedupeById, isValidLC } from '../utils/dataFilters';
 import { body, param } from 'express-validator';
 import { resolveDocumentPath } from '../utils/fileUtils';
+import { validateBankAccount, validateBIC } from '../utils/fieldValidation';
+
+/** Field validation 2026-11-16: BIC must be 8/11 chars (ISO 9362). */
+const bicValidator = (field: string, label: string) =>
+  body(field)
+    .notEmpty().withMessage(`${label} is required`).bail()
+    .custom((value) => {
+      const result = validateBIC(value, label);
+      if (!result.valid) throw new Error(result.error || 'Invalid BIC');
+      return true;
+    });
+
+/** Field validation 2026-11-16: account must fit the named bank (CBE: 13 digits, 1000…). */
+const bankAccountValidator = (bankField: string) => (value: unknown, { req }: any) => {
+  const result = validateBankAccount(req?.body?.[bankField], value);
+  if (!result.valid) throw new Error(result.error || 'Invalid bank account number');
+  return true;
+};
 
 const router = express.Router();
 const fabricService = FabricService.getInstance();
@@ -2896,9 +2914,10 @@ router.post('/payment/initiate',
     body('amount').notEmpty().withMessage('Amount is required'),
     body('currency').notEmpty().withMessage('Currency is required'),
     body('receivingBank').notEmpty().withMessage('Receiving bank is required'),
-    body('receivingBankBIC').notEmpty().withMessage('Receiving bank BIC is required'),
+    bicValidator('receivingBankBIC', 'Receiving bank BIC'),
     body('beneficiaryName').notEmpty().withMessage('Beneficiary name is required'),
-    body('beneficiaryAccount').notEmpty().withMessage('Beneficiary account is required'),
+    body('beneficiaryAccount').notEmpty().withMessage('Beneficiary account is required').bail()
+      .custom(bankAccountValidator('receivingBank')),
     body('paymentMethod').isIn(['LC', 'CAD', 'TT_ADVANCE', 'TT_POST', 'ADVANCE'])
       .withMessage('Invalid payment method. Must be LC, CAD, TT_ADVANCE, TT_POST, or ADVANCE'),
   ],
@@ -3390,7 +3409,7 @@ router.post('/payment/:paymentID/settle',
     body('retentionRate').isFloat({ gt: 0, max: 100 })
       .withMessage('Retention rate must be between 0 and 100'),
     body('payingBank').notEmpty().withMessage('Paying bank is required'),
-    body('payingBankBIC').notEmpty().withMessage('Paying bank BIC is required'),
+    bicValidator('payingBankBIC', 'Paying bank BIC'),
     body('swiftReference').notEmpty().withMessage('SWIFT reference is required'),
     // LEG3 M-9: nbeApprovalRef is required on the /payments/:id/settle
     // route — require it here too so the two settle routes agree. The
@@ -3527,9 +3546,9 @@ router.post('/cad',
     body('currency').notEmpty().withMessage('Currency is required'),
     body('paymentTerm').isIn(['SIGHT', 'ACCEPTANCE']).withMessage('Payment term must be SIGHT or ACCEPTANCE'),
     body('remittingBank').notEmpty().withMessage('Remitting bank is required'),
-    body('remittingBankBIC').notEmpty().withMessage('Remitting bank BIC is required'),
+    bicValidator('remittingBankBIC', 'Remitting bank BIC'),
     body('collectingBank').notEmpty().withMessage('Collecting bank is required'),
-    body('collectingBankBIC').notEmpty().withMessage('Collecting bank BIC is required'),
+    bicValidator('collectingBankBIC', 'Collecting bank BIC'),
     body('documents').isArray().withMessage('Documents array is required'),
   ],
   validateRequest,

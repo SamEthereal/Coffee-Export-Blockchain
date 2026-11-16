@@ -14,6 +14,24 @@ import { statusManager } from '../utils/statusManager';
 import { authMiddleware } from '../middleware/auth';
 import { requireRole } from '../middleware/rbac';
 import { blockchainCache, CacheKeys, CacheInvalidation } from '../services/blockchainCacheService';
+import { validateBankAccount, validateBIC } from '../utils/fieldValidation';
+
+/** Field validation 2026-11-16: BIC must be 8/11 chars (ISO 9362). */
+const bicValidator = (field: string, label: string) =>
+  body(field)
+    .notEmpty().withMessage(`${label} is required`).bail()
+    .custom((value) => {
+      const result = validateBIC(value, label);
+      if (!result.valid) throw new Error(result.error || 'Invalid BIC');
+      return true;
+    });
+
+/** Field validation 2026-11-16: account must fit the named bank (CBE: 13 digits, 1000…). */
+const bankAccountValidator = (bankField: string) => (value: unknown, { req }: any) => {
+  const result = validateBankAccount(req?.body?.[bankField], value);
+  if (!result.valid) throw new Error(result.error || 'Invalid bank account number');
+  return true;
+};
 
 const router = express.Router();
 const fabricService = FabricService.getInstance();
@@ -213,9 +231,10 @@ router.post('/initiate',
     body('amount').notEmpty().withMessage('Amount is required'),
     body('currency').notEmpty().withMessage('Currency is required'),
     body('receivingBank').notEmpty().withMessage('Receiving bank is required'),
-    body('receivingBankBIC').notEmpty().withMessage('Receiving bank BIC is required'),
+    bicValidator('receivingBankBIC', 'Receiving bank BIC'),
     body('beneficiaryName').notEmpty().withMessage('Beneficiary name is required'),
-    body('beneficiaryAccount').notEmpty().withMessage('Beneficiary account is required'),
+    body('beneficiaryAccount').notEmpty().withMessage('Beneficiary account is required').bail()
+      .custom(bankAccountValidator('receivingBank')),
     body('paymentMethod').notEmpty().withMessage('Payment method is required'),
   ],
   validateRequest,
@@ -848,7 +867,7 @@ router.post('/:paymentID/swift/initiate',
   [
     param('paymentID').notEmpty().withMessage('Payment ID is required'),
     body('swiftReference').notEmpty().withMessage('SWIFT reference is required'),
-    body('senderBIC').notEmpty().withMessage('Sender BIC is required'),
+    bicValidator('senderBIC', 'Sender BIC'),
     body('messageType').notEmpty().withMessage('Message type is required'),
     body('valueDate').notEmpty().withMessage('Value date is required'),
     body('charges').notEmpty().withMessage('Charges are required'),
@@ -1081,7 +1100,7 @@ router.post('/:paymentID/settle',
     body('exchangeRate').isFloat({ gt: 0 }).withMessage('Exchange rate must be greater than 0'),
     body('retentionRate').isFloat({ gt: 0, max: 100 }).withMessage('Retention rate must be between 0 and 100'),
     body('payingBank').notEmpty().withMessage('Paying bank is required'),
-    body('payingBankBIC').notEmpty().withMessage('Paying bank BIC is required'),
+    bicValidator('payingBankBIC', 'Paying bank BIC'),
     body('swiftReference').notEmpty().withMessage('SWIFT reference is required'),
     body('nbeApprovalRef').notEmpty().withMessage('NBE approval reference is required'),
   ],

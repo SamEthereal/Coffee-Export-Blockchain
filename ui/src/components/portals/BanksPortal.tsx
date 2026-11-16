@@ -45,6 +45,7 @@ import {
 import { createOrganizationTheme } from '@/theme/organizationThemes';
 import { apiFetch, API_BASE_URL, API_ENDPOINTS, getAuthHeaders } from '@/config/api.config';
 import api from '@/utils/api';
+import { validateBIC } from '@/utils/fieldValidation';
 import { couchDBService } from '@/services/couchdbService';
 import {
   AccountBalance,
@@ -1976,6 +1977,14 @@ const BanksPortal: React.FC = () => {
     const token = localStorage.getItem('authToken');
     const paymentId = selectedPaymentForDetails?.paymentId || selectedPaymentForDetails?.id;
     if (!paymentId) return;
+
+    // Field validation 2026-11-16: the API now rejects a malformed BIC
+    // with 400 — stop it here with a readable error instead.
+    const settleBicCheck = validateBIC(settleForm.payingBankBIC, 'Paying bank BIC');
+    if (!settleBicCheck.valid) {
+      showError('Invalid SWIFT/BIC', settleBicCheck.error || 'Enter a valid 8- or 11-character SWIFT/BIC code.');
+      return;
+    }
 
     try {
       setSettling(true);
@@ -5006,7 +5015,7 @@ const BanksPortal: React.FC = () => {
             loading={settling}
             loadingLabel="Settling…"
             ledgerWrite
-            disabled={settling || !(Number(settleForm.exchangeRate) > 0) || !(Number(settleForm.retentionRate) > 0) || !(Number(settleForm.retentionRate) <= 100) || !settleForm.payingBank || !settleForm.payingBankBIC || !settleForm.swiftReference || !settleForm.nbeApprovalRef}
+            disabled={settling || !(Number(settleForm.exchangeRate) > 0) || !(Number(settleForm.retentionRate) > 0) || !(Number(settleForm.retentionRate) <= 100) || !settleForm.payingBank || !validateBIC(settleForm.payingBankBIC, 'Paying bank BIC').valid || !settleForm.swiftReference || !settleForm.nbeApprovalRef}
           >
             Settle Payment
           </PrimaryButton>
@@ -5051,9 +5060,11 @@ const BanksPortal: React.FC = () => {
                 <PortalField
                   label="Paying Bank BIC *"
                   value={settleForm.payingBankBIC}
-                  onChange={(e) => setSettleForm({ ...settleForm, payingBankBIC: e.target.value })}
+                  onChange={(e) => setSettleForm({ ...settleForm, payingBankBIC: e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 11) })}
                   fullWidth
                   required
+                  helperText="8 or 11 characters, e.g. CBETETAA"
+                  error={settleForm.payingBankBIC.length > 0 && !validateBIC(settleForm.payingBankBIC, 'Paying bank BIC').valid}
                 />
               </Grid>
               <Grid item xs={12} md={6}>

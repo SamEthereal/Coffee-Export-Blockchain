@@ -9,6 +9,20 @@ import { logAuditBestEffort } from '../utils/auditBestEffort';
 import { validateRequest } from '../middleware/validation';
 import { authMiddleware, requireRole } from '../middleware/auth';
 import { body, param } from 'express-validator';
+import { validatePhoneNumber } from '../utils/fieldValidation';
+
+/** Field validation 2026-11-16: driver phone must be valid E.164. */
+const phoneValidator = (value: unknown) => {
+  const result = validatePhoneNumber(value);
+  if (!result.valid) throw new Error(result.error || 'Invalid phone number');
+  return true;
+};
+
+const phoneSanitizer = (value: unknown) => {
+  if (typeof value !== 'string') return value;
+  const result = validatePhoneNumber(value);
+  return result.valid && result.normalized ? result.normalized : value;
+};
 
 const router = express.Router();
 const fabricService = FabricService.getInstance();
@@ -58,6 +72,8 @@ router.post('/:shipmentID/start',
     body('transportCompany').notEmpty().withMessage('Transport company is required'),
     body('truckPlateNumber').notEmpty().withMessage('Truck plate number is required'),
     body('driverName').notEmpty().withMessage('Driver name is required'),
+    // Field validation 2026-11-16: driver phone was not validated at all.
+    body('driverPhone').optional({ values: 'falsy' }).customSanitizer(phoneSanitizer).custom(phoneValidator),
     body('sealNumber').notEmpty().withMessage('Seal number is required'),
   ],
   validateRequest,

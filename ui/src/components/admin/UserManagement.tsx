@@ -51,6 +51,8 @@ import { DataGrid, GridColDef } from '@mui/x-data-grid';
 import { getRolesByOrganization, ADMIN_CONFIG } from '@/config/organizationConfig';
 import { useForm, Controller } from 'react-hook-form';
 import api from '@/utils/api';
+import PhoneInput from '@/components/common/PhoneInput';
+import { validatePhoneNumber } from '@/utils/fieldValidation';
 import BlockchainIdentityPanel from './BlockchainIdentityPanel';
 
 import { useAuth } from '@/contexts/AuthContext';
@@ -1208,18 +1210,15 @@ const UserManagement: React.FC = () => {
                   name="phone"
                   control={control}
                   defaultValue=""
+                  // Field validation 2026-11-16: country-code selector +
+                  // per-country length (PhoneInput); the API enforces the
+                  // same E.164 rule server-side.
+                  rules={{ validate: (v: string | undefined) => !v || validatePhoneNumber(v).valid || validatePhoneNumber(v).error || 'Invalid phone number' }}
                   render={({ field }) => (
-                    <TextField
-                      {...field}
-                      fullWidth
+                    <PhoneInput
                       label="Phone Number"
-                      InputProps={{
-                        startAdornment: (
-                          <InputAdornment position="start">
-                            <Phone />
-                          </InputAdornment>
-                        ),
-                      }}
+                      value={field.value || ''}
+                      onChange={(v) => field.onChange(v)}
                     />
                   )}
                 />
@@ -1380,18 +1379,15 @@ const UserManagement: React.FC = () => {
                   name="phone"
                   control={control}
                   defaultValue=""
+                  // Field validation 2026-11-16: country-code selector +
+                  // per-country length (PhoneInput); the API enforces the
+                  // same E.164 rule server-side.
+                  rules={{ validate: (v: string | undefined) => !v || validatePhoneNumber(v).valid || validatePhoneNumber(v).error || 'Invalid phone number' }}
                   render={({ field }) => (
-                    <TextField
-                      {...field}
-                      fullWidth
+                    <PhoneInput
                       label="Phone Number"
-                      InputProps={{
-                        startAdornment: (
-                          <InputAdornment position="start">
-                            <Phone />
-                          </InputAdornment>
-                        ),
-                      }}
+                      value={field.value || ''}
+                      onChange={(v) => field.onChange(v)}
                     />
                   )}
                 />

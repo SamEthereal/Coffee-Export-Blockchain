@@ -1290,7 +1290,7 @@ RETENTION_ACCOUNT=$(curl -s -X POST "$API_URL/nbe/retention-accounts" \
     -H "Content-Type: application/json" \
     -d "{
         \"exporterId\": $EXPORTER_USER_ID,
-        \"accountNumber\": \"RET-ACC-TEST-${RUN_ID}\",
+        \"accountNumber\": \"1000123456789\",
         \"accountType\": \"FOREX_RETENTION\",
         \"currency\": \"USD\",
         \"retentionPercentage\": 40.00,
@@ -1325,7 +1325,7 @@ RETENTION_UPDATE=$(curl -s -X POST "$API_URL/nbe/retention-accounts" \
     -H "Content-Type: application/json" \
     -d "{
         \"exporterId\": $EXPORTER_USER_ID,
-        \"accountNumber\": \"RET-ACC-TEST-${RUN_ID}\",
+        \"accountNumber\": \"1000123456789\",
         \"accountType\": \"FOREX_RETENTION\",
         \"currency\": \"USD\",
         \"retentionPercentage\": 45.00,

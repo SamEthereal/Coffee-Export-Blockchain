@@ -9,6 +9,7 @@ import notificationService from '../services/notificationService';
 import { validateRequest } from '../middleware/validation';
 import { authMiddleware, requireRole } from '../middleware/auth';
 import { body, param, query } from 'express-validator';
+import { BIC_RE } from '../utils/fieldValidation';
 
 const router = express.Router();
 const fabricService = FabricService.getInstance();
@@ -20,7 +21,7 @@ const fabricService = FabricService.getInstance();
 // receiver BIC sailed through POST /swift/messages with 201. The compose
 // dialog already enforces this shape; enforce it here on every create
 // route so a bad BIC 400s at the API, never reaching the ledger.
-const BIC_RE = /^[A-Z]{6}[A-Z0-9]{2}([A-Z0-9]{3})?$/;
+// (BIC_RE lives in utils/fieldValidation.ts so every route shares it.)
 const bicValidator = (field: string, label: string) =>
   body(field)
     .notEmpty().withMessage(`${label} is required`)

@@ -9,6 +9,7 @@ import { DatabaseService } from '../services/databaseService';
 import { FabricService } from '../services/fabricService';
 import { logger } from '../utils/logger';
 import { logAuditBestEffort } from '../utils/auditBestEffort';
+import { validateBankAccount } from '../utils/fieldValidation';
 
 const router = Router();
 const postgresDb = DatabaseService.getInstance();
@@ -663,6 +664,20 @@ router.post('/retention-accounts', authMiddleware, requireRole('NBE'), async (re
         error: {
           code: 'VALIDATION_ERROR',
           message: 'exporterId, accountNumber, and currency are required'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    // Field validation 2026-11-16: a retention account is an Ethiopian
+    // bank account — exactly 13 digits (CBE: starting with 1000).
+    const accountCheck = validateBankAccount(undefined, accountNumber);
+    if (!accountCheck.valid) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: accountCheck.error || 'Invalid bank account number'
         },
         timestamp: new Date().toISOString()
       });

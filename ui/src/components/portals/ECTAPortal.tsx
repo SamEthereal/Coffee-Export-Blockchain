@@ -88,6 +88,7 @@ import { Exporter, CoffeeShipment, ExporterFormData } from '@/types';
 import BankSelect from '@/components/common/BankSelect';
 import BankBranchSelect from '@/components/common/BankBranchSelect';
 import { BankBranch } from '@/utils/bankBranches';
+import { bankAccountHelperText, validateBankAccount } from '@/utils/fieldValidation';
 import { DocumentValidationDialog } from './DocumentValidationDialog';
 import { useAuth } from '@/contexts/AuthContext';
 
@@ -954,6 +955,13 @@ ${action === 'suspend' ?
     }
     if (!approvalData.bankAccountNumber.trim()) {
       showError('Bank Account Required', 'Enter the exporter bank account number — approval is refused without bank details (BANK_DETAILS_REQUIRED).');
+      return;
+    }
+    // Field validation 2026-11-16: the account must fit the selected
+    // bank — CBE: exactly 13 digits starting with 1000.
+    const approvalAcctCheck = validateBankAccount(approvalData.bankName, approvalData.bankAccountNumber);
+    if (!approvalAcctCheck.valid) {
+      showError('Invalid Bank Account', approvalAcctCheck.error || 'Enter a valid bank account number.');
       return;
     }
     
@@ -3669,7 +3677,9 @@ The exporter can reapply once all requirements are met.`,
               // in this gate, so the officer could approve a legacy
               // application that has none — the API then 400d with
               // BANK_DETAILS_REQUIRED and the dialog gave no hint why.
+              // Field validation 2026-11-16: it must also fit the bank.
               !approvalData.bankAccountNumber ||
+              !validateBankAccount(approvalData.bankName, approvalData.bankAccountNumber).valid ||
               !approvalData.bankBranch
             }
           >
@@ -3764,15 +3774,18 @@ The exporter can reapply once all requirements are met.`,
             {/* Account Number — pre-filled from exporter's application.
                 Validation fix (2026-11-13): required — the API refuses
                 approval without bank details (BANK_DETAILS_REQUIRED), but
-                this field was optional in the dialog. */}
+                this field was optional in the dialog.
+                Field validation 2026-11-16: the account must fit the
+                selected bank — CBE: exactly 13 digits starting with 1000. */}
             <Grid item xs={12} md={4}>
               <PortalField
                 fullWidth
                 required
                 label="Account Number"
                 value={approvalData.bankAccountNumber}
-                onChange={(e) => setApprovalData({ ...approvalData, bankAccountNumber: e.target.value })}
-                helperText="As submitted by the exporter — required for approval"
+                onChange={(e) => setApprovalData({ ...approvalData, bankAccountNumber: e.target.value.replace(/\D/g, '').slice(0, 17) })}
+                helperText={(() => { const c = validateBankAccount(approvalData.bankName, approvalData.bankAccountNumber); return approvalData.bankAccountNumber.length > 0 && !c.valid ? (c.error || '') : bankAccountHelperText(approvalData.bankName); })()}
+                error={approvalData.bankAccountNumber.length > 0 && !validateBankAccount(approvalData.bankName, approvalData.bankAccountNumber).valid}
               />
             </Grid>
             

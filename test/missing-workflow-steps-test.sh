@@ -372,7 +372,7 @@ log_test "Submit exporter application"
 APP_EMAIL="missing.test.$TS@coffeeexport.et"
 APP_DATA="{
     \"companyName\": \"Missing Steps Coffee Exporters Ltd\",
-    \"tinNumber\": \"TIN$TS\",
+    \"tinNumber\": \"$TS\",
     \"businessLicenseNumber\": \"BL$TS\",
     \"email\": \"$APP_EMAIL\",
     \"phone\": \"+251911234567\",
@@ -867,7 +867,7 @@ if [ "$FOREX_OK" = "false" ]; then
     log_blocked "Record retention — no forex record (request failed/blocked)"
 else
 RETENTION_DATA="{
-    \"fcyAccountNumber\": \"FCY-$TS\",
+    \"fcyAccountNumber\": \"1000123456789\",
     \"retentionPercentage\": 40
 }"
 call POST "/retention/$FOREX_ID/retention" "$NBE_TOKEN" "$RETENTION_DATA"

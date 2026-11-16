@@ -35,6 +35,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useRouter } from 'next/router';
 import api from '@/utils/api';
 import Head from 'next/head';
+import { validateBankAccount, validatePhoneNumber, validateTIN } from '@/utils/fieldValidation';
 
 const ResubmitApplicationPage: React.FC = () => {
   const { user, logout } = useAuth();
@@ -142,6 +143,19 @@ const ResubmitApplicationPage: React.FC = () => {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    // Field validation 2026-11-16: the API now enforces phone / bank /
+    // TIN formats on resubmit — check here first so the applicant gets
+    // the reason inline instead of a bare API 400.
+    const tinCheck = validateTIN(formData.tinNumber);
+    if (!tinCheck.valid) { setError(tinCheck.error || 'Invalid TIN number'); return; }
+    if (formData.phone) {
+      const phoneCheck = validatePhoneNumber(formData.phone);
+      if (!phoneCheck.valid) { setError(phoneCheck.error || 'Invalid phone number'); return; }
+    }
+    if (formData.bankAccountNumber) {
+      const acctCheck = validateBankAccount(formData.bankName, formData.bankAccountNumber);
+      if (!acctCheck.valid) { setError(acctCheck.error || 'Invalid bank account number'); return; }
+    }
     setSubmitting(true);
     setError('');
 
@@ -404,15 +418,17 @@ const ResubmitApplicationPage: React.FC = () => {
                                 label="TIN Number"
                                 value={formData.tinNumber}
                                 onChange={(e) =>
-                                  setFormData({ ...formData, tinNumber: e.target.value })
+                                  setFormData({ ...formData, tinNumber: e.target.value.replace(/[^\d-]/g, '').slice(0, 13) })
                                 }
                                 required
+                                inputProps={{ inputMode: 'numeric', maxLength: 13 }}
+                                error={formData.tinNumber.length > 0 && !validateTIN(formData.tinNumber).valid}
                                 sx={{
                                   '& .MuiOutlinedInput-root': {
                                     backgroundColor: '#fffbea',
                                   }
                                 }}
-                                helperText="✏️ Editable - must match official records"
+                                helperText="✏️ Editable - must match official records (exactly 10 digits)"
                               />
                             </Grid>
                             <Grid item xs={12} sm={6}>

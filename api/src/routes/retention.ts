@@ -8,6 +8,14 @@ import { authMiddleware } from '../middleware/auth';
 import { requireRole } from '../middleware/rbac';
 import { body, param } from 'express-validator';
 import { validateRequest } from '../middleware/validation';
+import { validateBankAccount } from '../utils/fieldValidation';
+
+/** Field validation 2026-11-16: FCY account must be a 13-digit Ethiopian account. */
+const bankAccountValidator = (value: unknown) => {
+  const result = validateBankAccount(undefined, value);
+  if (!result.valid) throw new Error(result.error || 'Invalid bank account number');
+  return true;
+};
 
 const router = express.Router();
 const fabricService = FabricService.getInstance();
@@ -199,7 +207,8 @@ router.post('/:forexId/retention',
   requireRole(['BANKS', 'BANK_ADMIN', 'BANK OFFICER', 'FOREX OFFICER', 'NBE', 'NBE_ADMIN', 'NBE OFFICER']),
   [
     param('forexId').notEmpty(),
-    body('fcyAccountNumber').notEmpty(),
+    body('fcyAccountNumber').notEmpty().withMessage('FCY account number is required').bail()
+      .custom(bankAccountValidator),
     body('retentionPercentage').isFloat({ min: 0, max: 100 }),
   ],
   validateRequest,

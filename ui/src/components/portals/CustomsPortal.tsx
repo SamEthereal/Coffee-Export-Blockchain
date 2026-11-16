@@ -77,6 +77,8 @@ import {
 } from '@/components/shared/portal';
 import { CustomsInspection } from './CustomsInspection';
 import { extractTxId, shortTxId } from '@/utils/txId';
+import PhoneInput from '@/components/common/PhoneInput';
+import { validatePhoneNumber } from '@/utils/fieldValidation';
 import { CustomsClearedShipments } from './CustomsClearedShipments';
 import { DocumentUploadDialog } from './DocumentUploadDialog';
 import UserManagement from '@/components/admin/UserManagement';
@@ -1402,6 +1404,13 @@ ${solution}`);
     }
     if (!inspectionForm.contactPerson.trim() || !inspectionForm.contactPhone.trim()) {
       setSnackbar({ open: true, message: 'Exporter contact person and phone are required', severity: 'error' });
+      return;
+    }
+    // Field validation 2026-11-16: the contact phone must be valid E.164
+    // for its country (ET +251: exactly 9 digits after the code).
+    const contactPhoneCheck = validatePhoneNumber(inspectionForm.contactPhone);
+    if (!contactPhoneCheck.valid) {
+      setSnackbar({ open: true, message: contactPhoneCheck.error || 'Invalid contact phone number', severity: 'error' });
       return;
     }
     
@@ -3810,19 +3819,13 @@ ${rejectionForm.officerNotes ? '\n[INTERNAL NOTES - NOT VISIBLE TO EXPORTER]:\n'
                   />
                 </Grid>
 
-                {/* Contact Phone */}
+                {/* Contact Phone — country selector + per-country length (field validation 2026-11-16) */}
                 <Grid item xs={12} md={6}>
-                  <PortalField
-                    fullWidth
+                  <PhoneInput
                     required
                     label="Contact Phone"
                     value={inspectionForm.contactPhone}
-                    onChange={(e) => setInspectionForm({ ...inspectionForm, contactPhone: e.target.value })}
-                    placeholder="+251-XX-XXX-XXXX"
-                    helperText="Auto-filled from exporter registration"
-                    InputProps={{
-                      sx: inspectionAutoData.contactPhone ? { bgcolor: 'success.50' } : {}
-                    }}
+                    onChange={(v) => setInspectionForm({ ...inspectionForm, contactPhone: v })}
                   />
                 </Grid>
 

@@ -13,6 +13,20 @@ import { body, param } from 'express-validator';
 import { dedupeById, hasText, isValidContract } from '../utils/dataFilters';
 import { statusManager } from '../utils/statusManager';
 import { resolveDocumentPath } from '../utils/fileUtils';
+import { validatePhoneNumber } from '../utils/fieldValidation';
+
+/** Field validation 2026-11-16: buyer phone must be valid E.164. */
+const phoneValidator = (value: unknown) => {
+  const result = validatePhoneNumber(value);
+  if (!result.valid) throw new Error(result.error || 'Invalid phone number');
+  return true;
+};
+
+const phoneSanitizer = (value: unknown) => {
+  if (typeof value !== 'string') return value;
+  const result = validatePhoneNumber(value);
+  return result.valid && result.normalized ? result.normalized : value;
+};
 
 const router = express.Router();
 const fabricService = FabricService.getInstance();
@@ -96,7 +110,7 @@ router.patch('/:contractId',
     body('specialInstructions').optional().isString(),
     // LEG 1 (F3): buyer contact fields (PG columns via migration 073).
     body('buyerEmail').optional().isEmail().withMessage('Buyer email must be a valid email address'),
-    body('buyerPhone').optional().isString(),
+    body('buyerPhone').optional({ values: 'falsy' }).customSanitizer(phoneSanitizer).custom(phoneValidator),
     body('documents').optional().isArray(),
   ],
   validateRequest,
@@ -447,7 +461,7 @@ router.post('/',
     // were accepted by the UI but never declared here, so creation
     // silently dropped them.
     body('buyerEmail').optional().isEmail().withMessage('Buyer email must be a valid email address'),
-    body('buyerPhone').optional().isString().withMessage('Buyer phone must be a string'),
+    body('buyerPhone').optional({ values: 'falsy' }).customSanitizer(phoneSanitizer).custom(phoneValidator),
     body('organicCertified').optional().isBoolean().withMessage('Organic certified must be a boolean'),
     body('fairTradeCertified').optional().isBoolean().withMessage('Fair trade certified must be a boolean'),
     body('portOfLoading').optional().isString().withMessage('Port of loading must be a string'),

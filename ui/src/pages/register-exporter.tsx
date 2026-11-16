@@ -19,6 +19,8 @@ import api from '@/utils/api';
 import { API_BASE_URL } from '@/config/api.config';
 import BankSelect from '@/components/common/BankSelect';
 import BankBranchSelect from '@/components/common/BankBranchSelect';
+import PhoneInput from '@/components/common/PhoneInput';
+import { bankAccountHelperText, validateBankAccount, validatePhoneNumber, validateTIN } from '@/utils/fieldValidation';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -257,8 +259,10 @@ const RegisterExporterPage = () => {
   const handleChange = (field: keyof FormData) => (e: React.ChangeEvent<HTMLInputElement>) => {
     const v = e.target.value;
     if (field === 'region') { setFormData(p => ({ ...p, region: v, city: '' })); }
-    else if (field === 'phone') { setFormData(p => ({ ...p, phone: v.replace(/\D/g, '').slice(0, 9) })); }
-    else if (field === 'bankAccountNumber') { setFormData(p => ({ ...p, bankAccountNumber: v.replace(/\D/g, '').slice(0, 13) })); }
+    // Field validation 2026-11-16: phone is a full E.164 value managed by
+    // PhoneInput (country selector + per-country length) — no slicing here.
+    else if (field === 'tinNumber') { setFormData(p => ({ ...p, tinNumber: v.replace(/[^\d-]/g, '').slice(0, 13) })); }
+    else if (field === 'bankAccountNumber') { setFormData(p => ({ ...p, bankAccountNumber: v.replace(/\D/g, '').slice(0, 17) })); }
     else { setFormData(p => ({ ...p, [field]: v })); }
   };
 
@@ -268,7 +272,9 @@ const RegisterExporterPage = () => {
 
   const validate = (): string | null => {
     if (!formData.companyName.trim())           return 'Company name is required';
-    if (!formData.tinNumber.trim())             return 'TIN number is required';
+    // Field validation 2026-11-16: Ethiopian TIN is exactly 10 digits
+    // (branches may add a -NN suffix).
+    { const tinCheck = validateTIN(formData.tinNumber); if (!tinCheck.valid) return tinCheck.error || 'TIN number is required'; }
     if (!docFiles.tinDoc)                       return 'Please upload your TIN Certificate';
     if (!formData.businessLicenseNumber.trim()) return 'Business license number is required';
     if (!docFiles.businessLicenseDoc)           return 'Please upload your Business License';
@@ -288,12 +294,12 @@ const RegisterExporterPage = () => {
     if (!formData.contactPerson.trim())         return 'Contact person is required';
     if (!formData.email.trim() || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(formData.email))
       return 'Valid email address is required';
-    if (!formData.phone || formData.phone.length !== 9)
-      return 'Phone number must be exactly 9 digits after +251';
-    if (!formData.bankAccountNumber)
-      return 'Bank account number is required';
-    if (formData.bankAccountNumber.length > 13)
-      return 'Bank account number must not exceed 13 digits';
+    // Field validation 2026-11-16: phone must be valid E.164 for the
+    // selected country (ET +251: exactly 9 digits after the code).
+    { const phoneCheck = validatePhoneNumber(formData.phone); if (!phoneCheck.valid) return phoneCheck.error || 'Valid phone number is required'; }
+    // Field validation 2026-11-16: the account must fit the selected
+    // bank — CBE: exactly 13 digits starting with 1000.
+    { const acctCheck = validateBankAccount(formData.bankName, formData.bankAccountNumber); if (!acctCheck.valid) return acctCheck.error || 'Bank account number is required'; }
     if (!formData.address.trim())              return 'Physical address is required';
     if (!formData.region)                      return 'Region is required';
     if (!formData.city)                        return 'City is required';
@@ -313,7 +319,9 @@ const RegisterExporterPage = () => {
     setLoading(true); setError('');
     try {
       const res = await api.post('/exporters/exporter-applications', {
-        ...formData, phone: `+251${formData.phone}`, documents: [],
+        // Field validation 2026-11-16: phone is already a full E.164
+        // value from PhoneInput — do not re-prefix +251.
+        ...formData, documents: [],
       });
       if (!res.data.success) throw new Error(res.data.error?.message || 'Submission failed');
       const appId = res.data.data.applicationId;
@@ -476,7 +484,7 @@ const RegisterExporterPage = () => {
         title: 'Contact Details', icon: <Person />, color: C.blue,
         rows: [
           ['Contact Person', formData.contactPerson], ['Email', formData.email],
-          ['Phone', `+251 ${formData.phone}`], ['Address', formData.address],
+          ['Phone', formData.phone], ['Address', formData.address],
           ['Region', formData.region], ['City', formData.city],
           ...(formData.bankName ? [['Bank', formData.bankName] as [string,string]] : []),
           ...(formData.bankAccountNumber ? [['Account No.', formData.bankAccountNumber] as [string,string]] : []),
@@ -678,8 +686,9 @@ const RegisterExporterPage = () => {
                     {/* TIN number — upload button lives inside the field */}
                     <Grid item xs={12} md={6}>
                       <TextField fullWidth required label="TIN Number" value={formData.tinNumber} onChange={handleChange('tinNumber')} size="small"
-                        error={docsTouched && !docFiles.tinDoc}
-                        helperText={docsTouched && !docFiles.tinDoc ? 'TIN certificate upload required' : 'Tax Identification Number'}
+                        inputProps={{ inputMode: 'numeric', maxLength: 13 }}
+                        error={docsTouched && (!docFiles.tinDoc || !validateTIN(formData.tinNumber).valid)}
+                        helperText={docsTouched && !docFiles.tinDoc ? 'TIN certificate upload required' : 'Tax Identification Number — exactly 10 digits'}
                         InputProps={{
                           endAdornment: <UploadAdornment docKey="tinDoc" file={docFiles.tinDoc} color={C.purple} touched={docsTouched && !docFiles.tinDoc} onChange={handleDoc} />,
                         }} />
@@ -811,23 +820,13 @@ const RegisterExporterPage = () => {
                         InputProps={{ startAdornment: <InputAdornment position="start"><Email sx={{ color: C.blue, fontSize: 18 }} /></InputAdornment> }} />
                     </Grid>
 
-                    {/* Phone — Ethiopia code prefix */}
+                    {/* Phone — country-code selector + per-country length (field validation 2026-11-16) */}
                     <Grid item xs={12} md={6}>
-                      <TextField
-                        fullWidth required label="Phone Number" value={formData.phone} onChange={handleChange('phone')} size="small"
-                        inputProps={{ maxLength: 9, inputMode: 'numeric', pattern: '[0-9]*' }}
-                        helperText={`${formData.phone.length}/9 digits after +251`}
-                        error={formData.phone.length > 0 && formData.phone.length !== 9}
-                        InputProps={{
-                          startAdornment: (
-                            <InputAdornment position="start">
-                              <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, pr: 1, borderRight: `2px solid ${alpha(C.blue, 0.2)}`, mr: 0.5 }}>
-                                <Typography sx={{ fontSize: '1.1rem', lineHeight: 1 }}>🇪🇹</Typography>
-                                <Typography variant="body2" fontWeight={700} sx={{ color: C.blue, fontSize: '0.8rem' }}>+251</Typography>
-                              </Box>
-                            </InputAdornment>
-                          ),
-                        }}
+                      <PhoneInput
+                        required
+                        label="Phone Number"
+                        value={formData.phone}
+                        onChange={(v) => setFormData(p => ({ ...p, phone: v }))}
                       />
                     </Grid>
 
@@ -861,8 +860,13 @@ const RegisterExporterPage = () => {
 
                     <Grid item xs={12} md={6}>
                       <TextField fullWidth label="Bank Account Number *" value={formData.bankAccountNumber} onChange={handleChange('bankAccountNumber')} size="small" required
-                        inputProps={{ inputMode: 'numeric', maxLength: 13, pattern: '[0-9]*' }}
-                        helperText="Required — up to 13 digits"
+                        inputProps={{ inputMode: 'numeric', maxLength: 17, pattern: '[0-9]*' }}
+                        // Field validation 2026-11-16: the required length
+                        // follows the selected bank (CBE: 13 digits, 1000…).
+                        // Show the rule's error message when invalid, not
+                        // just a red border.
+                        helperText={(() => { const c = validateBankAccount(formData.bankName, formData.bankAccountNumber); return formData.bankAccountNumber.length > 0 && !c.valid ? (c.error || '') : bankAccountHelperText(formData.bankName); })()}
+                        error={formData.bankAccountNumber.length > 0 && !validateBankAccount(formData.bankName, formData.bankAccountNumber).valid}
                         InputProps={{ startAdornment: <InputAdornment position="start"><AccountBalance sx={{ color: C.blue, fontSize: 18 }} /></InputAdornment> }} />
                     </Grid>
 

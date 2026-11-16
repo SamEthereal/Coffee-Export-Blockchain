@@ -79,7 +79,7 @@ APPLICATION_RESPONSE=$(curl -s -X POST ${API_BASE}/exporters/exporter-applicatio
   -H "Content-Type: application/json" \
   -d "{
     \"companyName\": \"Test Coffee Export Ltd $TIMESTAMP\",
-    \"tinNumber\": \"TIN${TIMESTAMP}\",
+    \"tinNumber\": \"$(date +%s)\",
     \"businessLicenseNumber\": \"BL${TIMESTAMP}\",
     \"capitalRequirement\": \"20000000\",
     \"professionalTaster\": \"yes\",

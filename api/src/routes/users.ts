@@ -9,6 +9,20 @@ import { authMiddleware } from '../middleware/auth';
 import { body, param, query } from 'express-validator';
 import { validateRequest } from '../middleware/validation';
 import { DatabaseService } from '../services/databaseService';
+import { validatePhoneNumber } from '../utils/fieldValidation';
+
+/** Field validation 2026-11-16: phone must be valid E.164 for its country. */
+const phoneValidator = (value: unknown) => {
+  const result = validatePhoneNumber(value);
+  if (!result.valid) throw new Error(result.error || 'Invalid phone number');
+  return true;
+};
+
+const phoneSanitizer = (value: unknown) => {
+  if (typeof value !== 'string') return value;
+  const result = validatePhoneNumber(value);
+  return result.valid && result.normalized ? result.normalized : value;
+};
 
 const router = Router();
 const db = DatabaseService.getInstance();
@@ -299,6 +313,8 @@ router.post('/',
     body('email').isEmail().withMessage('Valid email is required'),
     body('password').isLength({ min: 8 }).withMessage('Password must be at least 8 characters'),
     body('fullName').notEmpty().withMessage('Full name is required'),
+    // Field validation 2026-11-16: phone was not validated at all here.
+    body('phone').optional({ values: 'falsy' }).customSanitizer(phoneSanitizer).custom(phoneValidator),
     body('role').notEmpty().withMessage('Role is required')
       .isString().withMessage('Role must be a string')
       .isIn([...VALID_USER_ROLES]).withMessage(`Role must be one of: ${VALID_USER_ROLES.join(', ')}`),
@@ -734,7 +750,13 @@ router.get('/:userId',
  */
 router.put('/:userId',
   authMiddleware,
-  [param('userId').notEmpty().withMessage('User ID is required')],
+  [
+    param('userId').notEmpty().withMessage('User ID is required'),
+    // Field validation 2026-11-16: PUT previously had no body validation
+    // at all — any phone/email string was stored verbatim.
+    body('email').optional({ values: 'falsy' }).isEmail().withMessage('Valid email is required'),
+    body('phone').optional({ values: 'falsy' }).customSanitizer(phoneSanitizer).custom(phoneValidator),
+  ],
   validateRequest,
   async (req: Request, res: Response) => {
     try {

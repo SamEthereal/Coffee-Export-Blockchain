@@ -16,6 +16,34 @@ import { body, param, query } from 'express-validator';
 import { statusManager } from '../utils/statusManager';
 import crypto from 'crypto';
 import bcrypt from 'bcryptjs';
+import { validateBankAccount, validatePhoneNumber, validateTIN } from '../utils/fieldValidation';
+
+/** express-validator custom: phone must be valid E.164 for its country. */
+const phoneValidator = (value: unknown) => {
+  const result = validatePhoneNumber(value);
+  if (!result.valid) throw new Error(result.error || 'Invalid phone number');
+  return true;
+};
+
+/** Normalise a phone to E.164 before validation/storage (legacy bare ET numbers). */
+const phoneSanitizer = (value: unknown) => {
+  if (typeof value !== 'string') return value;
+  const result = validatePhoneNumber(value);
+  return result.valid && result.normalized ? result.normalized : value;
+};
+
+/** express-validator custom: bank account must fit the selected bank. */
+const bankAccountValidator = (bankField: string) => (value: unknown, { req }: any) => {
+  const result = validateBankAccount(req?.body?.[bankField], value);
+  if (!result.valid) throw new Error(result.error || 'Invalid bank account number');
+  return true;
+};
+
+const tinValidator = (value: unknown) => {
+  const result = validateTIN(value);
+  if (!result.valid) throw new Error(result.error || 'Invalid TIN number');
+  return true;
+};
 
 const router = express.Router();
 const fabricService = FabricService.getInstance();
@@ -142,14 +170,17 @@ router.get('/applications/:applicationId',
 router.post('/exporter-applications',
   [
     body('companyName').notEmpty().withMessage('Company name is required'),
-    body('tinNumber').notEmpty().withMessage('TIN number is required'),
+    body('tinNumber').notEmpty().withMessage('TIN number is required').bail().custom(tinValidator),
     body('businessLicenseNumber').notEmpty().withMessage('Business license number is required'),
     body('capitalRequirement').notEmpty().withMessage('Capital requirement is required'),
     body('professionalTaster').notEmpty().withMessage('Professional taster is required'),
     body('tasterCertificate').optional({ values: 'falsy' }).isString().withMessage('Taster certificate must be a string'),
     body('contactPerson').notEmpty().withMessage('Contact person is required'),
     body('email').isEmail().withMessage('Valid email is required'),
-    body('phone').notEmpty().withMessage('Phone number is required'),
+    // Field validation 2026-11-16: phone must be valid E.164 for the
+    // selected country (ET +251: exactly 9 digits after the code).
+    body('phone').notEmpty().withMessage('Phone number is required').bail()
+      .customSanitizer(phoneSanitizer).custom(phoneValidator),
     body('address').notEmpty().withMessage('Address is required'),
     body('city').notEmpty().withMessage('City is required'),
     body('region').optional().isString().withMessage('Region must be a string'),
@@ -157,10 +188,13 @@ router.post('/exporter-applications',
     // E2E leg 1 (F16): bank account number is required — applications
     // were created without one, leaving ECTA to approve exporters with
     // no account for settlement. The form marks it required too.
+    // Field validation 2026-11-16: the account must fit the selected
+    // bank — CBE: exactly 13 digits starting with 1000; other known
+    // Ethiopian banks: exactly 13 digits.
     body('bankAccountNumber')
       .notEmpty().withMessage('Bank account number is required').bail()
-      .isString().withMessage('Bank account number must be a string')
-      .matches(/^\d{1,13}$/).withMessage('Bank account number must contain no more than 13 digits'),
+      .isString().withMessage('Bank account number must be a string').bail()
+      .custom(bankAccountValidator('bankName')),
     body('bankBranchName').optional().isString().withMessage('Bank branch name must be a string'),
     // The approve dialog and some clients send bankBranch instead of
     // bankBranchName (same alias pair as the approve route) — accept
@@ -424,7 +458,9 @@ router.post('/exporter-applications/:applicationId/approve',
       .withMessage('ECTA license number must contain only letters, numbers, hyphens, or underscores'),
     body('licenseExpiryDate').isISO8601(),
     body('bankName').optional(),
-    body('bankAccountNumber').optional(),
+    // Field validation 2026-11-16: when the approve dialog supplies an
+    // account, it must fit the bank (CBE: 13 digits starting 1000).
+    body('bankAccountNumber').optional({ values: 'falsy' }).custom(bankAccountValidator('bankName')),
     // LEG 1 (F7): the UI sends bankBranch; accept bankBranchName too —
     // the two names were used interchangeably across the form, the
     // approve dialog and this route.
@@ -1059,7 +1095,7 @@ router.post('/exporter-applications/:applicationId/resubmit',
   [
     param('applicationId').notEmpty(),
     body('companyName').optional().notEmpty().withMessage('Company name is required when provided'),
-    body('tinNumber').optional().notEmpty().withMessage('TIN number is required when provided'),
+    body('tinNumber').optional({ values: 'falsy' }).custom(tinValidator),
     body('businessLicenseNumber').optional().notEmpty().withMessage('Business license number is required when provided'),
     body('registrationDate').optional().isISO8601().withMessage('Registration date must be a valid ISO date'),
     body('exporterType').optional().isIn(['private','company','individual']).withMessage('Exporter type must be private, company, or individual'),
@@ -1081,12 +1117,12 @@ router.post('/exporter-applications/:applicationId/resubmit',
     body('laboratoryFacility').optional().isString().withMessage('Laboratory facility must be a string'),
     body('laboratoryCertificateNumber').optional().isString().withMessage('Laboratory certificate number must be a string'),
     body('contactPerson').optional().isString().withMessage('Contact person must be a string'),
-    body('phone').optional().isString().withMessage('Phone number must be a string'),
+    body('phone').optional({ values: 'falsy' }).customSanitizer(phoneSanitizer).custom(phoneValidator),
     body('address').optional().isString().withMessage('Address must be a string'),
     body('city').optional().isString().withMessage('City must be a string'),
     body('region').optional().isString().withMessage('Region must be a string'),
     body('bankName').optional().isString().withMessage('Bank name must be a string'),
-    body('bankAccountNumber').optional().isString().withMessage('Bank account number must be a string'),
+    body('bankAccountNumber').optional({ values: 'falsy' }).custom(bankAccountValidator('bankName')),
     body('bankBranchName').optional().isString().withMessage('Bank branch name must be a string'),
     body('bankBranchCode').optional().isString().withMessage('Bank branch code must be a string'),
     body('comments').optional().isString().withMessage('Comments must be a string'),

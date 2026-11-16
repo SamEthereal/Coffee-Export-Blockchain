@@ -48,6 +48,7 @@ import { couchDBService } from '@/services/couchdbService';
 import { TestBlockchainButton } from '@/components/TestBlockchainButton';
 import { PortalShell, PortalTabBar, PortalTabPanel, PortalKpiCard, PortalCard, PrimaryButton, SecondaryButton, GhostButton, PortalDialog, PortalField, PortalDataGrid, StatusChip, getPortalBrand } from '@/components/shared/portal';
 import { extractTxId, shortTxId } from '@/utils/txId';
+import { bankAccountHelperText, validateBankAccount } from '@/utils/fieldValidation';
 import { SalesContract } from '@/types';
 import { DocumentValidationDialog } from './DocumentValidationDialog';
 import { apiFetch } from '@/config/api.config';
@@ -878,6 +879,13 @@ const NBEPortal: React.FC = () => {
     const pct = Number(retentionForm.retentionPercentage);
     if (!Number.isFinite(pct) || pct < 0 || pct > 100) {
       setApprovalNotification({ open: true, success: false, message: 'Retention percentage must be between 0 and 100.' });
+      return;
+    }
+    // Field validation 2026-11-16: the FCY account is an Ethiopian bank
+    // account — exactly 13 digits (CBE: starting with 1000).
+    const retentionAcctCheck = validateBankAccount(undefined, retentionForm.fcyAccountNumber);
+    if (!retentionAcctCheck.valid) {
+      setApprovalNotification({ open: true, success: false, message: retentionAcctCheck.error || 'Invalid FCY account number.' });
       return;
     }
     try {
@@ -2730,7 +2738,7 @@ const NBEPortal: React.FC = () => {
             </SecondaryButton>
             <PrimaryButton
             brand="NBE"
-            disabled={recordingRetention || !retentionForm.fcyAccountNumber || !retentionForm.retentionPercentage || !(Number(retentionForm.retentionPercentage) >= 0 && Number(retentionForm.retentionPercentage) <= 100)}
+            disabled={recordingRetention || !retentionForm.fcyAccountNumber || !validateBankAccount(undefined, retentionForm.fcyAccountNumber).valid || !retentionForm.retentionPercentage || !(Number(retentionForm.retentionPercentage) >= 0 && Number(retentionForm.retentionPercentage) <= 100)}
             loading={recordingRetention}
             loadingLabel="Recording…"
             ledgerWrite
@@ -2746,10 +2754,12 @@ const NBEPortal: React.FC = () => {
                 <PortalField
                   label="FCY Account Number *"
                   value={retentionForm.fcyAccountNumber}
-                  onChange={(e) => setRetentionForm({ ...retentionForm, fcyAccountNumber: e.target.value })}
+                  onChange={(e) => setRetentionForm({ ...retentionForm, fcyAccountNumber: e.target.value.replace(/\D/g, '').slice(0, 17) })}
                   fullWidth
                   required
                   placeholder="e.g. 1000123456789"
+                  helperText={(() => { const c = validateBankAccount(undefined, retentionForm.fcyAccountNumber); return retentionForm.fcyAccountNumber.length > 0 && !c.valid ? (c.error || '') : bankAccountHelperText(undefined); })()}
+                  error={retentionForm.fcyAccountNumber.length > 0 && !validateBankAccount(undefined, retentionForm.fcyAccountNumber).valid}
                 />
               </Grid>
               <Grid item xs={12}>

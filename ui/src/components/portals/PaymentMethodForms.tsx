@@ -11,6 +11,7 @@ import {
   Typography,
   Alert,
 } from '@mui/material';
+import { bankAccountHelperText, validateBankAccount, validateBIC } from '@/utils/fieldValidation';
 
 interface PaymentMethodFormsProps {
   open: boolean;
@@ -192,9 +193,10 @@ export const PaymentMethodForms: React.FC<PaymentMethodFormsProps> = ({
                   fullWidth
                   label="Collecting Bank BIC/SWIFT"
                   value={cadForm.collectingBankBIC}
-                  onChange={(e) => setCadForm({ ...cadForm, collectingBankBIC: e.target.value })}
+                  onChange={(e) => setCadForm({ ...cadForm, collectingBankBIC: e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 11) })}
                   required
-                  helperText="e.g., DEUTDEFF (Deutsche Bank)"
+                  helperText="8 or 11 characters, e.g. DEUTDEFF"
+                  error={cadForm.collectingBankBIC.length > 0 && !validateBIC(cadForm.collectingBankBIC, 'Collecting bank BIC').valid}
                 />
               </Grid>
               <Grid item xs={12} md={6}>
@@ -211,9 +213,10 @@ export const PaymentMethodForms: React.FC<PaymentMethodFormsProps> = ({
                   fullWidth
                   label="Remitting Bank BIC/SWIFT"
                   value={cadForm.remittingBankBIC}
-                  onChange={(e) => setCadForm({ ...cadForm, remittingBankBIC: e.target.value })}
+                  onChange={(e) => setCadForm({ ...cadForm, remittingBankBIC: e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 11) })}
                   required
-                  helperText="Default: CBETETAA (CBE)"
+                  helperText="8 or 11 characters, e.g. CBETETAA (CBE)"
+                  error={cadForm.remittingBankBIC.length > 0 && !validateBIC(cadForm.remittingBankBIC, 'Remitting bank BIC').valid}
                 />
               </Grid>
               <Grid item xs={12}>
@@ -234,7 +237,7 @@ export const PaymentMethodForms: React.FC<PaymentMethodFormsProps> = ({
             <Button 
               variant="contained" 
               onClick={handleSubmit}
-              disabled={!cadForm.drawerName.trim() || !cadForm.draweeName.trim() || !cadForm.draweeAddress.trim() || !cadForm.collectingBank || !cadForm.collectingBankBIC || !cadForm.remittingBankBIC || (cadForm.paymentTerm === 'ACCEPTANCE' && !(Number(cadForm.acceptanceDays) > 0))}
+              disabled={!cadForm.drawerName.trim() || !cadForm.draweeName.trim() || !cadForm.draweeAddress.trim() || !cadForm.collectingBank || !validateBIC(cadForm.collectingBankBIC, 'Collecting bank BIC').valid || !validateBIC(cadForm.remittingBankBIC, 'Remitting bank BIC').valid || (cadForm.paymentTerm === 'ACCEPTANCE' && !(Number(cadForm.acceptanceDays) > 0))}
             >
               Send Collection
             </Button>
@@ -285,7 +288,9 @@ export const PaymentMethodForms: React.FC<PaymentMethodFormsProps> = ({
                   fullWidth
                   label="Paying Bank BIC/SWIFT"
                   value={advanceForm.payingBankBIC}
-                  onChange={(e) => setAdvanceForm({ ...advanceForm, payingBankBIC: e.target.value })}
+                  onChange={(e) => setAdvanceForm({ ...advanceForm, payingBankBIC: e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 11) })}
+                  helperText="8 or 11 characters, e.g. CBETETAA"
+                  error={advanceForm.payingBankBIC.length > 0 && !validateBIC(advanceForm.payingBankBIC, 'Paying bank BIC').valid}
                 />
               </Grid>
               <Grid item xs={12} md={6}>
@@ -303,9 +308,9 @@ export const PaymentMethodForms: React.FC<PaymentMethodFormsProps> = ({
                   label="Beneficiary Account *"
                   required
                   value={advanceForm.beneficiaryAccount}
-                  onChange={(e) => setAdvanceForm({ ...advanceForm, beneficiaryAccount: e.target.value })}
-                  helperText={advanceForm.beneficiaryAccount ? "Exporter's account number" : 'Required — the API rejects an advance payment with a blank beneficiary account.'}
-                  error={!advanceForm.beneficiaryAccount}
+                  onChange={(e) => setAdvanceForm({ ...advanceForm, beneficiaryAccount: e.target.value.replace(/\D/g, '').slice(0, 17) })}
+                  helperText={(() => { if (!advanceForm.beneficiaryAccount) return 'Required — the API rejects an advance payment with a blank beneficiary account.'; const c = validateBankAccount(selectedContract?.exporterBank, advanceForm.beneficiaryAccount); return c.valid ? bankAccountHelperText(selectedContract?.exporterBank) : (c.error || ''); })()}
+                  error={!advanceForm.beneficiaryAccount || !validateBankAccount(selectedContract?.exporterBank, advanceForm.beneficiaryAccount).valid}
                 />
               </Grid>
             </Grid>
@@ -315,7 +320,7 @@ export const PaymentMethodForms: React.FC<PaymentMethodFormsProps> = ({
             <Button
               variant="contained"
               onClick={handleSubmit}
-              disabled={!advanceForm.beneficiaryAccount || !advanceForm.payingBank || !advanceForm.payingBankBIC || !advanceForm.swiftReference || !(Number(advanceForm.amount || selectedContract?.totalValue) > 0)}
+              disabled={!validateBankAccount(selectedContract?.exporterBank, advanceForm.beneficiaryAccount).valid || !advanceForm.payingBank || !validateBIC(advanceForm.payingBankBIC, 'Paying bank BIC').valid || !advanceForm.swiftReference || !(Number(advanceForm.amount || selectedContract?.totalValue) > 0)}
             >
               Record Payment & Issue Permit
             </Button>

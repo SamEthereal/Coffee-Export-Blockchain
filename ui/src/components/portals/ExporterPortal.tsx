@@ -35,6 +35,8 @@ import {
 } from '@mui/material';
 import { createOrganizationTheme } from '@/theme/organizationThemes';
 import BankSelect from '@/components/common/BankSelect';
+import PhoneInput from '@/components/common/PhoneInput';
+import { bankAccountHelperText, validateBankAccount, validateBIC, validatePhoneNumber } from '@/utils/fieldValidation';
 // DocumentUploadDialog removed - using simple file input instead
 // Commented out until @mui/lab is installed
 // import {
@@ -1545,6 +1547,16 @@ const ExporterPortal: React.FC = () => {
         return;
       }
 
+      // Field validation 2026-11-16: buyer phone must be valid E.164
+      // for its country (the API enforces the same rule).
+      if (newContract.buyerPhone) {
+        const buyerPhoneCheck = validatePhoneNumber(newContract.buyerPhone);
+        if (!buyerPhoneCheck.valid) {
+          showWarning('Invalid Buyer Phone', buyerPhoneCheck.error || 'Enter a valid buyer phone number', 'Include the country code, e.g. +251911234567');
+          return;
+        }
+      }
+
       // E2E leg 1 (F16): payment method is required — the API 400s a
       // missing one, so stop here with a clear message instead of
       // letting the server reject the whole submission.
@@ -2151,13 +2163,21 @@ const ExporterPortal: React.FC = () => {
       return;
     }
 
+    // Field validation 2026-11-16: the beneficiary account must fit the
+    // named bank — CBE: exactly 13 digits starting with 1000.
+    const acctCheck = validateBankAccount(paymentForm.beneficiaryBank, paymentForm.beneficiaryAccount);
+    if (!acctCheck.valid) {
+      showError('Invalid Beneficiary Account', acctCheck.error || 'Enter a valid bank account number.');
+      return;
+    }
+
     // Validation fix (2026-11-13): the API only checks the BIC is
     // non-empty, but the chaincode rejects anything that is not a valid
     // 8- or 11-character SWIFT/BIC (ValidateBICCode) — a 3-character
     // code sailed through the form and failed on-chain. Same rule here.
-    const bic = paymentForm.beneficiaryBankBIC.trim().toUpperCase();
-    if (!/^[A-Z]{6}[A-Z0-9]{2}([A-Z0-9]{3})?$/.test(bic)) {
-      showError('Invalid SWIFT/BIC', 'Enter a valid 8- or 11-character SWIFT/BIC code (e.g. CBEBIETAAAA).');
+    const bicCheck = validateBIC(paymentForm.beneficiaryBankBIC, 'Beneficiary bank BIC');
+    if (!bicCheck.valid) {
+      showError('Invalid SWIFT/BIC', bicCheck.error || 'Enter a valid 8- or 11-character SWIFT/BIC code (e.g. CBEBIETAAAA).');
       return;
     }
 
@@ -2195,7 +2215,7 @@ const ExporterPortal: React.FC = () => {
         receivingBank: paymentForm.beneficiaryBank || profile.bankName || '',
         // Validation fix (2026-11-13): send the normalised BIC validated
         // above (trimmed, upper-case) rather than the raw field value.
-        receivingBankBIC: bic,
+        receivingBankBIC: paymentForm.beneficiaryBankBIC.trim().toUpperCase(),
         beneficiaryName: paymentForm.beneficiaryName || profile.companyName || '',
         beneficiaryAccount: paymentForm.beneficiaryAccount || '',
         paymentMethod: paymentForm.paymentMethod,
@@ -4038,13 +4058,10 @@ const ExporterPortal: React.FC = () => {
               </Grid>
 
               <Grid item xs={12} sm={6}>
-                <PortalField
-                  fullWidth
+                <PhoneInput
                   label="Phone Number"
                   value={newContract.buyerPhone}
-                  onChange={(e) => setNewContract({...newContract, buyerPhone: e.target.value})}
-                  placeholder="+1-555-123-4567"
-                  helperText="Include country code"
+                  onChange={(v) => setNewContract({ ...newContract, buyerPhone: v })}
                 />
               </Grid>
 
@@ -7044,8 +7061,9 @@ This contract is registered with ECTA and approved by NBE.
                         required
                         label="Beneficiary Account Number"
                         value={paymentForm.beneficiaryAccount}
-                        onChange={(e) => setPaymentForm({ ...paymentForm, beneficiaryAccount: e.target.value })}
-                        helperText="Your bank account for receiving payment"
+                        onChange={(e) => setPaymentForm({ ...paymentForm, beneficiaryAccount: e.target.value.replace(/\D/g, '').slice(0, 17) })}
+                        helperText={(() => { const c = validateBankAccount(paymentForm.beneficiaryBank, paymentForm.beneficiaryAccount); return paymentForm.beneficiaryAccount.length > 0 && !c.valid ? (c.error || '') : bankAccountHelperText(paymentForm.beneficiaryBank); })()}
+                        error={paymentForm.beneficiaryAccount.length > 0 && !validateBankAccount(paymentForm.beneficiaryBank, paymentForm.beneficiaryAccount).valid}
                       />
                     </Grid>
                     <Grid item xs={12} sm={6}>

@@ -10,6 +10,14 @@ import { authMiddleware } from '../middleware/auth';
 import { requireRole } from '../middleware/rbac';
 import { logger } from '../utils/logger';
 import { logAuditBestEffort } from '../utils/auditBestEffort';
+import { validateBankAccount, validateBIC } from '../utils/fieldValidation';
+
+/** Field validation 2026-11-16: account must fit the named bank (CBE: 13 digits, 1000…). */
+const bankAccountValidator = (bankField?: string) => (value: unknown, { req }: any) => {
+  const result = validateBankAccount(bankField ? req?.body?.[bankField] : undefined, value);
+  if (!result.valid) throw new Error(result.error || 'Invalid bank account number');
+  return true;
+};
 
 const router = express.Router();
 const fabricService = FabricService.getInstance();
@@ -223,9 +231,14 @@ router.post('/initiate', authMiddleware, requireRole(['BANKS', 'BANK', 'BANK_ADM
   body('exporterId').notEmpty().withMessage('Exporter ID is required'),
   body('exportAmount').isFloat({ gt: 0 }).withMessage('Export amount must be greater than 0'),
   body('currency').notEmpty().withMessage('Currency is required'),
-  body('fcyAccountNumber').notEmpty().withMessage('FCY account number is required'),
+  body('fcyAccountNumber').notEmpty().withMessage('FCY account number is required').bail()
+    .custom(bankAccountValidator('fcyBank')),
   body('fcyBank').notEmpty().withMessage('FCY bank is required'),
-  body('fcyBankBIC').notEmpty().withMessage('FCY bank BIC is required'),
+  body('fcyBankBIC').custom((value) => {
+    const result = validateBIC(value, 'FCY bank BIC');
+    if (!result.valid) throw new Error(result.error || 'Invalid BIC');
+    return true;
+  }),
   body('shipmentDate').matches(/^\d{4}-\d{2}-\d{2}$/).withMessage('Shipment date must be YYYY-MM-DD'),
   body('swiftReference').optional().isString(),
   body('bankStatementRef').optional().isString(),
