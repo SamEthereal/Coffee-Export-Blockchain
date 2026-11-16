@@ -435,10 +435,56 @@ export class PostDeliveryWorkflowService {
               return { success: false, error: `Could not verify SWIFT message for reference ${swiftReference} on the ledger: ${swiftGuardErr?.message || 'lookup failed'}`, status: 503, code: 'SWIFT_LOOKUP_FAILED' };
             }
 
+            // F17 follow-on (2026-11-16, found by the live C-chain probe):
+            // SettlePayment was invoked with exchangeRate/retentionRate
+            // '0' relying on the chaincode's auto-map from the forex
+            // allocation — but the chaincode looks the allocation up as
+            // GetState("FOREX_" + lcID) while the real allocation key is
+            // FOREX_<lcID>_REQUEST, so the lookup always misses and
+            // SettlePayment refuses honestly ("exchange rate must be
+            // positive"). The chaincode key is out of scope for this API
+            // fix, so resolve the rates here and pass them explicitly:
+            // ledger first (ReadForex <lcID>_REQUEST), PG mirror as
+            // fallback. If neither yields positive rates, refuse before
+            // any chain write, like the SWIFT guard above.
+            let exchangeRate = 0;
+            let retentionRate = 0;
+            try {
+              const forexResult = await this.fabricService.queryChaincode('ReadForex', [`${lcReference}_REQUEST`]);
+              const fx = forexResult?.success ? forexResult.data : null;
+              const fxRate = Number(fx?.exchangeRate ?? fx?.ExchangeRate ?? 0);
+              const fxRet = Number(fx?.retentionRate ?? fx?.RetentionRate ?? 0);
+              if (Number.isFinite(fxRate) && fxRate > 0 && Number.isFinite(fxRet) && fxRet > 0) {
+                exchangeRate = fxRate;
+                retentionRate = fxRet;
+              }
+            } catch { /* fall through to the PG mirror */ }
+            if (exchangeRate <= 0 || retentionRate <= 0) {
+              try {
+                const pgFx = await this.db.query(
+                  `SELECT exchange_rate, retention_rate FROM forex_allocations
+                    WHERE lc_id = $1 AND exchange_rate > 0 AND retention_rate > 0
+                    ORDER BY created_at DESC LIMIT 1`,
+                  [lcReference]
+                );
+                const row = pgFx?.rows?.[0];
+                const pgRate = Number(row?.exchange_rate ?? 0);
+                const pgRet = Number(row?.retention_rate ?? 0);
+                if (Number.isFinite(pgRate) && pgRate > 0 && Number.isFinite(pgRet) && pgRet > 0) {
+                  exchangeRate = pgRate;
+                  retentionRate = pgRet;
+                }
+              } catch { /* no usable mirror row — refuse below */ }
+            }
+            if (exchangeRate <= 0 || retentionRate <= 0) {
+              logger.warn(`⛔ Post-delivery settlement of ${paymentID} refused: no exchange/retention rate for LC ${lcReference}`);
+              return { success: false, error: `Cannot settle payment: no exchange rate / retention rate found for LC ${lcReference} (no forex allocation with a rate)`, status: 400, code: 'SETTLEMENT_RATE_UNAVAILABLE' };
+            }
+
             const settleResult = await this.fabricService.invokeChaincode('SettlePayment', [
               paymentID,
-              '0',              // exchangeRate: 0 = auto-map from forex allocation
-              '0',              // retentionRate: 0 = auto-map from forex allocation
+              String(exchangeRate),   // resolved from the LC's forex allocation (see above)
+              String(retentionRate),  // resolved from the LC's forex allocation (see above)
               payingBank,
               payingBankBIC,
               swiftReference,
