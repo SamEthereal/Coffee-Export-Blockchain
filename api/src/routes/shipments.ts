@@ -481,6 +481,29 @@ router.post('/',
         );
         logger.info(`✅ Shipment ${shipmentID} saved to PostgreSQL (blockchain: ${blockchainWriteSuccessful ? 'synced' : 'pending'})`);
         
+        // Obs. 1 (2026-11-16): forex_allocations.shipment_id stayed NULL
+        // after a successful allocation — the allocate insert links lc_id
+        // only, and at allocate time the LC has no shipment yet, so the
+        // link cannot be established there. Establish it HERE: the
+        // shipment is created for a contract, and the LC(s) of that
+        // contract carry the allocation(s). Backfill shipment_id onto
+        // those allocations only when they exist and have no shipment
+        // linked yet (never overwrite). Best-effort: a failure here must
+        // not fail the shipment creation that already committed.
+        try {
+          const backfill = await db.run(
+            `UPDATE forex_allocations SET shipment_id = $1
+             WHERE lc_id IN (SELECT lc_id FROM letters_of_credit WHERE contract_id = $2)
+               AND shipment_id IS NULL`,
+            [shipmentID, contractID]
+          );
+          if (backfill?.rowCount) {
+            logger.info(`✅ [SHIPMENT] Backfilled shipment_id ${shipmentID} onto ${backfill.rowCount} forex allocation(s) for contract ${contractID}`);
+          }
+        } catch (backfillErr: any) {
+          logger.warn(`[SHIPMENT] Could not backfill forex shipment_id for ${shipmentID}:`, backfillErr?.message);
+        }
+
         // ✅ OPTIMIZATION: Invalidate cache for this shipment and related queries
         const { CacheInvalidation } = await import('../services/blockchainCacheService');
         CacheInvalidation.shipment(shipmentID, contractID);

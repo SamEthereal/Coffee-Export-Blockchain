@@ -1967,6 +1967,40 @@ router.post('/lc/:lcID/amend',
 
       if (result.success) {
         logger.info(`✅ LC amended successfully: ${lcID}`);
+        // Amend mirror (2026-11-16, Fixer A finding): the ledger move to
+        // AMENDED was never mirrored into letters_of_credit, so
+        // GET /banking/lc kept showing ISSUED for amended LCs (verified
+        // on LC-CONT-PROBE-20261115-C and LC-PROBE-1794506648) while the
+        // detail endpoint — which reads the ledger first — showed
+        // AMENDED. Mirror the status plus the amended fields AmendLC
+        // applied (amount/expiry/terms, only when supplied), ledger-first
+        // and best-effort like the approve/issue mirrors above: a failed
+        // mirror must not fail the amendment that already committed.
+        try {
+          const sets: string[] = [`status = 'AMENDED'`, `updated_at = NOW()`];
+          const params: any[] = [];
+          const amendedAmount = newAmount !== undefined && newAmount !== null && String(newAmount).trim() !== '' ? Number(newAmount) : null;
+          if (amendedAmount !== null && Number.isFinite(amendedAmount)) {
+            params.push(amendedAmount);
+            sets.push(`amount = $${params.length}`);
+          }
+          if (newExpiryDate) {
+            params.push(newExpiryDate);
+            sets.push(`expiry_date = $${params.length}`);
+          }
+          if (newTerms) {
+            params.push(newTerms);
+            sets.push(`terms = $${params.length}`);
+          }
+          params.push(lcID);
+          await dbService.run(
+            `UPDATE letters_of_credit SET ${sets.join(', ')} WHERE lc_id = $${params.length}`,
+            params
+          );
+          logger.info(`✅ LC ${lcID} amendment synced to PostgreSQL`);
+        } catch (syncErr) {
+          logger.warn(`⚠️ Failed to sync LC amendment to PostgreSQL:`, syncErr);
+        }
         // Audit: this chain move never wrote an audit_trail row — the
         // audited lcService/forexService methods are never called here.
         // Best-effort — a failed audit write must not fail the move.
@@ -1982,6 +2016,7 @@ router.post('/lc/:lcID/amend',
           success: true,
           data: result.data,
           message: 'Letter of Credit amended successfully',
+          txId: result.txId,
           timestamp: new Date().toISOString(),
         });
       } else {
