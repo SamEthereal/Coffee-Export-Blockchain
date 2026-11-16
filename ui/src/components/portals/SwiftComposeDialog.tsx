@@ -20,6 +20,10 @@ interface SwiftForm {
   // stored by CreateMT750_Discrepancy; the dialog used to offer MT750
   // with no field for them, so every MT750 was created with empty details).
   discrepancyDetails: string;
+  // F20 (MT707): amendment reason is required by
+  // POST /swift/messages/mt707. Amount / LC Expiry Date double as the
+  // new amount / new expiry date for an MT707 (both optional there).
+  amendmentReason: string;
   // LEG3 M-2: documents to attach at creation (comma-separated in the
   // dialog, stored as an array). The API forwards them to
   // AddSWIFTDocuments; they can also be attached later via
@@ -62,7 +66,10 @@ const SwiftComposeDialog: React.FC<Props> = ({ open, form, onChange, onClose, on
     else if (!BIC_RE.test(f.senderBIC.trim().toUpperCase())) e.senderBIC = 'Sender BIC must be a valid 8 or 11 character SWIFT BIC';
     if (!f.receiverBIC || !f.receiverBIC.trim()) e.receiverBIC = 'Receiver BIC is required';
     else if (!BIC_RE.test(f.receiverBIC.trim().toUpperCase())) e.receiverBIC = 'Receiver BIC must be a valid 8 or 11 character SWIFT BIC';
-    if (f.amount === '' || f.amount === null || f.amount === undefined || Number(f.amount) <= 0) e.amount = 'Amount must be greater than 0';
+    // Amount is required for MT103/MT700/MT750, but for MT707 it is the
+    // *new* amount — optional (blank keeps the current LC amount).
+    if (f.messageType !== 'MT707' && (f.amount === '' || f.amount === null || f.amount === undefined || Number(f.amount) <= 0)) e.amount = 'Amount must be greater than 0';
+    if (f.messageType === 'MT707' && f.amount !== '' && f.amount !== null && f.amount !== undefined && Number(f.amount) <= 0) e.amount = 'New amount must be greater than 0';
     if (!f.currency || !String(f.currency).trim()) e.currency = 'Currency is required';
     if (f.messageType === 'MT700') {
       if (!f.linkedLcId || !f.linkedLcId.trim()) e.linkedLcId = 'Linked LC ID is required for MT700';
@@ -71,6 +78,14 @@ const SwiftComposeDialog: React.FC<Props> = ({ open, form, onChange, onClose, on
       if (!f.lcExpiryDate) e.lcExpiryDate = 'LC Expiry Date is required for MT700';
     }
     if (f.messageType === 'MT750' && (!f.discrepancyDetails || !f.discrepancyDetails.trim())) e.discrepancyDetails = 'Discrepancy details are required for MT750';
+    // F20 (MT707): the dedicated route requires lcID + amendmentReason
+    // (swift.ts /messages/mt707 validateRequest), and the advice is only
+    // meaningful for an AMENDED LC (the portal checks the LC status on
+    // submit — the chaincode does not).
+    if (f.messageType === 'MT707') {
+      if (!f.linkedLcId || !f.linkedLcId.trim()) e.linkedLcId = 'Linked LC ID is required for MT707 — it must be an AMENDED LC';
+      if (!f.amendmentReason || !f.amendmentReason.trim()) e.amendmentReason = 'Amendment reason is required for MT707';
+    }
     return e;
   };
 
@@ -90,19 +105,23 @@ const SwiftComposeDialog: React.FC<Props> = ({ open, form, onChange, onClose, on
           <TextField select label="Message Type" size="small" value={form.messageType} onChange={(e) => onChange({ ...form, messageType: e.target.value })}>
             <MenuItem value="MT103">MT103 (Payment)</MenuItem>
             <MenuItem value="MT700">MT700 (Issue LC)</MenuItem>
+            <MenuItem value="MT707">MT707 (Amend LC)</MenuItem>
             <MenuItem value="MT750">MT750 (Discrepancy)</MenuItem>
           </TextField>
           <TextField label="SWIFT Reference" size="small" value={form.swiftReference} onChange={(e) => onChange({ ...form, swiftReference: e.target.value })} error={Boolean(errors.swiftReference)} helperText={errors.swiftReference || 'Blank = auto-generated; max 16 alphanumeric characters'} />
           <TextField label="Sender BIC *" size="small" value={form.senderBIC} onChange={(e) => onChange({ ...form, senderBIC: e.target.value })} error={Boolean(errors.senderBIC)} helperText={errors.senderBIC} />
           <TextField label="Receiver BIC *" size="small" value={form.receiverBIC} onChange={(e) => onChange({ ...form, receiverBIC: e.target.value })} error={Boolean(errors.receiverBIC)} helperText={errors.receiverBIC} />
-          <TextField label="Amount *" size="small" type="number" value={form.amount} onChange={(e) => onChange({ ...form, amount: e.target.value })} error={Boolean(errors.amount)} helperText={errors.amount} />
+          <TextField label="Amount *" size="small" type="number" value={form.amount} onChange={(e) => onChange({ ...form, amount: e.target.value })} error={Boolean(errors.amount)} helperText={errors.amount || (form.messageType === 'MT707' ? 'New amount after amendment (optional — blank keeps the current amount)' : undefined)} />
           <TextField label="Currency *" size="small" value={form.currency} onChange={(e) => onChange({ ...form, currency: e.target.value })} error={Boolean(errors.currency)} helperText={errors.currency} />
           <TextField label="Value Date" size="small" type="date" value={form.valueDate ? form.valueDate.split('T')[0] : ''} onChange={(e) => onChange({ ...form, valueDate: e.target.value })} InputLabelProps={{ shrink: true }} />
           <TextField label="Applicant" size="small" value={form.applicant} onChange={(e) => onChange({ ...form, applicant: e.target.value })} error={Boolean(errors.applicant)} helperText={errors.applicant || (form.messageType === 'MT700' ? 'Required for MT700' : undefined)} />
           <TextField label="Beneficiary" size="small" value={form.beneficiary} onChange={(e) => onChange({ ...form, beneficiary: e.target.value })} error={Boolean(errors.beneficiary)} helperText={errors.beneficiary || (form.messageType === 'MT700' ? 'Required for MT700' : undefined)} />
-          <TextField label="Linked LC ID" size="small" value={form.linkedLcId} onChange={(e) => onChange({ ...form, linkedLcId: e.target.value })} error={Boolean(errors.linkedLcId)} helperText={errors.linkedLcId || (form.messageType === 'MT700' ? 'Required for MT700' : undefined)} />
+          <TextField label="Linked LC ID" size="small" value={form.linkedLcId} onChange={(e) => onChange({ ...form, linkedLcId: e.target.value })} error={Boolean(errors.linkedLcId)} helperText={errors.linkedLcId || (form.messageType === 'MT700' ? 'Required for MT700' : undefined) || (form.messageType === 'MT707' ? 'Required for MT707 — must be an AMENDED LC' : undefined)} />
           <TextField label="Linked Payment ID" size="small" value={form.linkedPaymentId} onChange={(e) => onChange({ ...form, linkedPaymentId: e.target.value })} />
-          <TextField label="LC Expiry Date" size="small" type="date" value={form.lcExpiryDate ? form.lcExpiryDate.split('T')[0] : ''} onChange={(e) => onChange({ ...form, lcExpiryDate: e.target.value })} InputLabelProps={{ shrink: true }} error={Boolean(errors.lcExpiryDate)} helperText={errors.lcExpiryDate || (form.messageType === 'MT700' ? 'Required for MT700' : undefined)} />
+          <TextField label="LC Expiry Date" size="small" type="date" value={form.lcExpiryDate ? form.lcExpiryDate.split('T')[0] : ''} onChange={(e) => onChange({ ...form, lcExpiryDate: e.target.value })} InputLabelProps={{ shrink: true }} error={Boolean(errors.lcExpiryDate)} helperText={errors.lcExpiryDate || (form.messageType === 'MT700' ? 'Required for MT700' : undefined) || (form.messageType === 'MT707' ? 'New expiry date after amendment (optional)' : undefined)} />
+          {form.messageType === 'MT707' && (
+            <TextField label="Amendment Reason *" size="small" value={form.amendmentReason || ''} onChange={(e) => onChange({ ...form, amendmentReason: e.target.value })} fullWidth multiline rows={2} sx={{ gridColumn: '1 / -1' }} error={Boolean(errors.amendmentReason)} helperText={errors.amendmentReason || 'Required for MT707 — why the LC was amended'} />
+          )}
           {form.messageType === 'MT750' && (
             <TextField label="Discrepancy Details *" size="small" value={form.discrepancyDetails || ''} onChange={(e) => onChange({ ...form, discrepancyDetails: e.target.value })} fullWidth multiline rows={2} sx={{ gridColumn: '1 / -1' }} error={Boolean(errors.discrepancyDetails)} helperText={errors.discrepancyDetails || 'Required for MT750 — describe the document discrepancy'} />
           )}

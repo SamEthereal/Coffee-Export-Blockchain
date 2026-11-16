@@ -113,7 +113,6 @@ import { BlockchainStatusIcon, BlockchainTxChip } from '@/components/blockchain'
 import { useNotification } from '@/hooks/useNotification';
 import { extractTxId } from '@/utils/txId';
 import { UnifiedPaymentWorkflow } from './UnifiedPaymentWorkflow';
-import { PaymentMethodTab } from './PaymentMethodTab';
 import { useAuth } from '@/contexts/AuthContext';
 import AnalyticsDashboard from '@/components/analytics/AnalyticsDashboard';
 import { DocumentManagementPanel } from '@/components/documents';
@@ -239,6 +238,9 @@ const BanksPortal: React.FC = () => {
   const [forexAllocations, setForexAllocations] = useState<ForexAllocation[]>([]);
   const persistedForexAllocations = forexAllocations.filter((forex) => !forex.isDraft);
   const [exportPermits, setExportPermits] = useState<any[]>([]);
+  // F26: analytics summary (GET /analytics/dashboard) — the Analytics
+  // tab KPI is computed from this; null until loaded.
+  const [analyticsSummary, setAnalyticsSummary] = useState<any | null>(null);
   const [deliveredShipments, setDeliveredShipments] = useState<any[]>([]);
   const [documentaryCollections, setDocumentaryCollections] = useState<any[]>([]);
   const [advancePayments, setAdvancePayments] = useState<any[]>([]);
@@ -273,7 +275,8 @@ const BanksPortal: React.FC = () => {
   const [documentExaminationOpen, setDocumentExaminationOpen] = useState(false);
   const [verifyingDocumentId, setVerifyingDocumentId] = useState<string | null>(null); // ✅ Track which document is being verified
   const [paymentReleaseOpen, setPaymentReleaseOpen] = useState(false);
-  const [lcAmendmentOpen, setLcAmendmentOpen] = useState(false);
+  // F1 (removed): `lcAmendmentOpen` was declared here but never set — the
+  // amend dialog is driven by `dialogType === 'lcAmend'` instead.
   const [forexDetailsOpen, setForexDetailsOpen] = useState(false);
   const [paymentDetailsOpen, setPaymentDetailsOpen] = useState(false);
   // Settle Payment dialog state (slice-6 fix: POST /payments/:id/settle
@@ -347,6 +350,9 @@ const BanksPortal: React.FC = () => {
     applicant: '',
     lcExpiryDate: '',
     discrepancyDetails: '',
+    // F20 (MT707): amendment reason is required by
+    // POST /swift/messages/mt707.
+    amendmentReason: '',
     documents: [],
   });
   const [documentExaminationFilter, setDocumentExaminationFilter] = useState<'PENDING_EXAMINATION' | 'VERIFIED'>('PENDING_EXAMINATION');
@@ -862,6 +868,9 @@ const BanksPortal: React.FC = () => {
                 customsClearanceStatus: lc.customsClearanceStatus,
                 customsCleared: lc.customsCleared,
                 customsClearanceDate: lc.customsClearanceDate,
+                // F20 (MT707): amendment count drives the MT707
+                // amendmentNumber sent for an AMENDED LC.
+                amendmentCount: lc.amendmentCount ?? 0,
                 // ✅ BLOCKCHAIN: Capture transaction ID from API
                 txId: lc.txId || lc.TxId,
                 blockchainVerified: !!(lc.txId || lc.TxId),
@@ -927,6 +936,29 @@ const BanksPortal: React.FC = () => {
         // 8. Raw payment records — feeds the Payments table and the
         // payment details dialog (the only place Settle Payment lives)
         loadLedgerList('/api/v1/payments', 'Payments', setPayments),
+
+        // 9. Export permits — feeds the LC Settlements tab gate (F16):
+        // the "Issue Export Permit" button is hidden once a permit
+        // already exists for the shipment's contract. The permits list
+        // carries contractId but no shipmentId, so the gate matches on
+        // contractId. A failed load leaves the list empty, which only
+        // means the button stays visible (fail-open, as before).
+        loadLedgerList('/api/v1/permits', 'Export permits', setExportPermits),
+
+        // 10. Analytics summary — feeds the Analytics tab KPI (F26).
+        // Same endpoint the AnalyticsDashboard reads; stored here so the
+        // portal-level KPI card is a real computed total, not a literal.
+        apiFetch('/api/v1/analytics/dashboard', { headers: { 'Authorization': `Bearer ${token}` } })
+          .then(r => r.json())
+          .then(result => {
+            if (result.success && result.data) {
+              setAnalyticsSummary(result.data);
+              devLog('[BANKS] ⚡ Analytics summary loaded');
+              return result.data;
+            }
+            return null;
+          })
+          .catch(err => { console.warn('[BANKS] Analytics summary failed:', err); return null; }),
       ];
 
       // Wait for all to complete and process forex with LC data
@@ -1279,6 +1311,84 @@ const BanksPortal: React.FC = () => {
   // for any value outside its map) instead of hardcoding
   // 'pending'/'approved'/'ACTIVE'.
   const chipStatus = (status?: string | null) => (status || 'PENDING') as any;
+
+  // --- F6/F9/F10/F15/F16/F26: honest KPI helpers ---
+  // F9/F10: the release date of an LC is the date of its bridge payment.
+  // ReleaseLCPayment creates payment `PAY_<lcId>` (VERIFIED) at release
+  // time, and the portal already loads GET /payments — so no extra fetch
+  // is needed. The LC list rows themselves carry no payment/release date
+  // (only requestDate/issueDate/expiryDate).
+  const bridgePaymentForLc = (lcId: string) =>
+    payments.find((p: any) => (p.paymentId || p.PaymentID) === `PAY_${lcId}`);
+  const releaseDateForLc = (lc: LetterOfCredit): string | null => {
+    const pay = bridgePaymentForLc(lc.lcId);
+    return (pay?.paymentDate || pay?.createdAt || null) as string | null;
+  };
+  const isSameLocalDay = (iso: string | null | undefined, ref = new Date()): boolean => {
+    if (!iso) return false;
+    const d = new Date(iso);
+    return d.getFullYear() === ref.getFullYear() && d.getMonth() === ref.getMonth() && d.getDate() === ref.getDate();
+  };
+  const isSameLocalMonth = (iso: string | null | undefined, ref = new Date()): boolean => {
+    if (!iso) return false;
+    const d = new Date(iso);
+    return d.getFullYear() === ref.getFullYear() && d.getMonth() === ref.getMonth();
+  };
+  // F9: PAYMENT_RELEASED LCs whose bridge payment landed today / this
+  // month. An LC with no bridge payment has no known release date and is
+  // counted in neither bucket (0 live — every released LC has its bridge
+  // payment). Amounts arrive as strings ("275000.00") — coerce with
+  // Number, or the sum concatenates and renders $NaNM (seen live).
+  const releasedTodayLCs = letterOfCredits.filter(
+    (lc) => lc.status === 'PAYMENT_RELEASED' && isSameLocalDay(releaseDateForLc(lc)),
+  );
+  const releasedThisMonthLCs = letterOfCredits.filter(
+    (lc) => lc.status === 'PAYMENT_RELEASED' && isSameLocalMonth(releaseDateForLc(lc)),
+  );
+  // F10: mean request → release time across released LCs with a known
+  // release date. No examination timestamp exists on the LC row (the
+  // chaincode only writes UtilizationDate at release, and it is empty for
+  // UTILIZED LCs), so the honest basis is requestDate → release date, and
+  // the subtitle says so. Null when there is nothing to average.
+  const avgReleaseTimeMs = (() => {
+    const spans = letterOfCredits
+      .filter((lc) => lc.status === 'PAYMENT_RELEASED')
+      .map((lc) => {
+        const rel = releaseDateForLc(lc);
+        const req = (lc as any).requestDate;
+        if (!rel || !req) return null;
+        const ms = new Date(rel).getTime() - new Date(req).getTime();
+        return Number.isFinite(ms) && ms >= 0 ? ms : null;
+      })
+      .filter((ms): ms is number => ms !== null);
+    if (spans.length === 0) return null;
+    return spans.reduce((a, b) => a + b, 0) / spans.length;
+  })();
+  const formatReleaseDuration = (ms: number): string => {
+    const mins = ms / 60000;
+    if (mins < 60) return `${Math.max(1, Math.round(mins))}m`;
+    const hours = mins / 60;
+    if (hours < 24) return `${hours.toFixed(1)}h`;
+    return `${(hours / 24).toFixed(1)}d`;
+  };
+  // F15: settlement KPIs on the same denominator — delivered shipments.
+  // A shipment counts as settled when its linked LC (by contractId) is
+  // SETTLED; otherwise it is pending. A shipment with no linked LC counts
+  // as pending (0 live).
+  const lcForShipment = (shipment: any) =>
+    letterOfCredits.find((l) => l.contractId === (shipment.contractId || shipment.contractID));
+  const settledShipments = deliveredShipments.filter((s) => lcForShipment(s)?.status === 'SETTLED');
+  const pendingSettlementShipments = deliveredShipments.filter((s) => lcForShipment(s)?.status !== 'SETTLED');
+  // F16: a permit already issued for a contract. The permits list carries
+  // contractId but no shipmentId, so the gate matches on contractId.
+  const permitForContract = (contractId: string) =>
+    exportPermits.find((p: any) => p.contractId === contractId);
+  // F26: total records aggregated by the analytics dashboard endpoint
+  // (same numbers the Analytics tab shows). Null until loaded.
+  const totalAnalyticsMetrics = analyticsSummary
+    ? ['lcs', 'forex', 'payments', 'swift'].reduce(
+        (sum, key) => sum + Number(analyticsSummary?.[key]?.total || 0), 0)
+    : null;
 
   const handleViewLCDetails = async (lc: LetterOfCredit) => {
     devLog('[BANKS] 📋 Fetching complete LC details for:', lc.lcId);
@@ -2083,6 +2193,15 @@ const BanksPortal: React.FC = () => {
     const lc = letterOfCredits.find((l: any) => l.contractId === contractId);
     const contract = contracts.find((c: any) => c.contractId === contractId);
 
+    // F16: refuse a re-issue when this contract already has a permit
+    // (the card hides the button; this is the backstop if it is reached
+    // while the permits list is still loading).
+    const existingPermit = permitForContract(contractId);
+    if (existingPermit) {
+      showWarning('Permit Already Issued', `Contract ${contractId} already has export permit ${existingPermit.permitId}. A second permit will not be issued.`);
+      return;
+    }
+
     try {
       const response = await apiFetch('/permits', {
         method: 'POST',
@@ -2316,10 +2435,57 @@ const BanksPortal: React.FC = () => {
         // LEG3 M-2: forward attached documents so the generic create
         // route calls AddSWIFTDocuments with them.
         documents: msg.documents && msg.documents.length > 0 ? msg.documents : undefined,
+        // F20 (MT707): amendment advice — POST /swift/messages/mt707
+        // requires amendmentReason; newAmount / newExpiryDate /
+        // amendmentNumber are optional. The dialog's Amount field is
+        // the new amount and LC Expiry Date is the new expiry date
+        // for an MT707; the amendment number follows the LC's own
+        // amendment count (list rows carry amendmentCount).
+        amendmentReason: msg.amendmentReason || '',
+        newAmount: msg.messageType === 'MT707' && msg.amount !== '' && msg.amount != null ? String(msg.amount) : '',
+        newExpiryDate: msg.messageType === 'MT707' ? (msg.lcExpiryDate || '') : '',
+        amendmentNumber: msg.messageType === 'MT707'
+          ? ((letterOfCredits.find((lc) => lc.lcId === (msg.linkedLcId || msg.lcId || '')) as any)?.amendmentCount ?? 0) + 1
+          : undefined,
       };
 
+      // F20 (MT707): an amendment advice is only meaningful for an
+      // AMENDED LC. The chaincode (CreateMT707_AmendLC) does not check
+      // LC state, so the UI is the guard. The guard reads the
+      // ledger-backed LC detail endpoint — NOT the portal's LC list:
+      // the list is the PG mirror, which the amend route never updates,
+      // so an amended LC still reads ISSUED there (verified live on two
+      // LCs). If the detail read fails, it falls back to the list.
+      if (msg.messageType === 'MT707') {
+        const linkedLcId = msg.linkedLcId || msg.lcId || '';
+        const listedLc = letterOfCredits.find((lc) => lc.lcId === linkedLcId);
+        let detailStatus: string | null = null;
+        try {
+          const detailRes = await apiFetch(`/banking/lc/${encodeURIComponent(linkedLcId)}`, {
+            headers: { 'Authorization': `Bearer ${token}` },
+          });
+          const detail = await detailRes.json();
+          if (detailRes.ok && detail.success && detail.data) {
+            detailStatus = String(detail.data.status || detail.data.Status || '');
+          }
+        } catch (e) {
+          console.warn('[BANKS] MT707 LC detail check failed, using list status:', e);
+        }
+        const effectiveStatus = detailStatus || listedLc?.status || '';
+        if (!listedLc && !detailStatus) {
+          showError('Validation', `LC ${linkedLcId} was not found. MT707 can only be sent for an AMENDED LC.`);
+          return false;
+        }
+        if (effectiveStatus !== 'AMENDED') {
+          showError('Validation', `LC ${linkedLcId} is ${effectiveStatus || 'unknown'}, not AMENDED. MT707 (amendment advice) can only be sent for an amended LC.`);
+          return false;
+        }
+      }
+
       // Choose endpoint based on message type
-      const endpoint = (msg.messageType === 'MT700') ? '/swift/messages/mt700' : '/swift/messages';
+      const endpoint = (msg.messageType === 'MT700') ? '/swift/messages/mt700'
+        : (msg.messageType === 'MT707') ? '/swift/messages/mt707'
+        : '/swift/messages';
 
       const response = await apiFetch(endpoint, {
         method: 'POST',
@@ -2571,9 +2737,14 @@ const BanksPortal: React.FC = () => {
   };
 
   const getFilteredPaymentReleaseLCs = () => {
-    const baseList = paymentReleaseFilter === 'RELEASED_TODAY' || paymentReleaseFilter === 'TOTAL_RELEASED'
-      ? letterOfCredits.filter(lc => lc.status === 'PAYMENT_RELEASED')
-      : lcsForPaymentRelease;
+    // F9: RELEASED_TODAY and TOTAL_RELEASED used to render the identical
+    // unfiltered PAYMENT_RELEASED list. Now each filter is the date
+    // bucket its KPI counts (bridge payment date: today / this month).
+    const baseList = paymentReleaseFilter === 'RELEASED_TODAY'
+      ? releasedTodayLCs
+      : paymentReleaseFilter === 'TOTAL_RELEASED'
+        ? releasedThisMonthLCs
+        : lcsForPaymentRelease;
 
     if (!searchTerm) {
       return baseList;
@@ -2900,12 +3071,20 @@ const BanksPortal: React.FC = () => {
                   setCurrentPage(0);
                 },
               },
-              { 
-                icon: <CheckCircle />, 
-                label: 'Examined Today', 
-                value: lcsForExamination.filter((lc: any) => lc.status === 'UTILIZED').length,
+              {
+                icon: <CheckCircle />,
+                // F6: was "Examined Today" counting UTILIZED in
+                // lcsForExamination — a list that by construction holds
+                // only ISSUED/FOREX_ALLOCATED LCs, so the count was
+                // structurally always 0. No examination date exists on
+                // the LC row (UtilizationDate is empty for UTILIZED LCs;
+                // the list carries no updatedAt), so "today" cannot be
+                // computed honestly. Relabelled to what is counted:
+                // all LCs whose documents were examined and verified.
+                label: 'Verified',
+                value: letterOfCredits.filter((lc: any) => lc.status === 'UTILIZED').length,
                 color: '#4caf50',
-                subtitle: 'Completed',
+                subtitle: 'Documents Verified',
                 description: 'Show LCs with documents examined and verified.',
                 clickable: true,
                 selected: documentExaminationFilter === 'VERIFIED',
@@ -2987,12 +3166,15 @@ const BanksPortal: React.FC = () => {
                 clickable: false,
               },
             ] : activeTab === 6 ? [
-              // Tab 6: Analytics KPIs
-              { 
+              // Tab 6: Analytics KPIs — F26: was the hardcoded literal
+              // '—'. Now the real total from GET /analytics/dashboard
+              // (the same endpoint the dashboard reads): LCs + forex +
+              // payments + SWIFT records. '—' only while it loads.
+              {
                 icon: <Assessment />,
-                label: 'Total Metrics', 
-                value: '—', 
-                subtitle: 'View analytics dashboard',
+                label: 'Total Metrics',
+                value: totalAnalyticsMetrics ?? '—',
+                subtitle: 'LCs + Forex + Payments + SWIFT',
                 color: '#1976d2',
                 clickable: false,
               },
@@ -3045,16 +3227,19 @@ const BanksPortal: React.FC = () => {
                 description: 'Shipments requiring LC settlement.',
                 clickable: false,
               },
-              { 
-                icon: <Payment />, 
-                label: 'Pending Settlement', 
-                value: deliveredShipments.filter((s: any) => {
-                  // Count shipments where LC not yet settled
-                  return true; // This will be filtered by PostDeliveryWorkflowPanel
-                }).length, 
+              {
+                icon: <Payment />,
+                // F15: was deliveredShipments.filter(() => true) —
+                // identical to "Delivered Shipments" and never
+                // decreasing. Now delivered shipments whose linked LC
+                // is not yet SETTLED (same shipment denominator as
+                // "Completed Settlements" below, so the two reconcile:
+                // pending + completed = delivered).
+                label: 'Pending Settlement',
+                value: pendingSettlementShipments.length,
                 color: '#ff9800',
                 subtitle: 'Awaiting Processing',
-                description: 'LCs pending settlement.',
+                description: 'Delivered shipments whose LC is not yet settled.',
                 clickable: false,
               },
               { 
@@ -3066,13 +3251,17 @@ const BanksPortal: React.FC = () => {
                 description: 'Active Letters of Credit.',
                 clickable: false,
               },
-              { 
-                icon: <AttachMoney />, 
-                label: 'Completed Settlements', 
-                value: letterOfCredits.filter(lc => lc.status === 'SETTLED').length,
+              {
+                icon: <AttachMoney />,
+                // F15: was a count of SETTLED LCs — a different
+                // denominator (LCs, not shipments) from "Pending
+                // Settlement", so the two could never reconcile. Now
+                // delivered shipments whose linked LC is SETTLED.
+                label: 'Completed Settlements',
+                value: settledShipments.length,
                 color: '#2196f3',
                 subtitle: 'Finalized',
-                description: 'Settlements completed.',
+                description: 'Delivered shipments whose LC is settled.',
                 clickable: false,
               },
             ] : activeTab === 10 ? [
@@ -3112,15 +3301,31 @@ const BanksPortal: React.FC = () => {
                 onClick: () => { setAllLcFilterStatus('APPROVED'); setCurrentPage(0); },
               },
               {
+                // F2: was one "Issued" bucket counting ISSUED ||
+                // FOREX_ALLOCATED, and the same bucket was the filter
+                // value — so filtering by "Issued" also returned
+                // FOREX_ALLOCATED rows. Split into two honest buckets,
+                // each filtering to exactly its own status.
                 icon: <AccountBalance />,
                 label: 'Issued',
-                value: letterOfCredits.filter(lc => lc.status === 'ISSUED' || lc.status === 'FOREX_ALLOCATED').length,
+                value: letterOfCredits.filter(lc => lc.status === 'ISSUED').length,
                 color: '#4caf50',
-                subtitle: 'Issued / Forex Allocated',
-                description: 'Issued LCs, including forex-allocated ones.',
+                subtitle: 'Issued',
+                description: 'LCs issued, forex not yet allocated.',
                 clickable: true,
                 selected: allLcFilterStatus === 'ISSUED',
                 onClick: () => { setAllLcFilterStatus('ISSUED'); setCurrentPage(0); },
+              },
+              {
+                icon: <CurrencyExchange />,
+                label: 'Forex Allocated',
+                value: letterOfCredits.filter(lc => lc.status === 'FOREX_ALLOCATED').length,
+                color: '#2196F3',
+                subtitle: 'Forex Allocated',
+                description: 'Issued LCs with forex allocated.',
+                clickable: true,
+                selected: allLcFilterStatus === 'FOREX_ALLOCATED',
+                onClick: () => { setAllLcFilterStatus('FOREX_ALLOCATED'); setCurrentPage(0); },
               },
               {
                 icon: <AttachMoney />,
@@ -3153,13 +3358,16 @@ const BanksPortal: React.FC = () => {
                 },
                 debug: `Payment Release Array Length: ${lcsForPaymentRelease.length}, Has Data: ${lcsForPaymentRelease.length > 0 ? 'YES' : 'NO'}`
               },
-              { 
-                icon: <CheckCircle />, 
-                label: 'Released Today', 
-                value: letterOfCredits.filter(lc => lc.status === 'PAYMENT_RELEASED').length, 
+              {
+                icon: <CheckCircle />,
+                // F9: was all PAYMENT_RELEASED LCs with no date filter,
+                // so "today" showed the all-time count. Now only LCs
+                // whose bridge payment (PAY_<lcId>) landed today.
+                label: 'Released Today',
+                value: releasedTodayLCs.length,
                 color: '#4caf50',
                 subtitle: 'Payments Sent',
-                description: 'Show LCs with payments already released.',
+                description: 'Show LCs with payments released today.',
                 clickable: true,
                 selected: paymentReleaseFilter === 'RELEASED_TODAY',
                 onClick: () => {
@@ -3170,10 +3378,15 @@ const BanksPortal: React.FC = () => {
                   setCurrentPage(0);
                 }
               },
-              { 
-                icon: <CurrencyExchange />, 
-                label: 'Total Released', 
-                value: `$${(letterOfCredits.filter(lc => lc.status === 'PAYMENT_RELEASED').reduce((s, lc) => s + lc.amount, 0) / 1000000).toFixed(1)}M`, 
+              {
+                icon: <CurrencyExchange />,
+                // F9: was the sum of ALL PAYMENT_RELEASED LCs while the
+                // subtitle said "This Month" — and the amounts arrive
+                // as strings, so the reduce concatenated and rendered
+                // "$NaNM" live. Now only this month's releases, with
+                // Number() coercion.
+                label: 'Total Released',
+                value: `$${(releasedThisMonthLCs.reduce((s, lc) => s + Number(lc.amount || 0), 0) / 1000000).toFixed(1)}M`,
                 color: '#2196F3',
                 subtitle: 'This Month',
                 description: 'Show payments released this month.',
@@ -3187,13 +3400,17 @@ const BanksPortal: React.FC = () => {
                   setCurrentPage(0);
                 }
               },
-              { 
-                icon: <Assignment />, 
-                label: 'Avg Release Time', 
-                value: '1.2d', 
+              {
+                icon: <Assignment />,
+                // F10: was the hardcoded literal '1.2d'. Now computed
+                // from real data — mean request → release time across
+                // released LCs (bridge payment date minus request
+                // date). '—' only when no release has a known date.
+                label: 'Avg Release Time',
+                value: avgReleaseTimeMs === null ? '—' : formatReleaseDuration(avgReleaseTimeMs),
                 color: '#9b30b7',
-                subtitle: 'After Verification',
-                description: 'Average time between verification and payment release.',
+                subtitle: 'Request → Release',
+                description: 'Average time from LC request to payment release.',
                 clickable: false,
               },
             ];
@@ -3342,8 +3559,8 @@ const BanksPortal: React.FC = () => {
                     if (result.success) {
                       showSuccess(
                         'LC Issued Successfully',
-                        `MT700 message sent for LC ${lc.lcId}`,
-                        'The Letter of Credit has been issued and is now active'
+                        `LC ${lc.lcId} issued`,
+                        'The Letter of Credit has been issued and is now active. To advise the beneficiary, compose an MT700 on the SWIFT Messages tab — no SWIFT message was sent by this action.'
                       );
                       loadBankingData();
                     } else {
@@ -4605,8 +4822,7 @@ const BanksPortal: React.FC = () => {
                   <Grid item xs={12}>
                     <Alert severity="info" sx={{ mt: 2 }}>
                       <Typography variant="body2">
-                        <strong>Forex Allocation Requested:</strong> This LC has been issued and requires forex allocation by the bank. 
-                        Allocate using the active NBE exchange rate and the explicitly recorded retention rate.
+                        <strong>Forex Allocation Requested:</strong> This request is awaiting NBE confirmation. The bank can allocate only after NBE confirms it — allocation uses the active NBE exchange rate and the explicitly recorded retention rate.
                       </Typography>
                     </Alert>
                   </Grid>
@@ -6090,7 +6306,7 @@ const BanksPortal: React.FC = () => {
                       <TableCell>{msg.senderBic || 'N/A'}</TableCell>
                       <TableCell>{msg.receiverBic || 'N/A'}</TableCell>
                       <TableCell><strong>${(msg.amount || 0).toLocaleString()} {msg.currency || 'USD'}</strong></TableCell>
-                      <TableCell>{msg.status || 'N/A'}</TableCell>
+                      <TableCell><StatusChip label={msg.status || 'N/A'} status={chipStatus(msg.status)} /></TableCell>
                       <TableCell>{msg.sentDate ? new Date(msg.sentDate).toLocaleDateString() : msg.createdAt ? new Date(msg.createdAt).toLocaleDateString() : 'N/A'}</TableCell>
                       <TableCell>
                         <Box sx={{ display: 'flex', gap: 1, justifyContent: 'flex-end', flexWrap: 'wrap' }}>
@@ -6858,7 +7074,13 @@ const BanksPortal: React.FC = () => {
                 const shipmentId = shipment.shipmentId || shipment.shipmentID;
                 const contractId = shipment.contractId || shipment.contractID;
                 const lc = letterOfCredits.find(l => l.contractId === contractId);
-                
+                // F16: the export permit precedes shipment in the
+                // workflow and is ECTA-owned there — do not offer a
+                // re-issue for a shipment whose contract already has
+                // one. The permits list carries contractId (no
+                // shipmentId), so the gate matches on contractId.
+                const existingPermit = permitForContract(contractId);
+
                 return (
                   <Grid item xs={12} key={shipmentId}>
                     <Card sx={{ boxShadow: 3 }}>
@@ -6873,16 +7095,24 @@ const BanksPortal: React.FC = () => {
                             </Typography>
                           </Box>
                           <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
-                            <SecondaryButton brand="BANKS"
-                              size="small"
-                              startIcon={<Description />}
-                              loadingLabel="Issuing permit…"
-                              ledgerWrite
-                              onClick={() => handleIssueExportPermit(shipment)}
-                              sx={{ textTransform: 'none' }}
-                            >
-                              Issue Export Permit
-                            </SecondaryButton>
+                            {existingPermit ? (
+                              <Chip
+                                label={`Permit Issued (${existingPermit.permitId})`}
+                                color="success"
+                                icon={<CheckCircle />}
+                              />
+                            ) : (
+                              <SecondaryButton brand="BANKS"
+                                size="small"
+                                startIcon={<Description />}
+                                loadingLabel="Issuing permit…"
+                                ledgerWrite
+                                onClick={() => handleIssueExportPermit(shipment)}
+                                sx={{ textTransform: 'none' }}
+                              >
+                                Issue Export Permit
+                              </SecondaryButton>
+                            )}
                             <Chip
                               label="Delivered"
                               color="success"
@@ -6928,7 +7158,7 @@ const BanksPortal: React.FC = () => {
           >
             Close
           </GhostButton>
-          {selectedLC?.documents?.every((d: any) => d.verificationStatus === 'verified' || d.status === 'verified') && (
+          {selectedLC?.documents?.every((d: any) => ['verified', 'approved', 'compliant'].includes(d.verificationStatus || d.status)) && (
             <PrimaryButton
               brand="BANKS"
               startIcon={<CheckCircle />}

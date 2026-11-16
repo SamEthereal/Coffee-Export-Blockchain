@@ -65,14 +65,39 @@ const LCDiscrepancyTab: React.FC<LCDiscrepancyTabProps> = ({ onStatsUpdate }) =>
         status: lc.status || lc.Status,
         exporterId: lc.exporterId || lc.ExporterID,
       })));
-      const rows: Discrepancy[] = lcs.flatMap((lc: any) => {
+      // F22: read discrepancies from the dedicated ledger endpoint
+      // GET /banking/lc/:lcId/discrepancies instead of the embedded
+      // array on the LC list. The embedded PG array drifts from the
+      // ledger — verified live 2026-11-16: DISC2-1794492392 on
+      // LC-CNT-EXT-1794492318 is OPEN in the embedded array but
+      // REJECTED on the ledger (same IDs, different status). Only LCs
+      // with a non-empty embedded array can have discrepancies, so
+      // only those are queried — one ledger read each, in parallel.
+      const lcById = new Map<string, any>(lcs.map((lc: any) => [lc.lcId || lc.LCID, lc]));
+      const withEmbedded = lcs.filter((lc: any) => Array.isArray(lc.discrepancies || lc.Discrepancies) && (lc.discrepancies || lc.Discrepancies).length > 0);
+      const perLc = await Promise.all(withEmbedded.map(async (lc: any) => {
         const lcId = lc.lcId || lc.LCID;
-        const discrepancies = Array.isArray(lc.discrepancies || lc.Discrepancies)
-          ? (lc.discrepancies || lc.Discrepancies)
-          : [];
-        return discrepancies.map((item: any) => {
+        try {
+          const res = await apiFetch(`/banking/lc/${encodeURIComponent(lcId)}/discrepancies`, { method: 'GET', headers: getAuthHeaders() });
+          const r = await res.json();
+          if (res.ok && r.success && Array.isArray(r.data)) return { lcId, items: r.data };
+          throw new Error('dedicated endpoint did not return discrepancies');
+        } catch (e) {
+          // Fall back to the embedded array so the tab never goes blank
+          // when the ledger read fails — but keep the chaincode status
+          // names (OPEN, not REPORTED); the embedded copy may be stale.
+          console.warn(`[Discrepancies] ledger read failed for ${lcId}, using embedded array:`, e);
+          return { lcId, items: lc.discrepancies || lc.Discrepancies || [] };
+        }
+      }));
+      const rows: Discrepancy[] = perLc.flatMap(({ lcId, items }: { lcId: string; items: any[] }) => {
+        const lc = lcById.get(lcId);
+        return items.map((item: any) => {
+          // F23: keep the chaincode status names (OPEN / RESOLVED /
+          // WAIVED / REJECTED). The old OPEN → REPORTED rename split
+          // the naming across the API boundary.
           const rawStatus = String(item.status || item.Status || 'OPEN').toUpperCase();
-          const status = rawStatus === 'OPEN' ? 'REPORTED' : rawStatus === 'WAIVED' ? 'WAIVED' : rawStatus;
+          const status = rawStatus;
           return {
             discrepancyId: item.discrepancyId || item.DiscrepancyID,
             lcId,
@@ -93,7 +118,7 @@ const LCDiscrepancyTab: React.FC<LCDiscrepancyTabProps> = ({ onStatsUpdate }) =>
         }).filter((item: Discrepancy) => Boolean(item.discrepancyId));
       });
       setDiscrepancies(rows);
-      const open = rows.filter((item) => item.status === 'REPORTED').length;
+      const open = rows.filter((item) => item.status === 'OPEN').length;
       const resolved = rows.filter((item) => item.status === 'RESOLVED' || item.status === 'WAIVED').length;
       const closed = rows.filter((item) => ['RESOLVED', 'WAIVED'].includes(item.status)).length;
       const durations = rows.filter((item) => item.resolvedDate && item.reportedDate).map((item) =>
@@ -145,14 +170,15 @@ const LCDiscrepancyTab: React.FC<LCDiscrepancyTabProps> = ({ onStatsUpdate }) =>
 
   const getStatusChip = (status: string) => {
     const cfg: Record<string, any> = {
-      REPORTED: { color: '#1976d2', label: 'Reported', icon: <Warning /> },
+      // F23: chaincode names — OPEN, not REPORTED.
+      OPEN: { color: '#1976d2', label: 'Open', icon: <Warning /> },
       RESOLVED: { color: CBE_COLORS.success, label: 'Resolved', icon: <CheckCircle /> },
       WAIVED: { color: CBE_COLORS.success, label: 'Waived', icon: <CheckCircle /> },
       // Chaincode LCDiscrepancy.Status includes REJECTED — it must not
-      // fall through to the REPORTED chip.
+      // fall through to the OPEN chip.
       REJECTED: { color: CBE_COLORS.error, label: 'Rejected', icon: <Warning /> },
     };
-    const c = cfg[status] || cfg.REPORTED;
+    const c = cfg[status] || cfg.OPEN;
     return <Chip label={c.label} size="small" icon={c.icon} sx={{ backgroundColor: c.color, color: 'white', fontWeight: 600, '& .MuiChip-icon': { color: 'white' } }} />;
   };
 
@@ -173,7 +199,7 @@ const LCDiscrepancyTab: React.FC<LCDiscrepancyTabProps> = ({ onStatsUpdate }) =>
     { field: 'actions', headerName: 'Actions', width: 150, sortable: false, renderCell: (p: GridRenderCellParams) => (
       <Box sx={{ display: 'flex', gap: 0.5 }}>
         <Tooltip title="View Details"><IconButton size="small" onClick={() => { setSelected(p.row); setDetailsDialogOpen(true); }} sx={{ color: CBE_COLORS.purple }}><Visibility fontSize="small" /></IconButton></Tooltip>
-        {p.row.status === 'REPORTED' && (
+        {p.row.status === 'OPEN' && (
           <Tooltip title="Resolve"><IconButton size="small" onClick={() => { setSelected(p.row); setResolutionDialogOpen(true); }} sx={{ color: CBE_COLORS.success }}><CheckCircle fontSize="small" /></IconButton></Tooltip>
         )}
       </Box>
@@ -193,7 +219,7 @@ const LCDiscrepancyTab: React.FC<LCDiscrepancyTabProps> = ({ onStatsUpdate }) =>
             <Grid item xs={12} sm={6} md={2}>
               <TextField fullWidth select size="small" label="Status" value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
                 <MenuItem value="ALL">All Statuses</MenuItem>
-                <MenuItem value="REPORTED">Reported</MenuItem>
+                <MenuItem value="OPEN">Open</MenuItem>
                 <MenuItem value="RESOLVED">Resolved</MenuItem>
                 <MenuItem value="WAIVED">Waived</MenuItem>
                 <MenuItem value="REJECTED">Rejected</MenuItem>

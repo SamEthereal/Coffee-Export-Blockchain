@@ -39,7 +39,7 @@ import {
   Legend,
   ResponsiveContainer,
 } from 'recharts';
-import { apiFetch, getAuthHeaders } from '@/config/api.config';
+import { apiFetch, getAuthHeaders, API_BASE_URL } from '@/config/api.config';
 
 interface KPICardProps {
   title: string;
@@ -170,7 +170,9 @@ const AnalyticsDashboard: React.FC<{
       params.append('format', format);
       if (dateFrom) params.append('dateFrom', dateFrom);
 
-      const response = await fetch(`http://localhost:3001/api/v1/analytics/export-report?${params.toString()}`, {
+      // F25: was a hardcoded http://localhost:3001 URL — use API_BASE_URL
+      // like every other call, so exports work under any API base.
+      const response = await fetch(`${API_BASE_URL}/analytics/export-report?${params.toString()}`, {
         headers: getAuthHeaders()
       });
 
