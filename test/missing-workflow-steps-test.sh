@@ -561,6 +561,41 @@ else
 fi
 
 ################################################################################
+# UCP 600 APPROVAL-stage contract documents (fix/merge-suite-regressions).
+# POST /banking/lc/:id/approve gates on 5 CONTRACT documents since c4932c4e
+# (banking.ts:580-597 -> lcDocumentValidationService.canApproveLCRequest):
+# CONTRACT_SIGNED, PROFORMA_INVOICE, CERTIFICATE_OF_ORIGIN, PURCHASE_ORDER,
+# QUALITY_CERTIFICATE, all with entity_type=CONTRACT and status active/approved.
+# The real exporter/ECTA flow uploads these at contract registration; this
+# suite previously uploaded none before #36, so approve 400d
+# DOCUMENT_REQUIREMENTS_NOT_MET (5 required, available 0) and #37 + 45
+# downstream tests cascaded. Upload them here, right after contract approval.
+log_test "Upload 5 UCP 600 APPROVAL-stage contract documents (POST /documents/upload, entity CONTRACT)"
+if [ -z "$CREATED_CONTRACT_ID" ]; then
+    log_blocked "Upload contract documents — no contract (create failed/blocked)"
+elif [ -z "$ECTA_TOKEN" ]; then
+    log_blocked "Upload contract documents — no ECTA token"
+else
+    echo "%PDF-1.4 Test Contract Document" > /tmp/test_contract_document.pdf
+    CONTRACT_DOCS_OK=0
+    for DOC_TYPE in CONTRACT_SIGNED PROFORMA_INVOICE CERTIFICATE_OF_ORIGIN PURCHASE_ORDER QUALITY_CERTIFICATE; do
+        DOC_RESP=$(upload_document "/tmp/test_contract_document.pdf" "$ECTA_TOKEN" "CONTRACT" "$CONTRACT_ID" "$DOC_TYPE")
+        DOC_ID=$(echo "$DOC_RESP" | jq -r '.data.documentId // .data.documentID // .data.document_id // empty')
+        if [ -n "$DOC_ID" ]; then
+            CONTRACT_DOCS_OK=$((CONTRACT_DOCS_OK + 1))
+            log_info "Contract document uploaded: $DOC_TYPE ($DOC_ID)"
+        else
+            log_info "Contract document upload failed: $DOC_TYPE — $DOC_RESP"
+        fi
+    done
+    if [ "$CONTRACT_DOCS_OK" -eq 5 ]; then
+        log_pass "All 5 UCP 600 APPROVAL-stage contract documents uploaded"
+    else
+        log_fail "Only $CONTRACT_DOCS_OK/5 contract documents uploaded — LC approve (#36) will 400 DOCUMENT_REQUIREMENTS_NOT_MET"
+    fi
+fi
+
+################################################################################
 log_section "PHASE 4: ECX LOT — INTAKE, GRADE, ASSIGN, RELEASE"
 
 # The shipment ID is fixed here so the ECX/PSI steps can reference it;
@@ -897,7 +932,7 @@ SHIPMENT_DATA="{
     \"contractID\": \"$CONTRACT_ID\",
     \"exporterID\": \"$EXPORTER_ID\",
     \"buyerID\": \"$BUYER_ID\",
-    \"origin\": \"ADDIS_ABABA\",
+    \"origin\": \"Sidama\",
     \"quantity\": 50000,
     \"grade\": \"GRADE_1\",
     \"icoNumber\": \"ICO-$TS\",
@@ -1370,7 +1405,7 @@ SHIPMENT2_DATA="{
     \"contractID\": \"$CONTRACT_ID\",
     \"exporterID\": \"$EXPORTER_ID\",
     \"buyerID\": \"$BUYER_ID\",
-    \"origin\": \"ADDIS_ABABA\",
+    \"origin\": \"Sidama\",
     \"quantity\": 50000,
     \"grade\": \"GRADE_1\",
     \"icoNumber\": \"ICO-$TS\",

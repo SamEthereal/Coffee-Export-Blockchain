@@ -436,6 +436,11 @@ log_step "SHIPMENT RECORD CREATION - Create Shipment Record"
 # chaincode CreateShipment requires the LC to be FOREX_ALLOCATED.
 
 log_action "Creating shipment record (PascalCase fields with all required fields)"
+# NOTE (fix/merge-suite-regressions): `origin` is the coffee-GROWING REGION, not the
+# port of loading — shipments.ts:374-379 (bd1825c8) only accepts Yirgacheffe,
+# Sidamo, Guji, Limu, Harrar, Jimma, Kaffa, Illubabor, Sidama (same list as the
+# UI "Origin Region" dropdown). "Djibouti Port, Ethiopia" is the port of
+# loading, already declared on the contract as portOfLoading, so it 400s here.
 NEW_SHIPMENT_ID="SHIP-$(date +%Y%m%d%H%M%S)"
 
 SHIPMENT_RESPONSE=$(curl -s -X POST ${API_BASE}/shipments \
@@ -452,7 +457,7 @@ SHIPMENT_RESPONSE=$(curl -s -X POST ${API_BASE}/shipments \
     \"forexRate\": 57.50,
     \"valueUSD\": 275000,
     \"eudrCompliant\": true,
-    \"origin\": \"Djibouti Port, Ethiopia\",
+    \"origin\": \"Yirgacheffe\",
     \"destination\": \"New York Port, USA\",
     \"transportMode\": \"SEA\",
     \"carrier\": \"Maersk Line\",
