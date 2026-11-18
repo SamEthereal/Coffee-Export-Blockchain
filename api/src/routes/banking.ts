@@ -4963,6 +4963,113 @@ async function recordLCExaminationTrace(opts: {
 }
 
 /**
+ * FIX-2 (2026-11-19, banks-tabs-status): SHARED document-examination
+ * gate — the S2 gate, extracted so both callers of ExamineLCDocuments
+ * enforce the SAME rule. The chaincode checks only the LC status; it
+ * cannot see the PG documents, so the gate must live in the API.
+ * Rule, over the same attached-document set the LC detail endpoint
+ * returns (LC + CONTRACT + SHIPMENT + CUSTOMS rows for the LC's
+ * contract): no documents at all -> refuse; compliant=true -> every
+ * attached document must be verified/approved/compliant;
+ * compliant=false -> at least one attached document must have a
+ * terminal examination outcome (verified or rejected).
+ * Returns { ok: true, docs } or { ok: false, status, error } with the
+ * error shaped exactly like the examine-documents route used to return
+ * inline (same codes/messages/hints), so existing callers keep their
+ * contract. A failed gate read fails CLOSED (500), never examines
+ * blind. Callers: POST /lc/:lcID/examine-documents and the
+ * release-payment handler's auto-exam step (which used to invoke the
+ * chaincode directly, bypassing this gate - live: LC4 released with an
+ * unverified doc, tx 6c852d31..., block 12930).
+ */
+async function checkLCExamineGate(
+  lcID: string,
+  compliant: boolean
+): Promise<
+  | { ok: true; docs: any[] }
+  | { ok: false; status: number; error: { code: string; message: string; hint?: string; pendingDocuments?: any[] } }
+> {
+  try {
+    const lcRow = await dbService.get(
+      `SELECT contract_id FROM letters_of_credit WHERE lc_id = $1`,
+      [lcID]
+    );
+    const gateContractId = lcRow?.contract_id || '';
+    const docs: any[] = gateContractId
+      ? await dbService.all(`
+        SELECT document_id, document_type, verification_status, entity_type
+        FROM documents
+        WHERE status = 'active'
+          AND (
+            (entity_type = 'LC' AND entity_id = $1)
+            OR (entity_type = 'CONTRACT' AND entity_id = $2)
+            OR (entity_type = 'SHIPMENT' AND entity_id IN (
+                 SELECT shipment_id FROM shipments WHERE contract_id = $2
+            ))
+            OR (entity_type = 'CUSTOMS_DECLARATION' AND entity_id IN (
+                 SELECT declaration_number FROM customs_declarations WHERE contract_id::text = $2
+            ))
+          )
+      `, [lcID, gateContractId])
+      : [];
+    if (docs.length === 0) {
+      return {
+        ok: false,
+        status: 400,
+        error: {
+          code: 'NO_DOCUMENTS_TO_EXAMINE',
+          message: 'Cannot examine documents: no documents are attached to this LC',
+          hint: 'Upload and verify the LC documents before examination (Document Examination tab \u2192 per-document Approve)',
+        },
+      };
+    }
+    const isVerifiedDoc = (d: any) => ['verified', 'approved', 'compliant'].includes(
+      String(d.verification_status || '').toLowerCase());
+    const isExaminedDoc = (d: any) => isVerifiedDoc(d) ||
+      String(d.verification_status || '').toLowerCase() === 'rejected';
+    if (compliant === true) {
+      const pending = docs.filter((d: any) => !isVerifiedDoc(d));
+      if (pending.length > 0) {
+        return {
+          ok: false,
+          status: 400,
+          error: {
+            code: 'DOCUMENTS_NOT_VERIFIED',
+            message: `Cannot mark LC compliant: ${pending.length} document(s) not yet verified (${pending.map((d: any) => d.document_type).join(', ')})`,
+            hint: 'Verify each document first (Document Examination tab \u2192 per-document Approve), then mark compliant',
+            pendingDocuments: pending.map((d: any) => ({ documentId: d.document_id, documentType: d.document_type, entityType: d.entity_type, verificationStatus: d.verification_status })),
+          },
+        };
+      }
+    } else {
+      const examined = docs.filter(isExaminedDoc);
+      if (examined.length === 0) {
+        return {
+          ok: false,
+          status: 400,
+          error: {
+            code: 'DOCUMENTS_NOT_EXAMINED',
+            message: 'Cannot record discrepancies: no attached document has been examined yet',
+            hint: 'Approve or reject at least one document first (Document Examination tab), then record the discrepancy',
+          },
+        };
+      }
+    }
+    return { ok: true, docs };
+  } catch (gateErr) {
+    logger.warn(`[LC EXAMINE] Document gate read failed for ${lcID}:`, gateErr);
+    return {
+      ok: false,
+      status: 500,
+      error: {
+        code: 'EXAMINATION_GATE_ERROR',
+        message: 'Could not verify the LC documents before examination; try again',
+      },
+    };
+  }
+}
+
+/**
  * POST /api/v1/banking/lc/:lcID/examine-documents
  * Bank examines shipping documents against LC terms (UCP 600 Article 14)
  * Workflow: After shipment, bank verifies documents comply with LC requirements
@@ -4999,98 +5106,14 @@ router.post('/lc/:lcID/examine-documents',
         oldStatus = null;
       }
 
-      // S2 (2026-11-18, banks-tabs-status fix): ExamineLCDocuments on
-      // the chaincode checks ONLY the LC status (FOREX_ALLOCATED) — it
-      // cannot see the PG documents at all, so a document-less LC
-      // examined compliant sailed to UTILIZED (live: LC4, tx
-      // 5801d414…, block 12458). The UI never offered the button for
-      // such an LC (its every-doc-verified gate is false on zero docs),
-      // but the API took the call at face value. Gate here, mirroring
-      // the UI gate exactly, over the same attached-document set the
-      // detail endpoint returns (LC + CONTRACT + SHIPMENT + CUSTOMS
-      // rows): no documents at all → 400 (nothing was examined);
-      // compliant=true → every attached document must be
-      // verified/approved/compliant (the per-doc Approve in the exam
-      // dialog is what verifies them); compliant=false → at least one
-      // attached document must have a terminal examination outcome
-      // (verified or rejected), i.e. the officer examined something
-      // before declaring a discrepancy. A chaincode redeploy cannot
-      // fix this — the documents live in PG, not on the ledger.
-      // A failed gate read fails CLOSED (500), never examines blind.
-      try {
-        const lcRow = await dbService.get(
-          `SELECT contract_id FROM letters_of_credit WHERE lc_id = $1`,
-          [lcID]
-        );
-        const examContractId = lcRow?.contract_id || '';
-        const examDocs: any[] = examContractId
-          ? await dbService.all(`
-            SELECT document_id, document_type, verification_status, entity_type
-            FROM documents
-            WHERE status = 'active'
-              AND (
-                (entity_type = 'LC' AND entity_id = $1)
-                OR (entity_type = 'CONTRACT' AND entity_id = $2)
-                OR (entity_type = 'SHIPMENT' AND entity_id IN (
-                     SELECT shipment_id FROM shipments WHERE contract_id = $2
-                ))
-                OR (entity_type = 'CUSTOMS_DECLARATION' AND entity_id IN (
-                     SELECT declaration_number FROM customs_declarations WHERE contract_id::text = $2
-                ))
-              )
-          `, [lcID, examContractId])
-          : [];
-        if (examDocs.length === 0) {
-          return res.status(400).json({
-            success: false,
-            error: {
-              code: 'NO_DOCUMENTS_TO_EXAMINE',
-              message: 'Cannot examine documents: no documents are attached to this LC',
-              hint: 'Upload and verify the LC documents before examination (Document Examination tab → per-document Approve)',
-            },
-            timestamp: new Date().toISOString(),
-          });
-        }
-        const isVerifiedDoc = (d: any) => ['verified', 'approved', 'compliant'].includes(
-          String(d.verification_status || '').toLowerCase());
-        const isExaminedDoc = (d: any) => isVerifiedDoc(d) ||
-          String(d.verification_status || '').toLowerCase() === 'rejected';
-        if (compliant === true) {
-          const pending = examDocs.filter((d: any) => !isVerifiedDoc(d));
-          if (pending.length > 0) {
-            return res.status(400).json({
-              success: false,
-              error: {
-                code: 'DOCUMENTS_NOT_VERIFIED',
-                message: `Cannot mark LC compliant: ${pending.length} document(s) not yet verified (${pending.map((d: any) => d.document_type).join(', ')})`,
-                hint: 'Verify each document first (Document Examination tab → per-document Approve), then mark compliant',
-                pendingDocuments: pending.map((d: any) => ({ documentId: d.document_id, documentType: d.document_type, entityType: d.entity_type, verificationStatus: d.verification_status })),
-              },
-              timestamp: new Date().toISOString(),
-            });
-          }
-        } else {
-          const examined = examDocs.filter(isExaminedDoc);
-          if (examined.length === 0) {
-            return res.status(400).json({
-              success: false,
-              error: {
-                code: 'DOCUMENTS_NOT_EXAMINED',
-                message: 'Cannot record discrepancies: no attached document has been examined yet',
-                hint: 'Approve or reject at least one document first (Document Examination tab), then record the discrepancy',
-              },
-              timestamp: new Date().toISOString(),
-            });
-          }
-        }
-      } catch (gateErr) {
-        logger.warn(`[LC EXAMINE] Document gate read failed for ${lcID}:`, gateErr);
-        return res.status(500).json({
+      // FIX-2: shared gate (checkLCExamineGate above) - same rule the
+      // release handler's auto-exam step now calls. Response codes and
+      // messages are unchanged from the inline gate this replaces.
+      const gate = await checkLCExamineGate(lcID, compliant);
+      if (!gate.ok) {
+        return res.status(gate.status).json({
           success: false,
-          error: {
-            code: 'EXAMINATION_GATE_ERROR',
-            message: 'Could not verify the LC documents before examination; try again',
-          },
+          error: gate.error,
           timestamp: new Date().toISOString(),
         });
       }
@@ -5178,25 +5201,22 @@ router.post('/lc/:lcID/release-payment',
         currency,
       });
 
-      // ✅ DOCUMENT VERIFICATION: Check shipping documents before payment release
-      // LEG3 M-4: the gate as written could never fire, twice over.
-      // (1) It read lc.ShipmentID, but the LetterOfCredit struct
-      // (chaincodes/coffee/banking.go) has no ShipmentID field and nothing
-      // ever sets one — the `if (shipmentID)` was always false, so the
-      // check was dead code and release proceeded unchecked.
-      // (2) It queried entity_type = 'shipping' (lowercase) while the
-      // upload stores the value verbatim uppercase ('SHIPMENT', 32 rows
-      // live; 0 rows lowercase) — had the gate ever run, it would have
-      // found 0 documents and 400'd every release.
-      // Fixed: resolve the LC's shipments via its contract (shipments
-      // carry contract_id) and match entity_type case-insensitively, so
-      // the gate finds the documents the upload actually stored. When
-      // the LC's contract has no shipments yet, there is nothing to
-      // verify and the release proceeds (previous behaviour for
-      // shipment-less LCs).
-      // N1: lcStatus is read once here and reused by the
-      // auto-examination step below, so the release handler does not
-      // need a second ReadLC.
+      // FIX-2 (2026-11-19): the old M-4 "document verification" block
+      // that lived here is REMOVED - it could never block a release.
+      // (1) Its fallback query matched CONTRACT/LC rows with NO entity
+      // filter, so any contract docs in the DB satisfied it, even for
+      // an LC with no documents of its own. (2) When zero docs were
+      // verified it only logged "ALLOWING FOR TEST" and continued.
+      // Live consequence: LC4 released with an unverified doc
+      // (tx 6c852d31..., block 12930) while the examine endpoint would
+      // have 400d. The real gate is the shared checkLCExamineGate,
+      // now called at the auto-exam step below (FOREX_ALLOCATED only)
+      // - the same rule as examine-documents: zero attached docs ->
+      // refuse; any doc unverified -> refuse 400
+      // DOCUMENT_EXAMINATION_FAILED. The status read below is kept:
+      // lcStatus (PG first, chain fallback) is reused by the
+      // auto-examination step, and the ledger status is auto-healed
+      // into PG.
       let lcStatus: string | null = null;
       try {
         const { DatabaseService } = await import('../services/databaseService');
@@ -5207,7 +5227,7 @@ router.post('/lc/:lcID/release-payment',
           `SELECT status FROM letters_of_credit WHERE lc_id = $1`,
           [lcID]
         );
-        
+
         if (pgLcRow && pgLcRow.status) {
           lcStatus = pgLcRow.status;
           logger.info(`Using PostgreSQL LC status: ${lcStatus} for ${lcID}`);
@@ -5221,87 +5241,16 @@ router.post('/lc/:lcID/release-payment',
           }
         }
 
-        // Get LC details to find associated shipments via its contract
+        // Auto-heal: Sync PostgreSQL with blockchain status
         const lcResult = await fabricService.queryChaincode('ReadLC', [lcID]);
         if (lcResult.success && lcResult.data) {
           const lc = lcResult.data;
-          
-          // ✅ Auto-heal: Sync PostgreSQL with blockchain status
           await autoHealLCStatus(lcID, lc.Status || lc.status);
-          const contractID = lc.ContractID || lc.contractID || lc.contractId;
-
-          const db = DatabaseService.getInstance();
-          // Get shipment IDs from contract
-          const shipmentRows: any[] = contractID
-            ? await db.all(
-                `SELECT shipment_id FROM shipments WHERE contract_id = $1`,
-                [contractID]
-              )
-            : [];
-          const shipmentIDs = shipmentRows
-            .map((r: any) => r.shipment_id)
-            .filter(Boolean);
-
-          // Also try to find documents by contract ID if no shipments found
-          let documents: any[] = [];
-          
-          if (shipmentIDs.length > 0) {
-            documents = await db.all(
-              `SELECT document_type, verification_status FROM documents
-               WHERE (UPPER(entity_type) IN ('SHIPMENT', 'CUSTOMS_DECLARATION')) 
-               AND entity_id = ANY($1) AND status = 'active'`,
-              [shipmentIDs]
-            );
-          }
-          
-          // Get ALL documents associated with this contract from PostgreSQL
-          if (documents.length === 0 && contractID) {
-            logger.info(`No documents found via shipments for ${lcID}, querying contract documents from PostgreSQL`);
-            
-            // Query CONTRACT documents from PostgreSQL (this is where documents are actually stored)
-            documents = await db.all(
-              `SELECT document_type, verification_status, entity_type, entity_id FROM documents
-               WHERE status = 'active'
-               AND (
-                 entity_type = 'CONTRACT' 
-                 OR entity_type = 'LC'
-               )
-               ORDER BY uploaded_at DESC
-               LIMIT 100`
-            );
-            
-            logger.info(`Found ${documents.length} documents from PostgreSQL (CONTRACT/LC entities)`);
-          }
-          // Check if we have ANY verified documents
-          logger.info(`[PAYMENT RELEASE DEBUG] Found ${documents.length} total documents for ${lcID}`);
-          logger.info(`[PAYMENT RELEASE DEBUG] Document details: ${JSON.stringify(documents.map(d => ({type: d.entity_type, id: d.entity_id, status: d.verification_status})))}`);
-          
-          const verifiedDocs = documents.filter((d: any) => d.verification_status === 'verified');
-          logger.info(`[PAYMENT RELEASE DEBUG] Found ${verifiedDocs.length} verified documents`);
-          
-          // TEMPORARY: Allow payment if we have ANY documents at all (for debugging)
-          if (documents.length === 0) {
-            logger.warn(`Payment release ${lcID} blocked: No documents found at all`);
-            return res.status(400).json({
-              success: false,
-              error: {
-                code: 'NO_DOCUMENTS',
-                message: 'Cannot release payment: No documents found',
-                hint: 'Please upload documents before releasing payment'
-              }
-            });
-          }
-          
-          if (verifiedDocs.length === 0) {
-            logger.warn(`Payment release ${lcID}: No verified documents, but ${documents.length} unverified docs exist - ALLOWING FOR TEST`);
-            // Continue anyway for testing
-          } else {
-            logger.info(`Payment release ${lcID}: Proceeding with ${verifiedDocs.length} verified documents`);
-          }
         }
-      } catch (docCheckError) {
-        logger.warn(`Non-fatal: Document check failed for payment ${lcID}:`, docCheckError);
-        // Continue with payment release - document check is best-effort
+      } catch (statusErr) {
+        logger.warn(`Non-fatal: LC status read failed for payment ${lcID}:`, statusErr);
+        // Continue - a null lcStatus skips the auto-exam step and
+        // ReleaseLCPayment still fails honestly unless UTILIZED.
       }
 
       // N1: run the document examination as part of the release
@@ -5309,8 +5258,7 @@ router.post('/lc/:lcID/release-payment',
       // only ExamineLCDocuments sets UTILIZED, but nothing in the
       // API/portal chain ever ran examine — so the first release
       // attempt always 400'd PAYMENT_RELEASE_FAILED and only recovered
-      // via a manual examine-documents call. The documents were
-      // already verified by the M-4 gate above, so a compliant
+      // via a manual examine-documents call. The shared gate above verified every attached document, so a compliant
       // examination here is the same verdict, not a weaker one.
       // The chaincode gate is NOT touched: an LC in any other state
       // (REQUESTED, APPROVED, ISSUED, PAYMENT_RELEASED, ...) skips
@@ -5327,6 +5275,35 @@ router.post('/lc/:lcID/release-payment',
       let examinationTxId: string | null = null;
       if (lcStatus === 'FOREX_ALLOCATED') {
         logger.info(`LC ${lcID} is ${lcStatus}: running document examination as part of release`);
+        // FIX-2: run the SAME document gate the examine-documents
+        // endpoint enforces before the chaincode can examine. The
+        // chaincode checks status only, so without this the release
+        // endpoint auto-examined (and released) LCs with unverified
+        // documents. Zero docs or any unverified doc -> 400
+        // DOCUMENT_EXAMINATION_FAILED naming the docs; a failed gate
+        // read fails closed (500), never examines blind.
+        const gate = await checkLCExamineGate(lcID, true);
+        if (!gate.ok) {
+          if (gate.status === 500) {
+            return res.status(500).json({
+              success: false,
+              error: gate.error,
+              timestamp: new Date().toISOString(),
+            });
+          }
+          logger.warn(`Payment release ${lcID} blocked by document gate: ${gate.error.code} - ${gate.error.message}`);
+          return res.status(400).json({
+            success: false,
+            error: {
+              code: 'DOCUMENT_EXAMINATION_FAILED',
+              message: gate.error.message,
+              hint: gate.error.hint || 'Bank must examine the shipping documents (POST /banking/lc/:lcID/examine-documents) before payment release',
+              gateCode: gate.error.code,
+              ...(gate.error.pendingDocuments ? { pendingDocuments: gate.error.pendingDocuments } : {}),
+            },
+            timestamp: new Date().toISOString(),
+          });
+        }
         const examResult = await fabricService.invokeChaincode('ExamineLCDocuments', [
           lcID,
           'true',
