@@ -223,6 +223,74 @@ const CBE_COLORS = {
   white: '#ffffff',
 };
 
+// B8/D3 (2026-11-18, merge fix): GET /documents/entity/* returns raw PG
+// rows in snake_case (document_id, entity_type, verification_status,
+// status='active', …) with no normalisation, while every consumer in this
+// portal — the examination dialog's grouping, verification chips, Verify
+// buttons and the "Mark LC as Compliant" gate — reads camelCase
+// (documentId, entityType, verificationStatus, …). Merging a raw row
+// therefore (a) made the gate evaluate the row's lifecycle status
+// ('active') as its verification status, so `every()` was false forever
+// and the Compliant button could never appear, (b) left the row invisible
+// in both dialog groups (they filter on entityType), and (c) collapsed
+// the dedupe (`d.documentId === doc.documentId`, both undefined) so N raw
+// rows became one invisible row. Normalise at every /documents/entity/*
+// merge site so a merged row is indistinguishable from the camelCase rows
+// GET /banking/lc/:id already returns (same field names and defaults).
+// `status` is deliberately kept as the row's lifecycle status ('active');
+// `verificationStatus` is always populated (default 'pending') so the
+// gate never falls through to `status` and reads 'active' as a verdict.
+const normalizeEntityDocument = (doc: any): any => {
+  if (!doc || typeof doc !== 'object') return doc;
+  const verificationStatus =
+    doc.verification_status ?? doc.verificationStatus ??
+    (doc.verified === true ? 'verified' : undefined) ?? 'pending';
+  return {
+    ...doc,
+    documentId: doc.document_id ?? doc.documentId ?? doc.id ?? '',
+    documentType: doc.document_type ?? doc.documentType ?? doc.type ?? '',
+    documentName: doc.document_name ?? doc.documentName ?? doc.name ?? '',
+    fileName: doc.file_name ?? doc.fileName ?? doc.filename ?? '',
+    filePath: doc.file_path ?? doc.filePath ?? '',
+    fileHash: doc.file_hash ?? doc.fileHash ?? '',
+    mimeType: doc.mime_type ?? doc.mimeType ?? '',
+    fileSize: doc.file_size ?? doc.fileSize ?? doc.size ?? null,
+    uploadedBy: doc.uploaded_by ?? doc.uploadedBy ?? '',
+    uploadedAt: doc.uploaded_at ?? doc.uploadedAt ?? null,
+    status: doc.status ?? 'pending',
+    verificationStatus,
+    verified: doc.verified ?? verificationStatus === 'verified',
+    verificationNotes: doc.verification_notes ?? doc.verificationNotes ?? '',
+    verifiedAt: doc.verified_at ?? doc.verifiedAt ?? null,
+    verifiedBy: doc.verified_by ?? doc.verifiedBy ?? '',
+    entityType: doc.entity_type ?? doc.entityType ?? '',
+    entityId: doc.entity_id ?? doc.entityId ?? '',
+    contractId: doc.contract_id ?? doc.contractId ?? '',
+    shipmentId: doc.shipment_id ?? doc.shipmentId ?? '',
+  };
+};
+
+// Merge raw /documents/entity/* rows into an LC's existing documents:
+// normalise each row, then drop any row whose documentId is already
+// present (GET /banking/lc/:id already returns the SHIPMENT/CONTRACT rows,
+// so a blind append duplicates them and the gate counts them twice).
+// Rows with no usable id are keyed by type+file so they can still dedupe
+// instead of collapsing on `undefined === undefined`.
+const mergeEntityDocuments = (existing: any[], rawRows: any[]): any[] => {
+  const merged = [...(existing || [])];
+  const seen = new Set(
+    merged.map((d: any) => d?.documentId || `${d?.documentType || ''}|${d?.fileName || ''}`),
+  );
+  for (const raw of rawRows || []) {
+    const doc = normalizeEntityDocument(raw);
+    const key = doc.documentId || `${doc.documentType}|${doc.fileName}`;
+    if (key && seen.has(key)) continue;
+    if (key) seen.add(key);
+    merged.push(doc);
+  }
+  return merged;
+};
+
 const BanksPortal: React.FC = () => {
   // 🔇 Logging Control - Set to true to enable verbose logs
   const DEV_LOGGING = true;
@@ -309,7 +377,8 @@ const BanksPortal: React.FC = () => {
   const [selectedForex, setSelectedForex] = useState<ForexAllocation | null>(null);
   const [selectedPaymentForDetails, setSelectedPaymentForDetails] = useState<any | null>(null);
   // Standby LC issuance (Issue 6, 2026-11-14): POST /banking/lc/standby/issue
-  // was API-only. The form lives on the All LCs tab (tab 10); the chaincode
+  // was API-only. The form lives on the Payment Methods tab (the All LCs
+  // tab, tab 10, was removed in the 2026-11-18 merge); the chaincode
   // (IssueStandbyLC) only accepts an APPROVED or COMPLETED contract, so the
   // contract picker offers the already-loaded APPROVED contracts.
   const [standbyDialogOpen, setStandbyDialogOpen] = useState(false);
@@ -675,7 +744,10 @@ const BanksPortal: React.FC = () => {
   }, [activeTab]);
 
   // ?tab=<child tabIndex> deep-link from global search results (e.g.
-  // /portals/banks?tab=10 for All LCs). Maps the flat tabIndex to its
+  // /portals/banks?tab=0 for Payment Methods). The All LCs tab
+  // (?tab=10) was removed in the 2026-11-18 merge and stays removed;
+  // a ?tab=10 link now lands on tab 0 with a notice (see the tabIndex
+  // === 10 branch below). Maps the flat tabIndex to its
   // parent/child pair; the sync effect above then derives activeTab.
   // Waits until the role-based structure is non-empty (userRole loads
   // async), applies once, and ignores an unknown / invisible tab.
@@ -699,6 +771,30 @@ const BanksPortal: React.FC = () => {
     }
     if (tabIndex === 8) {
       void router.replace('/settings?section=system');
+      return;
+    }
+    // B11 (2026-11-18, merge fix): the All LCs tab (tab 10) was deleted
+    // in the merge and stays deleted by intent — do NOT restore it. But
+    // ?tab=10 used to fall through silently to tab 0 (Payment Methods)
+    // with no notice. Follow the tab 7/8 pattern: land on tab 0, which
+    // lists the LCs, tell the user the tab is gone and where Approve /
+    // Issue live now, and rewrite the URL so a refresh does not
+    // re-trigger the notice.
+    if (tabIndex === 10) {
+      showWarning(
+        'All LCs Tab Removed',
+        'The All LCs tab was removed. All letters of credit are listed on the Payment Methods tab.',
+        'Approve and issue an LC from its LC Details dialog (Payment Methods tab → open the LC).'
+      );
+      for (let p = 0; p < structure.length; p++) {
+        const c = structure[p].children.findIndex((child) => child.tabIndex === 0);
+        if (c !== -1) {
+          setActiveParentTab(p);
+          setActiveChildTab(c);
+          break;
+        }
+      }
+      void router.replace('/portals/banks?tab=0');
       return;
     }
     for (let p = 0; p < structure.length; p++) {
@@ -1076,24 +1172,15 @@ const BanksPortal: React.FC = () => {
             return false;
           }
           
-          // ✅ Check if there's a related shipment with DELIVERED status
-          // This indicates shipping documents are ready for examination
-          // Note: shipments table has contract_id but not lc_id column
-          const relatedShipment = shipments?.find((s: any) => 
-            s.contractId === lc.contractId
-          );
-          
-          if (!relatedShipment) {
-            devLog(`[BANKS] ❌ No shipment found for LC ${lc.lcId}`);
-            return false; // No shipment = no shipping documents to examine
-          }
-          
-          if (relatedShipment.status !== 'DELIVERED') {
-            devLog(`[BANKS] ❌ Shipment ${relatedShipment.shipmentId} not DELIVERED yet (status: ${relatedShipment.status})`);
-            return false; // Shipment not delivered = documents not ready
-          }
-          
-          devLog(`[BANKS] ✅ LC ${lc.lcId} for examination tab - status: ${lc.status}, shipment ${relatedShipment.shipmentId} is DELIVERED`);
+          // D4 (2026-11-18, merge fix): do NOT require a DELIVERED
+          // shipment here. ExamineLCDocuments needs only FOREX_ALLOCATED
+          // on the ledger, and the examination dialog fetches the
+          // shipment's documents per LC when it opens — so gating this
+          // tab on a DELIVERED shipment hid 74% of examinable LCs (48 of
+          // 185 live) for the whole interval between shipment creation
+          // and delivery. An LC with no shipment yet simply shows no
+          // shipping documents in the dialog until one exists.
+          devLog(`[BANKS] ✅ LC ${lc.lcId} for examination tab - status: ${lc.status}`);
           return true;
         });
         setLcsForExamination(forExam);
@@ -2200,14 +2287,14 @@ const BanksPortal: React.FC = () => {
                 }
               }
               
-              // Remove duplicates and merge with LC documents
-              const uniqueShipmentDocs = shipmentDocuments.filter((doc, index, self) =>
-                index === self.findIndex((d) => d.documentId === doc.documentId)
-              );
-              
+              // B8/D3: normalise the raw /documents/entity/* rows to
+              // camelCase and drop any row already present in the LC
+              // detail (which already carries the SHIPMENT rows) — a
+              // blind append of snake_case rows poisoned the Compliant
+              // gate with status 'active' and collapsed the dedupe.
               lcData = {
                 ...lcData,
-                documents: [...(lcData.documents || []), ...uniqueShipmentDocs],
+                documents: mergeEntityDocuments(lcData.documents || [], shipmentDocuments),
                 relatedShipments: selectedLC.relatedShipments
               };
             }
@@ -2467,27 +2554,35 @@ const BanksPortal: React.FC = () => {
     try {
       const token = localStorage.getItem('authToken');
       if (token && forex.contractId) {
-        const shipmentsResponse = await apiFetch('/shipments', {
-          headers: { 'Authorization': `Bearer ${token}` }
-        });
-        
-        if (shipmentsResponse.ok) {
-          const shipmentsData = await shipmentsResponse.json();
-          const shipments = shipmentsData.shipments || [];
-          
-          // Check if any shipment exists for this contract or LC
-          const hasShipment = shipments.some((s: any) => 
-            s.contractId === forex.contractId || s.lcId === forex.lcId
+        // D1/B6 (2026-11-18, merge fix): GET /shipments returns
+        // {success, data, pagination} — there is no `.shipments` field,
+        // so reading it always yielded [] and this gate always warned
+        // "Shipment Required" and the dialog never opened. Use
+        // api.getShipments (which pages through the whole list and
+        // returns .data) and accept either payload shape defensively.
+        // Shipments carry no lcId, so match on the contract only.
+        const shipmentsResult = await api.getShipments({});
+        const payload: any = shipmentsResult as any;
+        const shipments = Array.isArray(payload?.data)
+          ? payload.data
+          : Array.isArray(payload?.shipments)
+            ? payload.shipments
+            : Array.isArray(payload)
+              ? payload
+              : [];
+
+        // Check if any shipment exists for this contract
+        const hasShipment = shipments.some((s: any) =>
+          (s.contractId ?? s.contract_id) === forex.contractId
+        );
+
+        if (!hasShipment) {
+          showWarning(
+            'Shipment Required',
+            'Forex cannot be utilized before shipment creation',
+            'Please create a shipment first to comply with UCP 600 workflow requirements. Go to Exporter Portal → Shipments to create a shipment for this contract.'
           );
-          
-          if (!hasShipment) {
-            showWarning(
-              'Shipment Required',
-              'Forex cannot be utilized before shipment creation',
-              'Please create a shipment first to comply with UCP 600 workflow requirements. Go to Exporter Portal → Shipments to create a shipment for this contract.'
-            );
-            return;
-          }
+          return;
         }
       }
     } catch (validationError) {
@@ -3572,7 +3667,7 @@ const BanksPortal: React.FC = () => {
                 showInfo(
                   'LCs Are Requested by the Exporter',
                   'A Letter of Credit is requested by the exporter (or ECTA) for an ECTA-approved contract. Once it appears here as REQUESTED, approve it, then issue it from the APPROVED state.',
-                  'Bank actions: All LCs tab → Approve LC → Issue LC (POST /banking/lc/:id/issue).'
+                  'Bank actions: Payment Methods tab → open the LC → Approve LC → Issue LC (POST /banking/lc/:id/issue).'
                 );
                 return;
               }
@@ -3659,7 +3754,7 @@ const BanksPortal: React.FC = () => {
                   showInfo(
                     'LC Must Be Requested First',
                     `Contract ${contract.contractId} has no Letter of Credit yet. The exporter (or ECTA) requests the LC; the bank then approves it (REQUESTED) and issues it (APPROVED).`,
-                    'Bank actions: All LCs tab → Approve LC → Issue LC (POST /banking/lc/:id/issue).'
+                    'Bank actions: Payment Methods tab → open the LC → Approve LC → Issue LC (POST /banking/lc/:id/issue).'
                   );
                   handleViewContractDetails(contract);
                   return;
@@ -6358,7 +6453,7 @@ const BanksPortal: React.FC = () => {
             <>
               <Alert severity="warning" sx={{ mb: 3 }}>
                 <strong>Banks do not request LCs from this portal.</strong><br />
-                The exporter (or ECTA) requests the LC for this approved contract. Once it appears as REQUESTED, the bank approves it, then issues it from the APPROVED state (All LCs tab → Approve LC → Issue LC).
+                The exporter (or ECTA) requests the LC for this approved contract. Once it appears as REQUESTED, the bank approves it, then issues it from the APPROVED state (open the LC from the Payment Methods tab → Approve LC → Issue LC).
               </Alert>
               <Alert severity="info" sx={{ mb: 3 }}>
                 <strong>International Trade Finance</strong><br />
@@ -7190,15 +7285,12 @@ const BanksPortal: React.FC = () => {
                                             }
                                           }
                                           
-                                          // Remove duplicates based on documentId
-                                          const uniqueShipmentDocs = shipmentDocuments.filter((doc, index, self) =>
-                                            index === self.findIndex((d) => d.documentId === doc.documentId)
-                                          );
-                                          
-                                          console.log('[TAB3] 📦 Total unique shipment documents:', uniqueShipmentDocs.length);
-                                          
-                                          // Merge shipment documents with LC documents
-                                          const allDocuments = [...(lcData.documents || []), ...uniqueShipmentDocs];
+                                          // B8/D3: normalise the raw /documents/entity/* rows
+                                          // to camelCase and drop duplicates of the detail
+                                          // rows — see normalizeEntityDocument. A blind
+                                          // append of snake_case rows (status 'active')
+                                          // made the Compliant gate false forever.
+                                          const allDocuments = mergeEntityDocuments(lcData.documents || [], shipmentDocuments);
                                           console.log('[TAB3] 📚 Total documents (LC + Shipment):', allDocuments.length);
                                           
                                           lcData = { 
@@ -7264,7 +7356,13 @@ const BanksPortal: React.FC = () => {
                                     
                                     // Step 2: Fetch shipments to find related shipment
                                     console.log('[TAB3] 🚢 Looking for shipment related to LC:', lc.lcId, 'Contract:', lcData.contractId);
-                                    const shipmentsResponse = await apiFetch('/shipments/all', {
+                                    // D2 (2026-11-18, merge fix): GET /shipments/all does
+                                    // not exist — it matched /:shipmentID with id 'all'
+                                    // and 404'd, so this whole shipment-doc merge was
+                                    // skipped. Use /shipping/shipments, the working
+                                    // endpoint the "View Examination" path already
+                                    // uses (200, {success, data: camelCase rows}).
+                                    const shipmentsResponse = await apiFetch('/shipping/shipments', {
                                       headers: getAuthHeaders(),
                                     });
                                     
@@ -7280,7 +7378,7 @@ const BanksPortal: React.FC = () => {
                                       
                                       if (relatedShipments.length > 0) {
                                         const relatedShipment = relatedShipments[0];
-                                        console.log('[TAB3] ✅ Found related shipment:', relatedShipment.shipment_id, 'Status:', relatedShipment.status);
+                                        console.log('[TAB3] ✅ Found related shipment:', relatedShipment.shipmentId || relatedShipment.shipment_id, 'Status:', relatedShipment.status);
                                         
                                         // Step 3: Fetch documents for the shipment
                                         const shipmentId = relatedShipment.shipment_id || relatedShipment.shipmentId;
@@ -7313,17 +7411,12 @@ const BanksPortal: React.FC = () => {
                                             shipmentDocuments = [...shipmentDocuments, ...customsDocsResult.data];
                                           }
                                         }
-                                        console.log('[TAB3] ✅ Fetched', shipmentDocuments.filter((d: any) => d.entityType === 'CUSTOMS_DECLARATION').length, 'CUSTOMS_DECLARATION documents');
-                                        
-                                        // Remove duplicates
-                                        const uniqueShipmentDocs = shipmentDocuments.filter((doc, index, self) =>
-                                          index === self.findIndex((d) => d.documentId === doc.documentId)
-                                        );
-                                        
-                                        console.log('[TAB3] 📦 Total unique shipment documents:', uniqueShipmentDocs.length);
-                                        
-                                        // Merge shipment documents with LC documents
-                                        const allDocuments = [...(lcData.documents || []), ...uniqueShipmentDocs];
+                                        console.log('[TAB3] ✅ Fetched', shipmentDocuments.filter((d: any) => normalizeEntityDocument(d).entityType === 'CUSTOMS_DECLARATION').length, 'CUSTOMS_DECLARATION documents');
+
+                                        // B8/D3: normalise the raw /documents/entity/* rows
+                                        // to camelCase and drop duplicates of the detail
+                                        // rows — see normalizeEntityDocument.
+                                        const allDocuments = mergeEntityDocuments(lcData.documents || [], shipmentDocuments);
                                         console.log('[TAB3] 📚 Total documents (LC + Shipment):', allDocuments.length);
                                         
                                         lcData = { 
