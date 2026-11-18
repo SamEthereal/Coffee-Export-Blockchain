@@ -2501,10 +2501,48 @@ router.get('/lc', async (req, res) => {
           discrepancyResolved: false,
         }));
         
+        // D5 (2026-11-18): reconcile the list statuses against the
+        // ledger at read time. PG is only a mirror, and a settle that
+        // predated its mirror (post-delivery settle before F-C) leaves
+        // a row stale forever — LC-BVER showed PAYMENT_RELEASED here
+        // while the ledger said SETTLED. One QueryAllLCs call covers
+        // the whole list; a failed/slow ledger read falls back to the
+        // PG statuses above, so the list never breaks on chain trouble.
+        let statusReconciled = false;
+        let statusHealed = 0;
+        let statusMismatches = 0;
+        const ledgerStatuses = await fetchLedgerLcStatusMap();
+        if (ledgerStatuses) {
+          statusReconciled = true;
+          const toHeal: Array<{ lcId: string; chainStatus: string }> = [];
+          for (const row of lcData) {
+            const chainStatus = ledgerStatuses.get(row.lcId) || '';
+            if (chainStatus && chainStatus !== row.status) {
+              statusMismatches++;
+              row.status = chainStatus; // show the ledger truth now
+              toHeal.push({ lcId: row.lcId, chainStatus });
+            }
+          }
+          if (toHeal.length > 0) {
+            const capped = toHeal.slice(0, LC_RECONCILE_HEAL_CAP);
+            if (toHeal.length > capped.length) {
+              logger.warn(`[BANKING] ⚠️ LC status reconciliation: ${toHeal.length} stale rows, healing ${capped.length} this call (cap ${LC_RECONCILE_HEAL_CAP}); the rest stay ledger-correct in the response and heal on a later list load`);
+            }
+            const healed = await Promise.allSettled(
+              capped.map((h) => autoHealLCStatus(h.lcId, h.chainStatus))
+            );
+            statusHealed = healed.filter((r) => r.status === 'fulfilled').length;
+            logger.info(`[BANKING] 🔧 LC status reconciliation: ${statusMismatches} mismatched, ${statusHealed} PG rows healed to ledger status`);
+          }
+        }
+
         return res.json({
           success: true,
           data: lcData,
           source: 'postgresql',
+          statusReconciled,
+          statusHealed,
+          statusMismatches,
           enriched: true,
           timestamp: new Date().toISOString(),
         });
@@ -3061,6 +3099,15 @@ router.get('/lc/:lcID', authMiddleware, async (req, res) => {
       
       // Log which database provided fields
       logger.info(`[BANKING] ✅ LC data merged - Buyer: ${requiredFields.buyerName || 'N/A'}, Advising Bank: ${requiredFields.advisingBank || 'N/A'}`);
+
+      // D5 (2026-11-18): heal PG from the ledger on detail reads too,
+      // so a stale row (e.g. LC-BVER PAYMENT_RELEASED in PG vs SETTLED
+      // on the ledger) is fixed by opening the LC, not only by listing
+      // it. Best-effort — autoHealLCStatus never throws — and the
+      // response already carries the ledger status either way.
+      if (pgData && pgData.status && lcData?.status && pgData.status !== lcData.status) {
+        await autoHealLCStatus(lcID, lcData.status);
+      }
 
       res.json({
         success: true,
@@ -4709,6 +4756,61 @@ async function autoHealLCStatus(lcID: string, blockchainStatus: string): Promise
   } catch (error) {
     logger.warn(`⚠️ Failed to auto-heal LC status for ${lcID}:`, error);
     // Non-fatal: don't throw, just log
+  }
+}
+
+/**
+ * D5 (2026-11-18): read-time LC status reconciliation for the Banks LC
+ * list. The list (GET /banking/lc) is PG-only while the detail endpoint
+ * reads the ledger first, so an LC whose settle predated the F-C mirror
+ * (post-delivery settle, 2026-11-16) shows PAYMENT_RELEASED in the list
+ * while the ledger says SETTLED — live on LC-BVER-20261116162737.
+ *
+ * One QueryAllLCs chain call (CouchDB rich query, limit 1000) returns
+ * every ledger LC, so the whole list is reconciled with a single chain
+ * read — never one call per row. The read is bounded: if the ledger
+ * does not answer within LC_RECONCILE_TIMEOUT_MS the caller falls back
+ * to the PG statuses (today's behaviour) and logs, so a slow or
+ * mid-deploy chaincode can never hang the list. Rows the ledger does
+ * not return (e.g. the phantom REQUESTED LC, keyed outside the
+ * QueryAllLCs selector) keep their PG status.
+ *
+ * The ledger is the source of truth (same rule as autoHealLCStatus and
+ * the F-C / tab-0 settle mirrors): a differing row is shown with the
+ * ledger status AND healed in PG, best-effort. Healing is capped per
+ * list call so a large stale backlog cannot stall the response; the
+ * response status is reconciled regardless of the heal cap.
+ */
+const LC_RECONCILE_TIMEOUT_MS = 10000;
+const LC_RECONCILE_HEAL_CAP = 50;
+
+async function fetchLedgerLcStatusMap(): Promise<Map<string, string> | null> {
+  try {
+    const result = await Promise.race([
+      fabricService.queryAllLCs(),
+      new Promise<null>((resolve) =>
+        setTimeout(() => resolve(null), LC_RECONCILE_TIMEOUT_MS)
+      ),
+    ]);
+    if (!result || !(result as any).success || !Array.isArray((result as any).data)) {
+      if (result === null) {
+        logger.warn(`[BANKING] ⚠️ LC status reconciliation skipped: QueryAllLCs timed out after ${LC_RECONCILE_TIMEOUT_MS}ms`);
+      } else {
+        logger.warn('[BANKING] ⚠️ LC status reconciliation skipped: QueryAllLCs unsuccessful');
+      }
+      return null;
+    }
+    const map = new Map<string, string>();
+    for (const lc of (result as any).data) {
+      const id = lc?.lcId || lc?.LCID || lc?.LcId || lc?.id || '';
+      const status = lc?.status || lc?.Status || '';
+      if (id && status) map.set(id, status);
+    }
+    logger.info(`[BANKING] 🔗 LC status reconciliation: ${map.size} ledger LCs loaded`);
+    return map;
+  } catch (err) {
+    logger.warn('[BANKING] ⚠️ LC status reconciliation skipped (QueryAllLCs failed):', (err as any)?.message || err);
+    return null;
   }
 }
 
