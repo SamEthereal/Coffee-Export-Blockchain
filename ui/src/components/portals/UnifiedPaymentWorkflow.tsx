@@ -237,7 +237,20 @@ export const UnifiedPaymentWorkflow: React.FC<UnifiedPaymentWorkflowProps> = ({
               return false;
             }
             
-            // Exclude any LC that has a forex allocation record (REQUESTED, ALLOCATED, UTILIZED, EXPIRED)
+            // ✅ Show ALL LC statuses for complete visibility and audit trail
+            // Payment Methods tab should show the full lifecycle:
+            // - Pending: REQUESTED, APPROVED (need bank action)
+            // - In Progress: ISSUED, FOREX_ALLOCATED (handled in other tabs but shown here too)
+            // - Completed: UTILIZED, PAYMENT_RELEASED, SETTLED (for audit trail)
+            
+            const completedStatuses = ['UTILIZED', 'PAYMENT_RELEASED', 'SETTLED', 'COMPLETED'];
+            if (completedStatuses.includes(lc.status)) {
+              devLog(`[PAYMENT METHODS] ✅ Including ${lc.lcId} - status is ${lc.status} (completed, shown for audit trail)`);
+              return true; // Include completed LCs for visibility
+            }
+            
+            // For other statuses, check if they have forex allocation records
+            // Exclude any LC that has a forex allocation record (REQUESTED, ALLOCATED)
             // Match by:
             // 1. Exact lcId match
             // 2. forexId pattern match (e.g., FOREX_LC1787055024941_timestamp)
@@ -274,7 +287,7 @@ export const UnifiedPaymentWorkflow: React.FC<UnifiedPaymentWorkflowProps> = ({
             });
             
             if (hasForex) {
-              devLog(`[PAYMENT METHODS] ❌ Excluding ${lc.lcId} - has forex allocation record`);
+              devLog(`[PAYMENT METHODS] ❌ Excluding ${lc.lcId} - has forex allocation record but not yet UTILIZED`);
               return false;
             }
             

@@ -1291,6 +1291,44 @@ router.post('/utilize', authMiddleware, requireRole(['BANKS', 'BANK_ADMIN', 'BAN
     const { forexId, utilizedAmount } = req.body;
     const user = (req as any).user;
     const role = String(user?.role || '').toUpperCase();
+    
+    // ✅ WORKFLOW ENFORCEMENT: Check if shipment exists before utilization
+    // UCP 600 requires: LC → Forex Allocated → Shipment Created → Document Examination → Forex Utilized
+    try {
+      // Get the LC associated with this forex allocation
+      const forexQuery = await postgresDb.query(
+        'SELECT lc_id, contract_id FROM forex_allocations WHERE forex_id = $1',
+        [forexId]
+      );
+      
+      if (forexQuery.rows.length > 0) {
+        const { lc_id, contract_id } = forexQuery.rows[0];
+        
+        // Check if a shipment exists for this contract/LC
+        const shipmentQuery = await postgresDb.query(
+          'SELECT shipment_id FROM shipments WHERE contract_id = $1 OR lc_id = $2 LIMIT 1',
+          [contract_id, lc_id]
+        );
+        
+        if (shipmentQuery.rows.length === 0) {
+          logger.warn(`Forex utilization blocked: No shipment exists for forex ${forexId}, LC ${lc_id}, contract ${contract_id}`);
+          return res.status(400).json({ 
+            success: false, 
+            error: { 
+              code: 'SHIPMENT_REQUIRED', 
+              message: 'Forex cannot be utilized before shipment creation. Please create a shipment first to comply with UCP 600 workflow requirements.' 
+            }, 
+            timestamp: new Date().toISOString() 
+          });
+        }
+        
+        logger.info(`Forex utilization validation passed: Shipment exists for forex ${forexId}`);
+      }
+    } catch (validationError) {
+      logger.error('Shipment validation error (continuing with utilization):', validationError);
+      // Continue if validation check fails - don't block legitimate operations
+    }
+    
     await fabricService.connectAsOrg(role.startsWith('NBE') ? 'NBEMSP' : 'BanksMSP');
     const result = await fabricService.invokeChaincode('UtilizeForex', [forexId, utilizedAmount.toString()]);
     if (result.success) {

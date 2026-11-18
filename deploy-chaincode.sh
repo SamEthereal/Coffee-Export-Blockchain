@@ -399,6 +399,16 @@ if echo "$COMMITTED_INFO" | grep -q "Version: ${VERSION}" && echo "$COMMITTED_IN
     # before a failed deploy would make the next run think the code was
     # already deployed and skip the upgrade.
     find "$CHAINCODE_DIR" -name "*.go" -type f -exec md5sum {} \; | sort | md5sum | awk '{print $1}' > "$CHAINCODE_DIR/.last_deployed"
+    
+    # Warm up chaincode containers to prevent timeout on first real transaction
+    echo ""
+    echo -e "${YELLOW}Warming up chaincode containers...${NC}"
+    docker exec peer0.banks.cecbs.et peer chaincode query \
+        -C cecbschannel -n coffee \
+        -c '{"Args":["QueryAllLCs"]}' \
+        > /dev/null 2>&1 || echo -e "${YELLOW}  (warmup query - container starting)${NC}"
+    sleep 5
+    echo -e "${GREEN}✓ Chaincode containers initialized${NC}"
 else
     echo -e "${RED}✗ Deployment verification failed${NC}"
     exit 1

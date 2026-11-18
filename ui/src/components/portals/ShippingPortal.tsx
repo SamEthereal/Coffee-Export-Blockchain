@@ -52,6 +52,7 @@ import {
   Assessment,
   Info,
   Refresh,
+  Upload,
 } from '@mui/icons-material';
 import { GridColDef } from '@mui/x-data-grid';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, ResponsiveContainer, BarChart, Bar } from 'recharts';
@@ -272,6 +273,9 @@ const ShippingPortal: React.FC = () => {
   // Ticked by the user to attest the required documents have been verified when
   // the automatic match cannot confirm all of them (see approval dialog).
   const [docsConfirmed, setDocsConfirmed] = useState(false);
+  
+  // Document upload state for missing documents
+  const [uploadProgress, setUploadProgress] = useState<Record<string, number>>({});
 
   // Per-action user inputs collected in the professional Workflow Approval Dialog
   // (replaces legacy prompt()/confirm() flows). Reset each time the dialog opens.
@@ -1168,18 +1172,22 @@ const ShippingPortal: React.FC = () => {
       
       // 1. Fetch from PostgreSQL documents table
       try {
-        const pgDocsResponse = await apiFetch(`/shipments/${shipmentId}/documents`, {
+        // Fetch documents with entity_type = SHIPMENT and entity_id = shipmentId
+        const pgDocsResponse = await apiFetch(`/documents/entity/SHIPMENT/${shipmentId}`, {
           headers: { 'Authorization': `Bearer ${token}` }
         });
         const pgDocsData = await pgDocsResponse.json();
+        console.log('[VERIFICATION] Shipment documents API response:', pgDocsData);
+        
         if (pgDocsData.success && pgDocsData.data) {
-          const pgDocs = Array.isArray(pgDocsData.data.documents) ? pgDocsData.data.documents : 
-                         Array.isArray(pgDocsData.data) ? pgDocsData.data : [];
+          const pgDocs = Array.isArray(pgDocsData.data) ? pgDocsData.data : 
+                         Array.isArray(pgDocsData.data.documents) ? pgDocsData.data.documents : [];
+          console.log('[VERIFICATION] Found', pgDocs.length, 'SHIPMENT entity documents from API');
+          
           uploadedDocuments = [...uploadedDocuments, ...pgDocs.map((doc: any) => {
-            // Normalize URL: remove /api/v1/ prefix if it exists
             let docUrl = doc.file_path || doc.file_url || doc.document_url || doc.url || '#';
             if (typeof docUrl === 'string' && docUrl.startsWith('/api/v1/')) {
-              docUrl = docUrl.substring(8); // Remove '/api/v1/'
+              docUrl = docUrl.substring(8);
             }
             return {
               name: doc.file_name || doc.fileName || doc.document_name || doc.name || 'Unnamed Document',
@@ -1188,11 +1196,42 @@ const ShippingPortal: React.FC = () => {
               url: docUrl,
               uploadedAt: doc.uploaded_at || doc.uploadedAt || doc.createdAt,
               uploadedBy: doc.uploaded_by || doc.uploadedBy || 'Unknown',
-              source: 'PostgreSQL'
+              source: 'Shipment'
             };
           })];
         }
-        console.log('[VERIFICATION] PostgreSQL documents:', uploadedDocuments.length);
+        
+        // ALSO fetch documents where entity_type = CUSTOMS_DECLARATION but entity_id = shipmentId
+        // (incorrectly saved documents that should have been SHIPMENT type)
+        const customsDocsResponse = await apiFetch(`/documents/entity/CUSTOMS_DECLARATION/${shipmentId}`, {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        const customsDocsData = await customsDocsResponse.json();
+        console.log('[VERIFICATION] Customs declaration (by shipment ID) documents API response:', customsDocsData);
+        
+        if (customsDocsData.success && customsDocsData.data) {
+          const customsDocs = Array.isArray(customsDocsData.data) ? customsDocsData.data : 
+                             Array.isArray(customsDocsData.data.documents) ? customsDocsData.data.documents : [];
+          console.log('[VERIFICATION] Found', customsDocs.length, 'CUSTOMS_DECLARATION entity documents (by shipment ID)');
+          
+          uploadedDocuments = [...uploadedDocuments, ...customsDocs.map((doc: any) => {
+            let docUrl = doc.file_path || doc.file_url || doc.document_url || doc.url || '#';
+            if (typeof docUrl === 'string' && docUrl.startsWith('/api/v1/')) {
+              docUrl = docUrl.substring(8);
+            }
+            return {
+              name: doc.file_name || doc.fileName || doc.document_name || doc.name || 'Customs Document',
+              fileName: doc.file_name || doc.fileName || doc.document_name,
+              type: doc.document_type || doc.type || 'Unknown',
+              url: docUrl,
+              uploadedAt: doc.uploaded_at || doc.uploadedAt || doc.createdAt,
+              uploadedBy: doc.uploaded_by || doc.uploadedBy || 'Customs',
+              source: 'Customs (via shipment ID)'
+            };
+          })];
+        }
+        
+        console.log('[VERIFICATION] PostgreSQL documents total:', uploadedDocuments.length);
       } catch (err) {
         console.warn('Could not fetch PostgreSQL documents:', err);
       }
@@ -1409,15 +1448,62 @@ const ShippingPortal: React.FC = () => {
   ): boolean => {
     const slug = required.toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_|_$/g, '');
     const words = required.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length > 3);
-    return uploaded.some((doc) => {
+    
+    console.log(`[DOC-MATCH] Checking for required: "${required}"`);
+    console.log(`[DOC-MATCH] Slug: "${slug}"`);
+    console.log(`[DOC-MATCH] Words (>3 chars): [${words.join(', ')}]`);
+    
+    // Special case mappings for common document type variations
+    const specialMappings: Record<string, string[]> = {
+      'CUSTOMS_CLEARANCE_CERTIFICATE': ['CUSTOMS_DECLARATION', 'CUSTOMS_CLEARANCE', 'CLEARANCE_CERTIFICATE'],
+      'PHYTOSANITARY_CERTIFICATE': ['PHYTOSANITARY', 'PHYTO_CERTIFICATE'],
+      'EXPORT_PERMIT': ['EXPORT_PERMIT', 'PERMIT'],
+      'TRUCK_REGISTRATION': ['TRUCK_REG', 'VEHICLE_REGISTRATION'],
+      'DRIVER_LICENSE': ['DRIVER_LICENCE', 'DRIVER_LICENSE', 'DRIVING_LICENSE']
+    };
+    
+    const found = uploaded.some((doc) => {
       const type = String(doc.type || '').toUpperCase();
       const name = String(doc.fileName || doc.name || '').toUpperCase().replace(/[^A-Z0-9]+/g, '_');
-      if (type && (type.includes(slug) || slug.includes(type))) return true;
-      if (name && (name.includes(slug) || slug.includes(name))) return true;
       const hay = `${type} ${name}`.toLowerCase();
+      
+      // Check special mappings first
+      if (specialMappings[slug]) {
+        for (const mapping of specialMappings[slug]) {
+          if (type.includes(mapping) || mapping.includes(type)) {
+            console.log(`[DOC-MATCH] ✅ MATCHED via special mapping: "${type}" matches "${mapping}"`);
+            return true;
+          }
+        }
+      }
+      
+      // Check type match
+      const typeMatch = type && (type.includes(slug) || slug.includes(type));
+      // Check name match  
+      const nameMatch = name && (name.includes(slug) || slug.includes(name));
+      // Check word match (at least 2 significant words)
       const hits = words.filter((w) => hay.includes(w)).length;
-      return words.length >= 2 && hits >= 2;
+      const wordMatch = words.length >= 2 && hits >= 2;
+      
+      const isMatch = typeMatch || nameMatch || wordMatch;
+      
+      if (isMatch) {
+        console.log(`[DOC-MATCH] ✅ MATCHED with document:`, {
+          type: doc.type,
+          name: doc.fileName || doc.name,
+          matchReason: typeMatch ? 'type' : nameMatch ? 'name' : 'words'
+        });
+      }
+      
+      return isMatch;
     });
+    
+    if (!found) {
+      console.log(`[DOC-MATCH] ❌ NO MATCH found for "${required}"`);
+      console.log(`[DOC-MATCH] Available document types:`, uploaded.map(d => d.type));
+    }
+    
+    return found;
   };
 
   // Required documents for the open approval dialog that no uploaded document
@@ -1485,6 +1571,101 @@ const ShippingPortal: React.FC = () => {
     setActionInputs(emptyActionInputs);
     setRejectionReason('');
     setDocsConfirmed(false);
+    setUploadProgress({});
+  };
+  
+  // Handle document upload for missing documents
+  const handleDocumentUpload = async (event: React.ChangeEvent<HTMLInputElement>, documentType: string) => {
+    const file = event.target.files?.[0];
+    if (!file || !approvalDialog.shipmentId) return;
+    
+    const token = localStorage.getItem('authToken');
+    if (!token) {
+      setSnackbar({
+        open: true,
+        message: 'Authentication required. Please log in.',
+        severity: 'error'
+      });
+      return;
+    }
+    
+    try {
+      // Show upload progress
+      setUploadProgress(prev => ({ ...prev, [documentType]: 0 }));
+      
+      // Prepare form data
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('entity_type', 'SHIPMENT');
+      formData.append('entity_id', approvalDialog.shipmentId);
+      formData.append('document_type', documentType.toUpperCase().replace(/\s+/g, '_'));
+      formData.append('uploaded_by', 'Shipping Officer');
+      
+      // Upload with progress
+      const response = await fetch(`${API_BASE_URL}/documents/upload`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`
+        },
+        body: formData
+      });
+      
+      const result = await response.json();
+      
+      if (result.success) {
+        setUploadProgress(prev => ({ ...prev, [documentType]: 100 }));
+        
+        // Add the new document to verification data
+        if (approvalDialog.verificationData) {
+          const newDoc = {
+            name: file.name,
+            fileName: file.name,
+            type: documentType.toUpperCase().replace(/\s+/g, '_'),
+            url: result.data.file_path || result.data.url,
+            uploadedAt: new Date().toISOString(),
+            uploadedBy: 'Shipping Officer',
+            source: 'Uploaded'
+          };
+          
+          setApprovalDialog({
+            ...approvalDialog,
+            verificationData: {
+              ...approvalDialog.verificationData,
+              uploadedDocuments: [...approvalDialog.verificationData.uploadedDocuments, newDoc]
+            }
+          });
+        }
+        
+        setSnackbar({
+          open: true,
+          message: `✅ ${documentType} uploaded successfully!`,
+          severity: 'success'
+        });
+        
+        // Clear progress after 1 second
+        setTimeout(() => {
+          setUploadProgress(prev => {
+            const newProgress = { ...prev };
+            delete newProgress[documentType];
+            return newProgress;
+          });
+        }, 1000);
+      } else {
+        throw new Error(result.error || 'Upload failed');
+      }
+    } catch (error: any) {
+      console.error('[SHIPPING] Document upload failed:', error);
+      setUploadProgress(prev => {
+        const newProgress = { ...prev };
+        delete newProgress[documentType];
+        return newProgress;
+      });
+      setSnackbar({
+        open: true,
+        message: `❌ Failed to upload ${documentType}: ${error.message}`,
+        severity: 'error'
+      });
+    }
   };
   
   // Handle rejection
@@ -4370,12 +4551,48 @@ const ShippingPortal: React.FC = () => {
                   <Grid container spacing={1}>
                     {approvalDialog.verificationData.requiredDocuments.map((doc) => {
                       const present = isRequiredDocumentPresent(doc, approvalDialog.verificationData!.uploadedDocuments);
+                      const uploading = uploadProgress[doc] !== undefined;
+                      
                       return (
-                        <Grid item xs={12} md={6} key={doc}>
-                          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                            {present ? <CheckCircle sx={{ color: '#4caf50' }} fontSize="small" /> : <Warning sx={{ color: '#ed6c02' }} fontSize="small" />}
-                            <Typography variant="body2" sx={{ flex: 1 }}>{doc}</Typography>
-                            <Chip label={present ? 'Present' : 'Missing'} size="small" color={present ? 'success' : 'warning'} />
+                        <Grid item xs={12} key={doc}>
+                          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, p: 1, bgcolor: present ? '#f1f8f4' : '#fff8e1', borderRadius: 1 }}>
+                            {present ? (
+                              <CheckCircle sx={{ color: '#4caf50' }} fontSize="small" />
+                            ) : (
+                              <Warning sx={{ color: '#ed6c02' }} fontSize="small" />
+                            )}
+                            <Typography variant="body2" sx={{ flex: 1, fontWeight: 500 }}>{doc}</Typography>
+                            
+                            {uploading ? (
+                              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                                <CircularProgress size={20} />
+                                <Typography variant="caption">{uploadProgress[doc]}%</Typography>
+                              </Box>
+                            ) : present ? (
+                              <Chip label="Present" size="small" color="success" />
+                            ) : (
+                              <>
+                                <input
+                                  type="file"
+                                  id={`upload-${doc}`}
+                                  style={{ display: 'none' }}
+                                  accept=".pdf,.jpg,.jpeg,.png"
+                                  onChange={(e) => handleDocumentUpload(e, doc)}
+                                />
+                                <label htmlFor={`upload-${doc}`}>
+                                  <Button
+                                    component="span"
+                                    size="small"
+                                    variant="outlined"
+                                    startIcon={<Upload />}
+                                    sx={{ mr: 1 }}
+                                  >
+                                    Upload
+                                  </Button>
+                                </label>
+                                <Chip label="Missing" size="small" color="warning" />
+                              </>
+                            )}
                           </Box>
                         </Grid>
                       );
