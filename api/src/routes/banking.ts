@@ -1552,7 +1552,7 @@ router.post('/lc/:lcID/issue',
       
       // Get LC and contract info for validation
       const lc = await dbService.get(
-        'SELECT lc_id, contract_id, exporter_id, status FROM letters_of_credit WHERE lc_id = $1',
+        'SELECT lc_id, contract_id, exporter_id, status, port_of_loading, port_of_discharge, latest_shipment_date FROM letters_of_credit WHERE lc_id = $1',
         [lcID]
       );
 
@@ -1803,10 +1803,27 @@ router.post('/lc/:lcID/issue',
           // Get LC and contract data for MT700 fields
           const lcData = lc; // Already loaded at the beginning
           const contract = await dbService.get(
-            'SELECT buyer_id, buyer_country, exporter_bank FROM contracts WHERE contract_id = $1',
+            'SELECT buyer_id, buyer_country, exporter_bank, port_of_loading, port_of_destination FROM contracts WHERE contract_id = $1',
             [lcData.contract_id]
           );
-          
+
+          // B10: CreateMT700_IssueLC takes 13 params
+          // (chaincodes/coffee/swift.go:402): messageID, lcID,
+          // swiftRef, senderBIC, receiverBIC, applicant, beneficiary,
+          // amountStr, currency, expiryDate, loadingPort,
+          // dischargePort, latestShipDate. The old call sent 11 and
+          // passed `terms` as the 11th arg — `terms` is not a
+          // chaincode param at all — so every peer rejected it with
+          // "Incorrect number of params. Expected 13, received 11".
+          // Ports/dates come from the LC row, falling back to the
+          // contract; all three are optional on-chain, so '' when
+          // neither has them (same as the manual MT700 route).
+          const latestShipDateRaw: any = (lcData as any).latest_shipment_date;
+          const latestShipDate = latestShipDateRaw
+            ? (latestShipDateRaw instanceof Date
+                ? latestShipDateRaw.toISOString().slice(0, 10)
+                : String(latestShipDateRaw).slice(0, 10))
+            : '';
           // Create MT700 via chaincode
           const mt700Result = await fabricService.invokeChaincode('CreateMT700_IssueLC', [
             messageID,
@@ -1819,12 +1836,22 @@ router.post('/lc/:lcID/issue',
             (amount || 0).toString(),
             currency || 'USD',
             new Date(Date.now() + 90 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10), // Expiry: 90 days
-            terms || 'Standard LC terms'
+            (lcData as any).port_of_loading || contract?.port_of_loading || '', // Loading port
+            (lcData as any).port_of_discharge || contract?.port_of_destination || '', // Discharge port
+            latestShipDate, // Latest shipment date
           ], 'BanksMSP');
 
           if (mt700Result.success) {
             logger.info(`✅ MT700 SWIFT message auto-created: ${messageID} for LC ${lcID}`);
-            
+
+            // Link the message to the LC (best-effort, like the
+            // manual MT700 route in swift.ts).
+            try {
+              await fabricService.invokeChaincode('LinkSWIFTMessageToLC', [messageID, lcID], 'BanksMSP');
+            } catch (linkErr: any) {
+              logger.warn(`⚠️ Could not link MT700 ${messageID} to LC ${lcID}:`, linkErr?.message || linkErr);
+            }
+
             // Log audit trail
             await logAuditBestEffort(req, {
               entityType: 'SWIFT',
@@ -2318,24 +2345,65 @@ router.get('/lc', async (req, res) => {
         
         logger.info(`[BANKING] ✅ Loaded ${pgLCs.length} LCs from PostgreSQL`);
 
-        // Documents per LC (same rule as the LC-detail PG fallback:
-        // active documents linked to the LC by lc_id or lc_number).
-        // Without this, `documents` was hardcoded to [] here, so the
-        // Document Examination queue (LCs with documents, ISSUED or
-        // FOREX_ALLOCATED) and the Payment Release queue (UTILIZED with
-        // verified documents) could never fill in dev mode.
-        // ✅ FIXED: Also load documents linked to the LC's CONTRACT (entity_type='CONTRACT')
-        // since exporters upload documents to the contract, not the LC itself.
+        // Documents per LC — same rule as the LC-detail endpoint
+        // (GET /banking/lc/:lcID): active documents linked to the LC
+        // itself (entity_type='LC'), to its contract
+        // (entity_type='CONTRACT'), to any shipment of the contract
+        // (entity_type='SHIPMENT'), or to a customs declaration of
+        // the contract (entity_type='CUSTOMS_DECLARATION').
+        // The old list query only fetched LC/CONTRACT rows and keyed
+        // CONTRACT docs by entity_id alone, so an LC whose paperwork
+        // lives on its shipment — the normal post-delivery case —
+        // came back with `documents: []`. Live proof: LC-BVER's 3
+        // verified SHIPMENT docs (BILL_OF_LADING, COMMERCIAL_INVOICE,
+        // PACKING_LIST) show in the detail response but the list row
+        // carried 0 documents, so the Payment Release tab (which
+        // requires documents.length > 0 with every doc verified)
+        // could never fill. SHIPMENT rows carry no contract_id, so
+        // they are joined through shipments.shipment_id ->
+        // contract_id, and CUSTOMS rows through
+        // customs_declarations.declaration_number -> contract_id,
+        // exactly like the detail query. CONTRACT docs are keyed by
+        // both entity_id and contract_id, so a row whose entity_id
+        // was never backfilled still attaches.
+        // NOTE: the list stays PG-only on purpose — the detail's F-E
+        // ledger merge (ledgerDocuments) is not replicated here
+        // because a ledger-only ID carries no verification_status,
+        // so it could never satisfy the tab's all-verified gate;
+        // the rows that gate on are the PG rows attached below.
         const pgDocs = await dbService.all(
           `SELECT document_id, document_type, file_name, file_path, status,
                   verification_status, verified, uploaded_at, uploaded_by,
                   entity_type, entity_id, contract_id
-           FROM documents 
-           WHERE status = 'active' 
-             AND (entity_type = 'LC' OR entity_type = 'CONTRACT')`,
+           FROM documents
+           WHERE status = 'active'
+             AND entity_type IN ('LC', 'CONTRACT', 'SHIPMENT', 'CUSTOMS_DECLARATION')`,
           []
         );
+        // Shipment / customs-declaration -> contract joins.
+        const pgShipments = await dbService.all(
+          `SELECT shipment_id, contract_id FROM shipments WHERE contract_id IS NOT NULL`,
+          []
+        );
+        const shipmentContract = new Map<string, string>();
+        for (const s of pgShipments) {
+          if (s.shipment_id && s.contract_id) shipmentContract.set(s.shipment_id, s.contract_id);
+        }
+        const pgDeclarations = await dbService.all(
+          `SELECT declaration_number, contract_id FROM customs_declarations WHERE contract_id IS NOT NULL`,
+          []
+        );
+        const declarationContract = new Map<string, string>();
+        for (const dcl of pgDeclarations) {
+          if (dcl.declaration_number && dcl.contract_id) declarationContract.set(dcl.declaration_number, dcl.contract_id);
+        }
         const docsByLC = new Map<string, any[]>();
+        const attachDoc = (key: string | null | undefined, doc: any) => {
+          if (!key) return;
+          const list = docsByLC.get(key) || [];
+          list.push(doc);
+          docsByLC.set(key, list);
+        };
         for (const d of pgDocs) {
           const doc = {
             documentId: d.document_id,
@@ -2351,21 +2419,40 @@ router.get('/lc', async (req, res) => {
             entityId: d.entity_id,
             contractId: d.contract_id,
           };
-          
+
           // Map LC documents directly by entity_id (the LC ID)
           if (d.entity_type === 'LC') {
-            const list = docsByLC.get(d.entity_id) || [];
-            list.push(doc);
-            docsByLC.set(d.entity_id, list);
+            attachDoc(d.entity_id, doc);
           }
-          
-          // Map CONTRACT documents by contract_id (will be matched to LCs later)
-          if (d.entity_type === 'CONTRACT' && d.entity_id) {
-            const list = docsByLC.get(d.entity_id) || [];
-            list.push(doc);
-            docsByLC.set(d.entity_id, list);
+
+          // Map CONTRACT documents by entity_id AND contract_id
+          // (either spelling attaches the doc to the LC).
+          if (d.entity_type === 'CONTRACT') {
+            attachDoc(d.entity_id, doc);
+            if (d.contract_id && d.contract_id !== d.entity_id) attachDoc(d.contract_id, doc);
+          }
+
+          // Map SHIPMENT documents via the shipment's contract.
+          if (d.entity_type === 'SHIPMENT') {
+            attachDoc(shipmentContract.get(d.entity_id), doc);
+          }
+
+          // Map CUSTOMS_DECLARATION documents via the declaration's contract.
+          if (d.entity_type === 'CUSTOMS_DECLARATION') {
+            attachDoc(declarationContract.get(d.entity_id), doc);
           }
         }
+        // One document can attach under more than one key (e.g. a
+        // CONTRACT doc keyed by both entity_id and contract_id), so
+        // dedupe the per-LC list by document_id.
+        const dedupeDocs = (docs: any[]) => {
+          const seen = new Set<string>();
+          return docs.filter((doc) => {
+            if (seen.has(doc.documentId)) return false;
+            seen.add(doc.documentId);
+            return true;
+          });
+        };
 
         // Customs clearance per contract: the Payment Release queue requires
         // customsClearanceStatus 'CLEARED' (or customsCleared true), which
@@ -2401,11 +2488,11 @@ router.get('/lc', async (req, res) => {
           documentRejectedBy: lc.document_rejected_by || '',
           documentRejectedByMsp: lc.document_rejected_by_msp || '',
           documentRejectionDate: lc.document_rejection_date || null,
-          documents: [
+          documents: dedupeDocs([
             ...(docsByLC.get(lc.lc_id) || []),
             ...(lc.lc_number && lc.lc_number !== lc.lc_id ? (docsByLC.get(lc.lc_number) || []) : []),
             ...(lc.contract_id ? (docsByLC.get(lc.contract_id) || []) : []),
-          ],
+          ]),
           customsClearanceStatus: clearedContracts.has(lc.contract_id) ? 'CLEARED' : '',
           customsCleared: clearedContracts.has(lc.contract_id),
           amendments: [],
@@ -5075,24 +5162,51 @@ router.post('/lc/:lcID/release-payment',
               [lcData.contract_id]
             ) : null;
             
+            // B10: the real chaincode function is CreateMT103_Payment
+            // (chaincodes/coffee/swift.go:536), NOT
+            // CreateMT103_SendPayment — that name exists in neither
+            // line, so the call always failed with "Function
+            // CreateMT103_SendPayment not found in contract
+            // CoffeeContract". Its 13 params, in order: messageID,
+            // swiftRef, senderBIC, receiverBIC, paymentID,
+            // orderingCustomer, beneficiary, beneficiaryAccount,
+            // amountStr, currency, valueDate, remittanceInfo,
+            // chargeCode. ReleaseLCPayment creates the payment
+            // on-ledger with the deterministic ID "PAY_<lcID>"
+            // (chaincodes/coffee/banking.go), so that is the
+            // paymentID. Beneficiary account: the exporters table
+            // has no bank-account column, so '' (same as the manual
+            // MT103 route when absent). Charge code: 'SHA', the
+            // manual route's default (valid: OUR/SHA/BEN).
+            const paymentID = `PAY_${lcID}`;
             // Create MT103 via chaincode
-            const mt103Result = await fabricService.invokeChaincode('CreateMT103_SendPayment', [
+            const mt103Result = await fabricService.invokeChaincode('CreateMT103_Payment', [
               messageID,
-              lcID,
               swiftReference,
-              'CBEETAAAXXX', // Ordering institution (CBE Ethiopia)
-              contract?.exporter_bank || 'UNKNOWN', // Beneficiary bank
+              'CBEETAAAXXX', // Sender BIC (CBE Ethiopia)
+              contract?.exporter_bank || 'UNKNOWN', // Receiver BIC (beneficiary's bank)
+              paymentID,
               contract?.buyer_id || 'Buyer', // Ordering customer
               lcData?.exporter_id || 'Exporter', // Beneficiary
+              '', // Beneficiary account (not stored in PG)
               amount.toString(),
               currency || 'USD',
               new Date().toISOString().slice(0, 10), // Value date (today)
-              `Payment for LC ${lcID}` // Remittance info
+              `Payment for LC ${lcID}`, // Remittance info
+              'SHA', // Charge code (OUR/SHA/BEN)
             ], 'BanksMSP');
 
             if (mt103Result.success) {
               logger.info(`✅ MT103 SWIFT message auto-created: ${messageID} for LC ${lcID}`);
-              
+
+              // Link the message to the LC (best-effort, like the
+              // manual MT103 route in swift.ts).
+              try {
+                await fabricService.invokeChaincode('LinkSWIFTMessageToLC', [messageID, lcID], 'BanksMSP');
+              } catch (linkErr: any) {
+                logger.warn(`⚠️ Could not link MT103 ${messageID} to LC ${lcID}:`, linkErr?.message || linkErr);
+              }
+
               // Log audit trail
               await logAuditBestEffort(req, {
                 entityType: 'SWIFT',
