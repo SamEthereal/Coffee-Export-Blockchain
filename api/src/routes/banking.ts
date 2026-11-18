@@ -844,7 +844,56 @@ router.post('/lc/:lcID/approve',
         } catch (syncErr) {
           logger.warn(`⚠️  Failed to sync LC approval to PostgreSQL:`, syncErr);
         }
-        
+
+        // M1 (2026-11-18, banks-tabs-status fix): the UCP 600 approval
+        // gate (canApproveLCRequest) passes only when all 5 APPROVAL-stage
+        // CONTRACT documents are present — and passing it IS the bank's
+        // examination of those documents. Until now nothing ever marked
+        // them verified, so they stayed `pending` forever and the
+        // Payment Release tab's every-doc-verified gate (plus the exam
+        // dialog's Mark Compliant button) could never pass for an LC
+        // that went through the current flow. Mark them verified here,
+        // tied to this approval: verification_status/verified on the
+        // documents rows + a document_verifications row each, with the
+        // ApproveLC tx id in notes so the verification traces to the
+        // approval transaction. Shipping documents are NOT touched —
+        // they are examined per-document in the exam dialog before
+        // examine-documents. Best-effort: a failed marking must not
+        // fail the approval (the chain move already landed).
+        try {
+          const { getRequiredDocuments } = await import('../config/lcDocumentRequirements');
+          const approvalDocTypes = getRequiredDocuments('APPROVAL')
+            .filter((d: any) => d.required)
+            .map((d: any) => d.documentType);
+          const approvalDocs: any[] = await dbService.all(
+            `SELECT document_id FROM documents
+             WHERE entity_type = 'CONTRACT' AND entity_id = $1
+               AND status IN ('active', 'approved')
+               AND document_type = ANY($2)
+               AND COALESCE(verification_status, 'pending') <> 'verified'`,
+            [lc.contract_id, approvalDocTypes]
+          );
+          const verifiedById = /^\d+$/.test(String((user as any)?.userId || ''))
+            ? parseInt(String((user as any).userId), 10) : null;
+          for (const doc of approvalDocs) {
+            await dbService.run(
+              `UPDATE documents SET verification_status = 'verified', verified = true WHERE document_id = $1`,
+              [doc.document_id]
+            );
+            await dbService.run(
+              `INSERT INTO document_verifications (document_id, verified_by, verification_date, status, notes)
+               VALUES ($1, $2, NOW(), 'verified', $3)`,
+              [doc.document_id, verifiedById,
+               `Verified as part of LC ${lcID} approval (UCP 600 approval examination; approve tx: ${result.txId || 'unknown'})`]
+            );
+          }
+          if (approvalDocs.length > 0) {
+            logger.info(`[LC APPROVE] ✅ Marked ${approvalDocs.length} approval-stage documents verified for LC ${lcID}`);
+          }
+        } catch (markErr) {
+          logger.warn(`⚠️  Failed to mark approval documents verified for LC ${lcID}:`, markErr);
+        }
+
         res.json({
           success: true,
           data: result.data,
@@ -1793,6 +1842,13 @@ router.post('/lc/:lcID/issue',
         });
 
         // ✅ AUTO-CREATE MT700 SWIFT MESSAGE when LC is issued
+        // S3 (2026-11-18, banks-tabs-status fix): the auto-create is
+        // best-effort (a failure warns, issue still succeeds), so the
+        // UI success copy cannot state the outcome from a hardcoded
+        // string. Capture it here and return it, so the UI reports
+        // the real outcome (message id when created, false when not).
+        let mt700AutoCreated = false;
+        let mt700MessageId: string | null = null;
         try {
           logger.info(`[LC ISSUE] Auto-creating MT700 SWIFT message for LC ${lcID}...`);
           
@@ -1842,6 +1898,8 @@ router.post('/lc/:lcID/issue',
           ], 'BanksMSP');
 
           if (mt700Result.success) {
+            mt700AutoCreated = true;
+            mt700MessageId = messageID;
             logger.info(`✅ MT700 SWIFT message auto-created: ${messageID} for LC ${lcID}`);
 
             // Link the message to the LC (best-effort, like the
@@ -1887,7 +1945,7 @@ router.post('/lc/:lcID/issue',
         }
         res.json({
           success: true,
-          data: { ...result.data, forexAutoCreated: true },
+          data: { ...result.data, forexAutoCreated: true, mt700AutoCreated, mt700MessageId },
           txId: result.txId,
           timestamp: new Date().toISOString(),
         });
@@ -4939,6 +4997,102 @@ router.post('/lc/:lcID/examine-documents',
         }
       } catch {
         oldStatus = null;
+      }
+
+      // S2 (2026-11-18, banks-tabs-status fix): ExamineLCDocuments on
+      // the chaincode checks ONLY the LC status (FOREX_ALLOCATED) — it
+      // cannot see the PG documents at all, so a document-less LC
+      // examined compliant sailed to UTILIZED (live: LC4, tx
+      // 5801d414…, block 12458). The UI never offered the button for
+      // such an LC (its every-doc-verified gate is false on zero docs),
+      // but the API took the call at face value. Gate here, mirroring
+      // the UI gate exactly, over the same attached-document set the
+      // detail endpoint returns (LC + CONTRACT + SHIPMENT + CUSTOMS
+      // rows): no documents at all → 400 (nothing was examined);
+      // compliant=true → every attached document must be
+      // verified/approved/compliant (the per-doc Approve in the exam
+      // dialog is what verifies them); compliant=false → at least one
+      // attached document must have a terminal examination outcome
+      // (verified or rejected), i.e. the officer examined something
+      // before declaring a discrepancy. A chaincode redeploy cannot
+      // fix this — the documents live in PG, not on the ledger.
+      // A failed gate read fails CLOSED (500), never examines blind.
+      try {
+        const lcRow = await dbService.get(
+          `SELECT contract_id FROM letters_of_credit WHERE lc_id = $1`,
+          [lcID]
+        );
+        const examContractId = lcRow?.contract_id || '';
+        const examDocs: any[] = examContractId
+          ? await dbService.all(`
+            SELECT document_id, document_type, verification_status, entity_type
+            FROM documents
+            WHERE status = 'active'
+              AND (
+                (entity_type = 'LC' AND entity_id = $1)
+                OR (entity_type = 'CONTRACT' AND entity_id = $2)
+                OR (entity_type = 'SHIPMENT' AND entity_id IN (
+                     SELECT shipment_id FROM shipments WHERE contract_id = $2
+                ))
+                OR (entity_type = 'CUSTOMS_DECLARATION' AND entity_id IN (
+                     SELECT declaration_number FROM customs_declarations WHERE contract_id::text = $2
+                ))
+              )
+          `, [lcID, examContractId])
+          : [];
+        if (examDocs.length === 0) {
+          return res.status(400).json({
+            success: false,
+            error: {
+              code: 'NO_DOCUMENTS_TO_EXAMINE',
+              message: 'Cannot examine documents: no documents are attached to this LC',
+              hint: 'Upload and verify the LC documents before examination (Document Examination tab → per-document Approve)',
+            },
+            timestamp: new Date().toISOString(),
+          });
+        }
+        const isVerifiedDoc = (d: any) => ['verified', 'approved', 'compliant'].includes(
+          String(d.verification_status || '').toLowerCase());
+        const isExaminedDoc = (d: any) => isVerifiedDoc(d) ||
+          String(d.verification_status || '').toLowerCase() === 'rejected';
+        if (compliant === true) {
+          const pending = examDocs.filter((d: any) => !isVerifiedDoc(d));
+          if (pending.length > 0) {
+            return res.status(400).json({
+              success: false,
+              error: {
+                code: 'DOCUMENTS_NOT_VERIFIED',
+                message: `Cannot mark LC compliant: ${pending.length} document(s) not yet verified (${pending.map((d: any) => d.document_type).join(', ')})`,
+                hint: 'Verify each document first (Document Examination tab → per-document Approve), then mark compliant',
+                pendingDocuments: pending.map((d: any) => ({ documentId: d.document_id, documentType: d.document_type, entityType: d.entity_type, verificationStatus: d.verification_status })),
+              },
+              timestamp: new Date().toISOString(),
+            });
+          }
+        } else {
+          const examined = examDocs.filter(isExaminedDoc);
+          if (examined.length === 0) {
+            return res.status(400).json({
+              success: false,
+              error: {
+                code: 'DOCUMENTS_NOT_EXAMINED',
+                message: 'Cannot record discrepancies: no attached document has been examined yet',
+                hint: 'Approve or reject at least one document first (Document Examination tab), then record the discrepancy',
+              },
+              timestamp: new Date().toISOString(),
+            });
+          }
+        }
+      } catch (gateErr) {
+        logger.warn(`[LC EXAMINE] Document gate read failed for ${lcID}:`, gateErr);
+        return res.status(500).json({
+          success: false,
+          error: {
+            code: 'EXAMINATION_GATE_ERROR',
+            message: 'Could not verify the LC documents before examination; try again',
+          },
+          timestamp: new Date().toISOString(),
+        });
       }
 
       const result = await fabricService.invokeChaincode('ExamineLCDocuments', [

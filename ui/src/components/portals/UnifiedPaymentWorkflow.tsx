@@ -219,80 +219,23 @@ export const UnifiedPaymentWorkflow: React.FC<UnifiedPaymentWorkflowProps> = ({
             contractData: contract, // Keep full contract data
           }));
         
-        // Then, add existing LCs - but exclude LCs that belong in Forex tab
-        // LCs with forex allocations (any status) stay in Forex Allocations tab
+        // Then, add existing LCs — ALL of them (S1: no exclusions).
         devLog('[PAYMENT METHODS] Available forex allocations:', safeForexAllocations.map(f => ({ forexId: f.forexId, lcId: f.lcId, status: f.status })));
         
+        // S1 (2026-11-18, banks-tabs-status fix): Payment Methods lists
+        // ALL LCs — the user's design after tab 10 was deleted (its
+        // contents moved here). The old filter excluded every ISSUED /
+        // FOREX_ALLOCATED LC outright plus any non-completed LC with a
+        // matching forex record, hiding 82% of LCs live (321 of 393)
+        // while the tab's own KPI counted all of them and the ?tab=10
+        // notice claimed "All letters of credit are listed on the
+        // Payment Methods tab". The exclusions were load-bearing for
+        // nothing: the step buttons are status-gated (ISSUED shows an
+        // "Awaiting: Awaiting Shipment" chip, FOREX_ALLOCATED offers
+        // Verify Documents), and forex work itself still lives on tab 1.
         const existingLCs = safeLetterOfCredits
           .filter(lc => {
-            devLog(`[PAYMENT METHODS] Checking LC ${lc.lcId}, status: ${lc.status}`);
-            
-            // ✅ CRITICAL: Exclude LCs with forex-related statuses
-            // These statuses indicate the LC is in the forex allocation workflow
-            // (FOREX_BACKED and FOREX_REQUESTED were invented/dead LC states
-            // and are not matched anymore — see TEST-STATUS-MATRIX §17 #15).
-            const forexRelatedStatuses = ['ISSUED', 'FOREX_ALLOCATED'];
-            if (forexRelatedStatuses.includes(lc.status)) {
-              devLog(`[PAYMENT METHODS] ❌ Excluding ${lc.lcId} - status is ${lc.status} (forex-related)`);
-              return false;
-            }
-            
-            // ✅ Show ALL LC statuses for complete visibility and audit trail
-            // Payment Methods tab should show the full lifecycle:
-            // - Pending: REQUESTED, APPROVED (need bank action)
-            // - In Progress: ISSUED, FOREX_ALLOCATED (handled in other tabs but shown here too)
-            // - Completed: UTILIZED, PAYMENT_RELEASED, SETTLED (for audit trail)
-            
-            const completedStatuses = ['UTILIZED', 'PAYMENT_RELEASED', 'SETTLED', 'COMPLETED'];
-            if (completedStatuses.includes(lc.status)) {
-              devLog(`[PAYMENT METHODS] ✅ Including ${lc.lcId} - status is ${lc.status} (completed, shown for audit trail)`);
-              return true; // Include completed LCs for visibility
-            }
-            
-            // For other statuses, check if they have forex allocation records
-            // Exclude any LC that has a forex allocation record (REQUESTED, ALLOCATED)
-            // Match by:
-            // 1. Exact lcId match
-            // 2. forexId pattern match (e.g., FOREX_LC1787055024941_timestamp)
-            // 3. contractId + exporterId match (for forex without lcId populated yet)
-            const hasForex = safeForexAllocations.some(f => {
-              // Safety check: ensure f is not null
-              if (!f) return false;
-              
-              // Exact lcId match
-              const lcIdMatch = f.lcId && lc.lcId && (
-                f.lcId === lc.lcId || 
-                (f.lcId?.toLowerCase && lc.lcId?.toLowerCase && f.lcId.toLowerCase() === lc.lcId.toLowerCase()) ||
-                (f.lcId?.replace && lc.lcId?.replace && f.lcId.replace(/\s/g, '') === lc.lcId.replace(/\s/g, ''))
-              );
-              
-              // forexId pattern match (forexId contains LC ID, e.g., FOREX_LC1787055024941_12345)
-              const forexIdMatch = f.forexId && lc.lcId && f.forexId.includes(lc.lcId);
-              
-              // contractId + exporterId match (for forex records without lcId yet)
-              const metadataMatch = f.contractId && f.exporterId && lc.contractId && lc.exporterId && 
-                f.contractId === lc.contractId && f.exporterId === lc.exporterId;
-              
-              const match = lcIdMatch || forexIdMatch || metadataMatch;
-              
-              if (match) {
-                devLog(`[PAYMENT METHODS] Found matching forex for ${lc.lcId}:`, {
-                  forexId: f.forexId,
-                  lcId: f.lcId || '(not set)',
-                  status: f.status,
-                  matchType: lcIdMatch ? 'lcId' : forexIdMatch ? 'forexId' : 'metadata'
-                });
-              }
-              return match;
-            });
-            
-            if (hasForex) {
-              devLog(`[PAYMENT METHODS] ❌ Excluding ${lc.lcId} - has forex allocation record but not yet UTILIZED`);
-              return false;
-            }
-            
-            devLog(`[PAYMENT METHODS] ✅ Including ${lc.lcId} in Payment Methods`);
-            // Include all other LCs in Payment Methods workflow
+            devLog(`[PAYMENT METHODS] Including LC ${lc.lcId}, status: ${lc.status}`);
             return true;
           })
           .map(lc => {
@@ -321,7 +264,6 @@ export const UnifiedPaymentWorkflow: React.FC<UnifiedPaymentWorkflowProps> = ({
           pendingLCRequests: pendingLCRequests.length,
           allLCs: safeLetterOfCredits.length,
           filteredLCs: existingLCs.length,
-          excludedByForexStatus: safeLetterOfCredits.filter(lc => ['ISSUED', 'FOREX_ALLOCATED'].includes(lc.status)).length,
           requestedLCs: safeLetterOfCredits.filter(lc => lc.status === 'REQUESTED').length,
           approvedLCs: safeLetterOfCredits.filter(lc => lc.status === 'APPROVED').length,
         });

@@ -616,7 +616,7 @@ const BanksPortal: React.FC = () => {
           },
           { 
             id: 'document-examination', 
-            label: `Document Examination${lcsForExamination.length > 0 ? ` (${lcsForExamination.length})` : ''}`, 
+            label: `Document Examination${pendingExaminationCount > 0 ? ` (${pendingExaminationCount})` : ''}`, 
             icon: React.createElement(Description),
             roles: ['BANKS', 'ADMIN', 'BANKS Portal Administrator', 'Bank Officer', 'Document Officer'],
             tabIndex: 2
@@ -709,6 +709,15 @@ const BanksPortal: React.FC = () => {
       .filter(parent => parent.children.length > 0); // Remove parents with no accessible children
   };
   
+  // S6 (2026-11-18, banks-tabs-status fix): lcsForExamination
+  // deliberately includes already-examined UTILIZED / PAYMENT_RELEASED
+  // rows for audit trail, so its length overstates truly-pending
+  // examinations. The badge, the "Pending Examination" KPI and the
+  // PENDING view all count only FOREX_ALLOCATED rows; examined rows
+  // live under the VERIFIED view instead (see
+  // getFilteredDocumentExaminationLCs).
+  const pendingExaminationCount = lcsForExamination.filter((lc: any) => lc.status === 'FOREX_ALLOCATED').length;
+
   const tabStructure = getHierarchicalTabStructure();
   
   // Keep the selection valid when role-based filtering changes the available
@@ -815,7 +824,7 @@ const BanksPortal: React.FC = () => {
     const allTabs = [
       { index: 0, label: 'Payment Methods', icon: React.createElement(Payment), roles: ['BANKS', 'ADMIN', 'BANKS Portal Administrator', 'Bank Officer', 'LC Officer', 'Payment Officer'] },
       { index: 1, label: `Forex Allocations${forexAllocations.length > 0 ? ` (${forexAllocations.length})` : ''}`, icon: React.createElement(CurrencyExchange), roles: ['BANKS', 'ADMIN', 'BANKS Portal Administrator', 'Bank Officer', 'Forex Officer'] },
-      { index: 2, label: `Document Examination${lcsForExamination.length > 0 ? ` (${lcsForExamination.length})` : ''}`, icon: React.createElement(Description), roles: ['BANKS', 'ADMIN', 'BANKS Portal Administrator', 'Bank Officer', 'Document Officer'] },
+      { index: 2, label: `Document Examination${pendingExaminationCount > 0 ? ` (${pendingExaminationCount})` : ''}`, icon: React.createElement(Description), roles: ['BANKS', 'ADMIN', 'BANKS Portal Administrator', 'Bank Officer', 'Document Officer'] },
       { index: 3, label: `Payment Release${lcsForPaymentRelease.length > 0 ? ` (${lcsForPaymentRelease.length})` : ''}`, icon: React.createElement(AttachMoney), roles: ['BANKS', 'ADMIN', 'BANKS Portal Administrator', 'Bank Officer', 'Payment Officer'] },
       { index: 4, label: `SWIFT Messages${swiftMessages.length > 0 ? ` (${swiftMessages.length})` : ''}`, icon: React.createElement(AccountBalance), roles: ['BANKS', 'ADMIN', 'BANKS Portal Administrator', 'Bank Officer', 'SWIFT Officer'] },
       { index: 5, label: `LC Settlements${deliveredShipments.length > 0 ? ` (${deliveredShipments.length})` : ''}`, icon: React.createElement(CheckCircle), roles: ['BANKS', 'ADMIN', 'BANKS Portal Administrator', 'Bank Officer', 'LC Officer', 'Payment Officer'] },
@@ -2970,10 +2979,15 @@ const BanksPortal: React.FC = () => {
   };
 
   const getFilteredDocumentExaminationLCs = () => {
+    // S6 (2026-11-18, banks-tabs-status fix): the PENDING view is
+    // truly-pending only (FOREX_ALLOCATED) — the badge and the
+    // "Pending Examination" KPI count exactly this list. Examined rows
+    // (UTILIZED, PAYMENT_RELEASED) stay on the tab for audit trail
+    // under the VERIFIED view, which is what "verified" means: they
+    // passed examination and were verified.
     const baseList = documentExaminationFilter === 'VERIFIED'
-      ? letterOfCredits.filter(lc => lc.status === 'UTILIZED') // UTILIZED = documents verified
-      // ✅ Show both pending AND completed for audit trail (removed UTILIZED exclusion)
-      : lcsForExamination;
+      ? letterOfCredits.filter(lc => lc.status === 'UTILIZED' || lc.status === 'PAYMENT_RELEASED')
+      : lcsForExamination.filter((lc: any) => lc.status === 'FOREX_ALLOCATED');
 
     if (!searchTerm) {
       return baseList;
@@ -3291,15 +3305,123 @@ const BanksPortal: React.FC = () => {
                   setCurrentPage(0);
                 }
               },
+              // S5 (2026-11-18, banks-tabs-status fix): Total / Sent /
+              // Received left 62 of 80 messages (78%) in no bucket — a
+              // stuck DRAFT or a REJECTED message was invisible in the
+              // KPI row. One card per SWIFT status now, so the buckets
+              // sum to Total: DRAFT + NBE_APPROVED + APPROVED + SENT +
+              // RECEIVED + PROCESSING + SETTLED + REJECTED = Total.
+              {
+                icon: <Description />,
+                label: 'Draft',
+                value: swiftMessages.filter((msg: any) => msg.status === 'DRAFT').length,
+                color: '#ff9800',
+                subtitle: 'Needs Approval',
+                description: 'Draft messages awaiting bank approval.',
+                clickable: true,
+                selected: filterStatus === 'DRAFT',
+                onClick: () => {
+                  setSearchTerm('');
+                  setFilterStatus('DRAFT');
+                  setAmountMin('');
+                  setAmountMax('');
+                  setCurrentPage(0);
+                }
+              },
+              {
+                icon: <VerifiedUser />,
+                label: 'NBE Approved',
+                value: swiftMessages.filter((msg: any) => msg.status === 'NBE_APPROVED').length,
+                color: '#673ab7',
+                subtitle: 'Pre-Approved',
+                description: 'Messages approved by NBE, awaiting bank approval.',
+                clickable: true,
+                selected: filterStatus === 'NBE_APPROVED',
+                onClick: () => {
+                  setSearchTerm('');
+                  setFilterStatus('NBE_APPROVED');
+                  setAmountMin('');
+                  setAmountMax('');
+                  setCurrentPage(0);
+                }
+              },
+              {
+                icon: <CheckCircle />,
+                label: 'Approved',
+                value: swiftMessages.filter((msg: any) => msg.status === 'APPROVED').length,
+                color: '#2e7d32',
+                subtitle: 'Ready to Send',
+                description: 'Approved messages awaiting dispatch.',
+                clickable: true,
+                selected: filterStatus === 'APPROVED',
+                onClick: () => {
+                  setSearchTerm('');
+                  setFilterStatus('APPROVED');
+                  setAmountMin('');
+                  setAmountMax('');
+                  setCurrentPage(0);
+                }
+              },
+              {
+                icon: <AccessTime />,
+                label: 'Processing',
+                value: swiftMessages.filter((msg: any) => msg.status === 'PROCESSING').length,
+                color: '#00acc1',
+                subtitle: 'In Progress',
+                description: 'Messages received and being processed.',
+                clickable: true,
+                selected: filterStatus === 'PROCESSING',
+                onClick: () => {
+                  setSearchTerm('');
+                  setFilterStatus('PROCESSING');
+                  setAmountMin('');
+                  setAmountMax('');
+                  setCurrentPage(0);
+                }
+              },
+              {
+                icon: <Verified />,
+                label: 'Settled',
+                value: swiftMessages.filter((msg: any) => msg.status === 'SETTLED').length,
+                color: '#1565c0',
+                subtitle: 'Complete',
+                description: 'Messages settled end to end.',
+                clickable: true,
+                selected: filterStatus === 'SETTLED',
+                onClick: () => {
+                  setSearchTerm('');
+                  setFilterStatus('SETTLED');
+                  setAmountMin('');
+                  setAmountMax('');
+                  setCurrentPage(0);
+                }
+              },
+              {
+                icon: <Cancel />,
+                label: 'Rejected',
+                value: swiftMessages.filter((msg: any) => msg.status === 'REJECTED').length,
+                color: '#f44336',
+                subtitle: 'Failed',
+                description: 'Messages rejected at any stage.',
+                clickable: true,
+                selected: filterStatus === 'REJECTED',
+                onClick: () => {
+                  setSearchTerm('');
+                  setFilterStatus('REJECTED');
+                  setAmountMin('');
+                  setAmountMax('');
+                  setCurrentPage(0);
+                }
+              },
             ] : activeTab === 2 ? [
               // Tab 2: Document Examination KPIs - Show data in table
               { 
                 icon: <Description />, 
                 label: 'Pending Examination', 
-                value: lcsForExamination.length,  // Show all LCs in examination tab
+                value: pendingExaminationCount,  // S6: FOREX_ALLOCATED only — the truly-pending list, not the audit rows
                 color: '#ff9800',
-                subtitle: 'Documents Submitted',
-                description: 'Show all LCs in document examination tab.',
+                subtitle: 'Awaiting Examination',
+                description: 'LCs in FOREX_ALLOCATED awaiting document examination. Already-examined LCs stay visible under Verified for audit.',
                 clickable: true,
                 selected: documentExaminationFilter === 'PENDING_EXAMINATION',
                 onClick: () => {
@@ -3320,8 +3442,11 @@ const BanksPortal: React.FC = () => {
                 // the list carries no updatedAt), so "today" cannot be
                 // computed honestly. Relabelled to what is counted:
                 // all LCs whose documents were examined and verified.
+                // S6: PAYMENT_RELEASED LCs passed examination too (they
+                // reached UTILIZED first), so they count here as well —
+                // the VERIFIED view shows UTILIZED + PAYMENT_RELEASED.
                 label: 'Verified',
-                value: letterOfCredits.filter((lc: any) => lc.status === 'UTILIZED').length,
+                value: letterOfCredits.filter((lc: any) => lc.status === 'UTILIZED' || lc.status === 'PAYMENT_RELEASED').length,
                 color: '#4caf50',
                 subtitle: 'Documents Verified',
                 description: 'Show LCs with documents examined and verified.',
@@ -3722,10 +3847,18 @@ const BanksPortal: React.FC = () => {
                     
                     const result = await response.json();
                     if (result.success) {
+                      // S3 (2026-11-18, banks-tabs-status fix): the old
+                      // copy claimed "no SWIFT message was sent by this
+                      // action", but the issue route auto-creates an MT700
+                      // in DRAFT on every issue. Report the real outcome
+                      // from the response (mt700MessageId when created).
+                      const mt700Id = (result as any)?.data?.mt700MessageId as string | undefined;
                       showSuccess(
                         'LC Issued Successfully',
                         `LC ${lc.lcId} issued`,
-                        'The Letter of Credit has been issued and is now active. To advise the beneficiary, compose an MT700 on the SWIFT Messages tab — no SWIFT message was sent by this action.'
+                        mt700Id
+                          ? `The Letter of Credit has been issued and is now active. An MT700 advice message (${mt700Id}) was auto-created as a DRAFT — review, approve and send it from the SWIFT Messages tab.`
+                          : 'The Letter of Credit has been issued and is now active. No MT700 message was auto-created — compose one on the SWIFT Messages tab to advise the beneficiary.'
                       );
                       loadBankingData();
                     } else {
