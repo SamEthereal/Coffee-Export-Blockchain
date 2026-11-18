@@ -78,6 +78,8 @@ import { CustomsInspection } from './CustomsInspection';
 import { extractTxId, shortTxId } from '@/utils/txId';
 import PhoneInput from '@/components/common/PhoneInput';
 import { validatePhoneNumber } from '@/utils/fieldValidation';
+import { NotificationDialog } from '@/components/common/NotificationDialog';
+import { useNotification } from '@/hooks/useNotification';
 import { CustomsClearedShipments } from './CustomsClearedShipments';
 import { DocumentUploadDialog } from './DocumentUploadDialog';
 import { DocumentManagementPanel } from '@/components/documents';
@@ -127,6 +129,8 @@ const normalizeShipmentId = (id: string): string => {
 
 const CustomsPortal: React.FC = () => {
   const [tabValue, setTabValue] = useState(0);
+  // Notification system for professional alerts
+  const { notification, showSuccess, showError, closeNotification } = useNotification();
   // Which KPI card is selected on the current tab. Every KPI on a tab used
   // to share the tab index as its selection key, so all three rendered as
   // selected at once. Each KPI now has its own key (see getDynamicKpis);
@@ -340,7 +344,11 @@ const CustomsPortal: React.FC = () => {
         
         if (!result.success || !result.data) {
           if (!skipValidation) {
-            alert('❌ Shipment Not Found\n\nThis shipment does not exist in the blockchain.');
+            showError(
+              'Shipment Not Found',
+              'This shipment does not exist in the blockchain.',
+              'Please verify the shipment ID and try again'
+            );
           }
           setIsLoadingShipmentData(false);
           return;
@@ -400,12 +408,20 @@ const CustomsPortal: React.FC = () => {
                 console.log(`[CUSTOMS] ✅ Fuzzy match found! Inspection: ${fuzzyMatch.inspectionId || fuzzyMatch.InspectionID}`);
                 inspectionResult.data = [fuzzyMatch]; // Use fuzzy match
               } else {
-                alert('❌ No Quality Inspection Found\n\nNo inspection exists for this shipment.\n\nRequired Steps:\n1. ECTA must perform quality inspection\n2. ECTA must approve inspection\n3. ECTA must issue export permit\n\nThen customs declaration can be submitted.');
+                showError(
+                  'No Quality Inspection Found',
+                  'No inspection exists for this shipment.',
+                  'Required Steps:\n1. ECTA must perform quality inspection\n2. ECTA must approve inspection\n3. ECTA must issue export permit\n\nThen customs declaration can be submitted.'
+                );
                 setIsLoadingShipmentData(false);
                 return;
               }
             } else {
-              alert('❌ No Quality Inspections Found\n\nNo inspections exist in the system.');
+              showError(
+                'No Quality Inspections Found',
+                'No inspections exist in the system.',
+                'Please contact ECTA to initiate quality inspection'
+              );
               setIsLoadingShipmentData(false);
               return;
             }
@@ -525,15 +541,11 @@ Once fixed, refresh this page and try creating the declaration again.`;
             console.error('[CUSTOMS] ❌ Approval check FAILED:', reason);
             console.error('[CUSTOMS] 💡 Solution:', solution);
             
-            alert(`❌ Quality Inspection Not Approved
-
-Inspection Status: ${inspStatus}
-Certificate in blockchain: ${certificateNo || 'EMPTY ❌'}
-Permit in blockchain: ${exportPermitNo || 'EMPTY ❌'}
-
-PROBLEM: ${reason}
-
-${solution}`);
+            showError(
+              'Quality Inspection Not Approved',
+              `Inspection Status: ${inspStatus}\nCertificate in blockchain: ${certificateNo || 'EMPTY ❌'}\nPermit in blockchain: ${exportPermitNo || 'EMPTY ❌'}\n\nPROBLEM: ${reason}`,
+              solution
+            );
             setIsLoadingShipmentData(false);
             return;
           }
@@ -570,14 +582,22 @@ ${solution}`);
           }
 
           if (!hasExportPermit) {
-            alert('❌ No Export Permit Issued\n\nQuality is approved but export permit has not been issued or attached yet.\n\nRequired:\n• ECTA must issue export permit for this inspection OR upload the Export Permit document to the shipment.\n\nThen customs declaration can be submitted.');
+            showError(
+              'No Export Permit Issued',
+              'Quality is approved but export permit has not been issued or attached yet.',
+              'Required:\n• ECTA must issue export permit for this inspection OR upload the Export Permit document to the shipment.\n\nThen customs declaration can be submitted.'
+            );
             setIsLoadingShipmentData(false);
             return;
           }
           
         } catch (error) {
           console.error('[CUSTOMS] Error verifying inspection:', error);
-          alert('❌ Error Verifying Prerequisites\n\nCould not verify quality inspection and export permit.\n\nPlease ensure:\n1. Quality inspection completed\n2. Inspection approved by ECTA\n3. Export permit issued');
+          showError(
+            'Error Verifying Prerequisites',
+            'Could not verify quality inspection and export permit.',
+            'Please ensure:\n1. Quality inspection completed\n2. Inspection approved by ECTA\n3. Export permit issued'
+          );
           setIsLoadingShipmentData(false);
           return;
         }
@@ -667,7 +687,11 @@ ${solution}`);
                 setResubmittingDeclarationId(declId);
               } else {
                 console.log('[CUSTOMS] ⚠️ Declaration already exists:', declId, 'Status:', declStatus);
-                alert(`⚠️ Declaration Already Exists\n\nDeclaration ID: ${declId}\nStatus: ${declStatus}\n\nThis shipment already has a customs declaration.\n\nYou can view or modify the existing declaration instead of creating a new one.`);
+                showError(
+                  'Declaration Already Exists',
+                  `Declaration ID: ${declId}\nStatus: ${declStatus}\n\nThis shipment already has a customs declaration.`,
+                  'You can view or modify the existing declaration instead of creating a new one.'
+                );
                 setIsLoadingShipmentData(false);
                 return;
               }
@@ -733,9 +757,16 @@ ${solution}`);
         // Show appropriate alert only if not skipping validation
         if (!skipValidation) {
           if (missingFields.length > 0) {
-            alert(`⚠️ Partial Auto-Fill\n\nShipment: ${shipmentId}\n✓ Quality inspection approved\n✓ Export permit issued\n\n⚠️ Missing fields (must enter manually):\n${missingFields.map(f => '• ' + f).join('\n')}\n\nPlease fill in the missing information before submitting.`);
+            showError(
+              'Partial Auto-Fill',
+              `Shipment: ${shipmentId}\n✓ Quality inspection approved\n✓ Export permit issued\n\n⚠️ Missing fields (must enter manually):\n${missingFields.map(f => '• ' + f).join('\n')}`,
+              'Please fill in the missing information before submitting.'
+            );
           } else {
-            alert(`✅ All Prerequisites Verified!\n\nShipment: ${shipmentId}\n✓ Quality inspection approved\n✓ Export permit issued\n✓ Contract validated\n✓ All fields auto-populated\n\n📋 Form Data:\n• Exporter: ${extractedData.exporterId}\n• Quantity: ${extractedData.quantity} kg\n• Value: $${extractedData.value}\n• Destination: ${extractedData.destination}\n• Currency: ${extractedData.currency}\n\nForm ready for declaration submission.`);
+            showSuccess(
+              'All Prerequisites Verified!',
+              `Shipment: ${shipmentId}\n✓ Quality inspection approved\n✓ Export permit issued\n✓ Contract validated\n✓ All fields auto-populated\n\n📋 Form Data:\n• Exporter: ${extractedData.exporterId}\n• Quantity: ${extractedData.quantity} kg\n• Value: $${extractedData.value}\n• Destination: ${extractedData.destination}\n• Currency: ${extractedData.currency}\n\nForm ready for declaration submission.`
+            );
           }
         }
         
@@ -743,7 +774,11 @@ ${solution}`);
         console.error('[CUSTOMS] ❌ Error during data fetching:', error);
         console.log('[CUSTOMS] ═══════════════════════════════════════');
         if (!skipValidation) {
-          alert('❌ System Error\n\nFailed to validate shipment prerequisites.\n\n' + error);
+          showError(
+            'System Error',
+            'Failed to validate shipment prerequisites.',
+            String(error)
+          );
         } else {
           // Even if we skip validation, we should still update the form with whatever data we got
           console.warn('[CUSTOMS] ⚠️ Auto-fill partially failed, but continuing because skipValidation=true');
@@ -800,48 +835,61 @@ ${solution}`);
     const token = localStorage.getItem('authToken');
     try {
       console.log('[CUSTOMS] Fetching documents for declaration:', declarationNumber);
-      console.log('[CUSTOMS] API URL:', `/documents/entity/CUSTOMS_DECLARATION/${declarationNumber}`);
       
-      const response = await apiFetch(`/documents/entity/CUSTOMS_DECLARATION/${declarationNumber}`, {
+      // Get the declaration to find its shipment ID
+      const declaration = declarations.find(d => d.declarationId === declarationNumber);
+      const shipmentId = declaration?.shipmentId;
+      
+      let allDocs: any[] = [];
+      
+      // 1. Fetch documents directly attached to the customs declaration
+      console.log('[CUSTOMS] Fetching declaration documents from:', `/documents/entity/CUSTOMS_DECLARATION/${declarationNumber}`);
+      const declResponse = await apiFetch(`/documents/entity/CUSTOMS_DECLARATION/${declarationNumber}`, {
         headers: { 'Authorization': `Bearer ${token}` }
       });
       
-      console.log('[CUSTOMS] Response status:', response.status);
-      const result = await response.json();
-      console.log('[CUSTOMS] Documents API full response:', JSON.stringify(result, null, 2));
-      
-      if (result.success) {
-        let docs = [];
-        
-        // Handle different response structures
-        if (Array.isArray(result.data)) {
-          docs = result.data;
-        } else if (result.data && Array.isArray(result.data.documents)) {
-          docs = result.data.documents;
-        } else if (result.data) {
-          docs = [result.data];
+      if (declResponse.ok) {
+        const declResult = await declResponse.json();
+        if (declResult.success && declResult.data) {
+          const declDocs = Array.isArray(declResult.data) ? declResult.data : 
+                          Array.isArray(declResult.data.documents) ? declResult.data.documents : 
+                          [declResult.data];
+          allDocs = [...declDocs];
+          console.log('[CUSTOMS] Found', declDocs.length, 'declaration documents');
         }
-        
-        console.log('[CUSTOMS] Parsed documents array:', docs);
-        console.log('[CUSTOMS] Number of documents:', docs.length);
-        
-        if (docs.length > 0) {
-          console.log('[CUSTOMS] First document structure:', JSON.stringify(docs[0], null, 2));
-          console.log('[CUSTOMS] First document keys:', Object.keys(docs[0]));
-          console.log('[CUSTOMS] First document.id:', docs[0].id);
-          console.log('[CUSTOMS] First document.document_id:', docs[0].document_id);
-        }
-        
-        setShipmentDocuments(docs);
-      } else {
-        console.error('[CUSTOMS] API returned success=false:', result.error);
-        setShipmentDocuments([]);
       }
+      
+      // 2. Fetch documents from the shipment (quality inspection, export permit, etc.)
+      if (shipmentId && shipmentId.trim() !== '') {
+        console.log('[CUSTOMS] Fetching shipment documents from:', `/documents/entity/SHIPMENT/${shipmentId}`);
+        const shipmentResponse = await apiFetch(`/documents/entity/SHIPMENT/${shipmentId}`, {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        
+        if (shipmentResponse.ok) {
+          const shipmentResult = await shipmentResponse.json();
+          if (shipmentResult.success && shipmentResult.data) {
+            const shipmentDocs = Array.isArray(shipmentResult.data) ? shipmentResult.data : 
+                                Array.isArray(shipmentResult.data.documents) ? shipmentResult.data.documents : 
+                                [shipmentResult.data];
+            allDocs = [...allDocs, ...shipmentDocs];
+            console.log('[CUSTOMS] Found', shipmentDocs.length, 'shipment documents');
+          }
+        }
+      }
+      
+      console.log('[CUSTOMS] Total documents loaded:', allDocs.length);
+      if (allDocs.length > 0) {
+        console.log('[CUSTOMS] First document structure:', JSON.stringify(allDocs[0], null, 2));
+      }
+      
+      setShipmentDocuments(allDocs);
+      setCustomsDocuments(allDocs); // Also update customs documents state
     } catch (error: any) {
       console.error('[CUSTOMS] Failed to fetch documents - Error:', error);
       console.error('[CUSTOMS] Error message:', error.message);
-      console.error('[CUSTOMS] Error stack:', error.stack);
       setShipmentDocuments([]);
+      setCustomsDocuments([]);
     } finally {
       setLoadingDocuments(false);
     }
@@ -852,7 +900,11 @@ ${solution}`);
     
     if (!documentId) {
       console.error('[CUSTOMS] No document ID provided!');
-      alert('Error: Document ID is missing');
+      showError(
+        'Document Error',
+        'Document ID is missing.',
+        'Unable to view document without an ID'
+      );
       return;
     }
     
@@ -1333,6 +1385,13 @@ ${solution}`);
         const enrichedDeclarations = await Promise.all(enrichmentPromises);
         setDeclarations(enrichedDeclarations);
         console.log(`[CUSTOMS] ${enrichedDeclarations.length} declarations enriched and ready for display`);
+        console.log('[CUSTOMS] Sample enriched declaration:', enrichedDeclarations[0]);
+        console.log('[CUSTOMS] Sample fields:', {
+          declarationId: enrichedDeclarations[0]?.declarationId,
+          shipmentId: enrichedDeclarations[0]?.shipmentId,
+          exporterId: enrichedDeclarations[0]?.exporterId,
+          status: enrichedDeclarations[0]?.status
+        });
       } else {
         console.log('[CUSTOMS] No declarations found or query failed');
         setDeclarations([]);
@@ -1502,15 +1561,26 @@ ${inspectionForm.internalNotes ? '\n🔒 Internal Notes:\n' + inspectionForm.int
       const result = await response.json();
       if (result.success) {
         console.log('[CUSTOMS] ✅ Inspection completed successfully');
-        alert(`✅ Inspection Completed\n\nDeclaration: ${declarationId}\nResult: ${inspectionResult}\n\nStatus updated to UNDER_REVIEW for final clearance`);
+        showSuccess(
+          'Inspection Completed Successfully',
+          `Declaration ${declarationId} has been inspected and marked as ${inspectionResult}. The declaration has been moved to UNDER_REVIEW status for final clearance processing.`
+        );
         loadData();
       } else {
         console.error('[CUSTOMS] ❌ Failed to complete inspection:', result);
-        alert(`❌ Failed to complete inspection\n\n${result.error || 'Unknown error'}`);
+        showError(
+          'Failed to Complete Inspection',
+          result.error || 'An unknown error occurred while completing the inspection. Please try again.',
+          'Contact system administrator if the problem persists'
+        );
       }
     } catch (error) {
       console.error('[CUSTOMS] Failed to complete inspection:', error);
-      alert(`❌ Network Error\n\nFailed to complete inspection: ${error}`);
+      showError(
+        'Network Error',
+        'Failed to complete inspection due to a network error. Please check your connection and try again.',
+        String(error)
+      );
     }
   };
 
@@ -1713,7 +1783,11 @@ ${rejectionForm.officerNotes ? '\n[INTERNAL NOTES - NOT VISIBLE TO EXPORTER]:\n'
   const handleSubmitNewDeclaration = async () => {
     const token = localStorage.getItem('authToken');
     if (!token) {
-      alert('❌ Authentication Required\n\nPlease log in to submit a customs declaration.');
+      showError(
+        'Authentication Required',
+        'Please log in to submit a customs declaration.',
+        'Your session may have expired'
+      );
       return;
     }
 
@@ -1758,11 +1832,10 @@ ${rejectionForm.officerNotes ? '\n[INTERNAL NOTES - NOT VISIBLE TO EXPORTER]:\n'
     
     // Display validation errors if any
     if (validationErrors.length > 0) {
-      alert(
-        '❌ Validation Failed\n\n' +
-        'Please complete the following required fields:\n\n' +
-        validationErrors.join('\n') +
-        '\n\nTip: Enter a Shipment ID first to auto-populate these fields.'
+      showError(
+        'Validation Failed',
+        'Please complete the following required fields:',
+        validationErrors.join('\n') + '\n\nTip: Enter a Shipment ID first to auto-populate these fields.'
       );
       return;
     }
@@ -2797,7 +2870,8 @@ ${rejectionForm.officerNotes ? '\n[INTERNAL NOTES - NOT VISIBLE TO EXPORTER]:\n'
                   fullWidth
                   sx={{ mt: 3, textTransform: 'none', fontWeight: 600 }}
                   onClick={() => {
-                    alert('Downloading all declaration documents as ZIP file...');
+                    // Download all declaration documents as ZIP file
+                    console.log('[CUSTOMS] Downloading all declaration documents...');
                   }}
                 >
                   Download All Documents as ZIP
@@ -4249,6 +4323,16 @@ ${rejectionForm.officerNotes ? '\n[INTERNAL NOTES - NOT VISIBLE TO EXPORTER]:\n'
             />
           </Box>
       </PortalDialog>
+
+      {/* Professional Notification Dialog */}
+      <NotificationDialog
+        open={notification.open}
+        type={notification.type}
+        title={notification.title}
+        message={notification.message}
+        details={notification.details}
+        onClose={closeNotification}
+      />
     </PortalShell>
   );
 };

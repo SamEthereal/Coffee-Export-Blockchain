@@ -171,7 +171,67 @@ export const CustomsInspection: React.FC<CustomsInspectionProps> = ({ onCreateDe
         });
         
         console.log(`[CUSTOMS-INSPECTIONS] Filtered to ${permitReady.length} permit-ready inspections WITHOUT declarations`);
-        setInspections(permitReady);
+        
+        // ENRICHMENT: Fetch shipment and exporter details for each inspection
+        const enrichmentPromises = permitReady.map(async (insp: any) => {
+          const baseInspection = { ...insp };
+          // Handle both camelCase and snake_case from API
+          const shipmentId = baseInspection.shipmentId || baseInspection.shipment_id || baseInspection.ShipmentID || '';
+          
+          if (shipmentId && shipmentId.trim() !== '') {
+            try {
+              // Fetch shipment details
+              const shipmentResponse = await apiFetch(`/shipments/${shipmentId}`, {
+                headers: { 'Authorization': `Bearer ${token}` }
+              }).catch(() => null);
+              
+              if (shipmentResponse && shipmentResponse.ok) {
+                const shipmentResult = await shipmentResponse.json();
+                
+                if (shipmentResult.success && shipmentResult.data) {
+                  const shipment = shipmentResult.data;
+                  console.log(`[CUSTOMS-INSPECTIONS] ✅ Enriching inspection with shipment ${shipmentId}`);
+                  
+                  // Enrich with shipment data (support both naming conventions)
+                  baseInspection.shipmentId = shipmentId;
+                  baseInspection.shipment_id = shipmentId;
+                  baseInspection.exporterId = shipment.exporterId || shipment.exporter_id || shipment.ExporterID || baseInspection.exporterId || baseInspection.exporter_id || '';
+                  baseInspection.exporter_id = baseInspection.exporterId;
+                  baseInspection.contractId = shipment.contractId || shipment.contract_id || shipment.ContractID || baseInspection.contractId || baseInspection.contract_id || '';
+                  baseInspection.contract_id = baseInspection.contractId;
+                  
+                  // Fetch exporter details if we have exporterId
+                  const exporterId = baseInspection.exporterId || baseInspection.exporter_id;
+                  if (exporterId && exporterId.trim() !== '') {
+                    try {
+                      const exporterResponse = await apiFetch(`/exporters/${exporterId}`, {
+                        headers: { 'Authorization': `Bearer ${token}` }
+                      }).catch(() => null);
+                      
+                      if (exporterResponse && exporterResponse.ok) {
+                        const exporterResult = await exporterResponse.json();
+                        if (exporterResult.success && exporterResult.data) {
+                          const exporter = exporterResult.data;
+                          baseInspection.exporterName = exporter.companyName || exporter.company_name || exporterId;
+                        }
+                      }
+                    } catch {
+                      // Silently skip exporter enrichment errors
+                    }
+                  }
+                }
+              }
+            } catch {
+              // Silently skip enrichment errors
+            }
+          }
+          
+          return baseInspection;
+        });
+        
+        const enrichedInspections = await Promise.all(enrichmentPromises);
+        setInspections(enrichedInspections);
+        console.log(`[CUSTOMS-INSPECTIONS] ${enrichedInspections.length} inspections enriched with shipment/exporter data`);
       } else {
         console.log('[CUSTOMS-INSPECTIONS] No inspections found or query failed');
         setInspections([]);
@@ -190,15 +250,16 @@ export const CustomsInspection: React.FC<CustomsInspectionProps> = ({ onCreateDe
   };
 
   const getInspectionId = (inspection: QualityInspection) => {
-    return inspection.inspectionId || '';
+    return inspection.inspectionId || (inspection as any).inspection_id || '';
   };
 
   const getShipmentId = (inspection: QualityInspection) => {
-    return inspection.shipmentId || '';
+    return inspection.shipmentId || (inspection as any).shipment_id || 'N/A';
   };
 
   const getExporterId = (inspection: QualityInspection) => {
-    return inspection.exporterId || '';
+    // Return enriched exporter name if available, otherwise fall back to ID
+    return (inspection as any).exporterName || inspection.exporterId || (inspection as any).exporter_id || 'N/A';
   };
 
   const getStatus = (inspection: QualityInspection) => {
@@ -206,7 +267,7 @@ export const CustomsInspection: React.FC<CustomsInspectionProps> = ({ onCreateDe
   };
 
   const getCertificateNo = (inspection: QualityInspection) => {
-    return inspection.certificationNumber || inspection.certificateNo || 'N/A';
+    return inspection.certificationNumber || (inspection as any).certification_number || inspection.certificateNo || 'N/A';
   };
 
   const getExportPermitNo = (inspection: QualityInspection) => {
@@ -236,7 +297,8 @@ export const CustomsInspection: React.FC<CustomsInspectionProps> = ({ onCreateDe
   };
 
   const getClassification = (inspection: QualityInspection) => {
-    return inspection.classification || 'N/A';
+    // Use grade column since classification doesn't exist in the database
+    return inspection.classification || (inspection as any).grade || 'N/A';
   };
 
   const getQualityGrade = (inspection: QualityInspection) => {
@@ -327,36 +389,16 @@ export const CustomsInspection: React.FC<CustomsInspectionProps> = ({ onCreateDe
                       />
                     </TableCell>
                     <TableCell>
-                      <Box sx={{ display: 'flex', gap: 1 }}>
-                        <AnimatedButton
-                          size="small"
-                          startIcon={<Visibility />}
-                          onClick={() => {
-                            setSelectedInspection(inspection);
-                            setDetailsDialogOpen(true);
-                          }}
-                        >
-                          View
-                        </AnimatedButton>
-                        {['APPROVED', 'QUALITY_APPROVED', 'PERMIT_ISSUED'].includes(getStatus(inspection)) && getExportPermitNo(inspection) !== 'Not Issued' && (
-                          <AnimatedButton
-                            size="small"
-                            variant="contained"
-                            brandColor="#4caf50"
-                            startIcon={<CheckCircle />}
-                            onClick={() => {
-                              // Create customs declaration from this permit
-                              if (onCreateDeclaration) {
-                                onCreateDeclaration(getShipmentId(inspection), getInspectionId(inspection));
-                              } else {
-                                console.error('[CUSTOMS-INSPECTION] No onCreateDeclaration handler provided');
-                              }
-                            }}
-                          >
-                            Create Declaration
-                          </AnimatedButton>
-                        )}
-                      </Box>
+                      <AnimatedButton
+                        size="small"
+                        startIcon={<Visibility />}
+                        onClick={() => {
+                          setSelectedInspection(inspection);
+                          setDetailsDialogOpen(true);
+                        }}
+                      >
+                        View
+                      </AnimatedButton>
                     </TableCell>
                   </TableRow>
                 ))}

@@ -4887,7 +4887,8 @@ const ExporterPortal: React.FC = () => {
                 const hasShipment = shipments.some(s => 
                   (s.contractId || '').toLowerCase() === (f.contractId || '').toLowerCase()
                 );
-                return f.status === 'ALLOCATED' && !hasShipment;
+                // Show contracts with ALLOCATED or UTILIZED forex (before shipment exists)
+                return (f.status === 'ALLOCATED' || f.status === 'UTILIZED') && !hasShipment;
               })
               .map(forex => {
                 const contract = contracts.find(c => c.contractId === forex.contractId);

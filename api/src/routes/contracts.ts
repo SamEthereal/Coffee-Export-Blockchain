@@ -1442,14 +1442,14 @@ router.post('/:contractID/approve',
       const userOrg = String(user?.org || '').toUpperCase();
       const userRole = String(user?.role || '').toUpperCase();
 
-      // Only ECTA can approve sales contracts for export compliance
-      if (userOrg !== 'ECTAMSP' && userRole !== 'ECTA') {
-        logger.warn(`Unauthorized sales contract approval attempt by ${user?.org || 'UNKNOWN'}: ${contractID}`);
+      // Only ECTA or ADMIN can approve sales contracts for export compliance
+      if (userOrg !== 'ECTAMSP' && userRole !== 'ECTA' && userRole !== 'ADMIN') {
+        logger.warn(`Unauthorized sales contract approval attempt by ${user?.org || 'UNKNOWN'}/${userRole}: ${contractID}`);
         return res.status(403).json({
           success: false,
           error: {
             code: 'FORBIDDEN',
-            message: 'Only ECTA users can approve sales contracts for export compliance',
+            message: 'Only ECTA users or administrators can approve sales contracts for export compliance',
           },
           timestamp: new Date().toISOString(),
         });
@@ -1533,10 +1533,13 @@ router.post('/:contractID/approve',
       }
       
       // Use ContractService for approval
+      // Map ADMIN users to use ECTAMSP for blockchain operations (ADMIN org doesn't exist on chain)
+      const approverOrg = (userRole === 'ADMIN') ? 'ECTAMSP' : (user.org || 'ECTAMSP');
+      
       const result = await contractService.approveContract({
         contractID,
         approvedBy: user.username,
-        approverOrg: user.org || 'ECTAMSP'
+        approverOrg
       });
 
       if (result.success) {

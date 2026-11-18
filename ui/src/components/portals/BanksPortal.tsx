@@ -67,6 +67,7 @@ import {
   LocalShipping,
   Edit,
   Cancel,
+  Close,
   Message as MessageOutlined,
   Send as SendOutlined,
   Assessment,
@@ -181,6 +182,9 @@ interface LetterOfCredit {
   // ✅ Documents attached to LC
   documents?: any[];
   
+  // ✅ Related shipments for this LC's contract
+  relatedShipments?: any[];
+  
   // ✅ Actor tracking fields (WHO performed actions)
   approvedBy?: string;
   approvedByMsp?: string;
@@ -260,6 +264,7 @@ const BanksPortal: React.FC = () => {
   const [uploadEntityType, setUploadEntityType] = useState<string>('');
   const [selectedContract, setSelectedContract] = useState<SalesContract | null>(null);
   const [selectedLC, setSelectedLC] = useState<LetterOfCredit | null>(null);
+  const [documentChecklist, setDocumentChecklist] = useState<any>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [dialogType, setDialogType] = useState<'lc' | 'forex' | 'permit' | 'lcDetails' | 'lcAmend' | 'cad' | 'advance' | 'consignment' | null>(null);
   
@@ -274,10 +279,20 @@ const BanksPortal: React.FC = () => {
   // Phase 1: Document Examination & Payment Release state
   const [documentExaminationOpen, setDocumentExaminationOpen] = useState(false);
   const [verifyingDocumentId, setVerifyingDocumentId] = useState<string | null>(null); // ✅ Track which document is being verified
+  const [uploadShippingDocDialogOpen, setUploadShippingDocDialogOpen] = useState(false);
+  const [uploadingDocument, setUploadingDocument] = useState(false);
+  const [uploadingDocType, setUploadingDocType] = useState<string | null>(null);
+  const [uploadDocForm, setUploadDocForm] = useState({
+    file: null as File | null,
+    documentType: '',
+    remarks: '',
+  });
   const [paymentReleaseOpen, setPaymentReleaseOpen] = useState(false);
   // F1 (removed): `lcAmendmentOpen` was declared here but never set — the
   // amend dialog is driven by `dialogType === 'lcAmend'` instead.
   const [forexDetailsOpen, setForexDetailsOpen] = useState(false);
+  const [utilizeDialogOpen, setUtilizeDialogOpen] = useState(false);
+  const [utilizeForm, setUtilizeForm] = useState({ forexId: '', maxAmount: 0, utilizedAmount: 0 });
   const [paymentDetailsOpen, setPaymentDetailsOpen] = useState(false);
   // Settle Payment dialog state (slice-6 fix: POST /payments/:id/settle
   // had no UI caller anywhere in the app)
@@ -402,7 +417,7 @@ const BanksPortal: React.FC = () => {
   const [kpiDataDialogData, setKpiDataDialogData] = useState<any[]>([]);
   const [kpiDataDialogType, setKpiDataDialogType] = useState<'forex' | 'lc' | 'swift' | ''>('');
   const [kpiDialogPage, setKpiDialogPage] = useState(0);
-  const [kpiDialogRowsPerPage, setKpiDialogRowsPerPage] = useState(5);
+  const [kpiDialogRowsPerPage, setKpiDialogRowsPerPage] = useState(10);
   
   // NEW: Repatriation Dialog state
   const [repatriationDialogOpen, setRepatriationDialogOpen] = useState(false);
@@ -472,6 +487,16 @@ const BanksPortal: React.FC = () => {
   const [showAuditTrail, setShowAuditTrail] = useState(false);
   const [auditEntityType, setAuditEntityType] = useState<'LC' | 'PAYMENT' | 'FOREX'>('LC');
   const [auditEntityId, setAuditEntityId] = useState<string>('');
+  
+  // Payment Release Confirmation Dialog State
+  const [paymentConfirmOpen, setPaymentConfirmOpen] = useState(false);
+  const [paymentConfirmData, setPaymentConfirmData] = useState<{
+    lcId: string;
+    exporterId: string;
+    amount: number;
+    currency: string;
+  } | null>(null);
+  const [paymentReleasing, setPaymentReleasing] = useState(false);
   const [lcDiscrepancyStats, setLcDiscrepancyStats] = useState({
     total: 0,
     open: 0,
@@ -489,7 +514,7 @@ const BanksPortal: React.FC = () => {
   // own filter instead of reusing it.
   const [allLcFilterStatus, setAllLcFilterStatus] = useState<string>('ALL');
   const [currentPage, setCurrentPage] = useState(0);
-  const [rowsPerPage, setRowsPerPage] = useState(5);
+  const [rowsPerPage, setRowsPerPage] = useState(10);
   
   // Advanced filters
   const [dateFrom, setDateFrom] = useState('');
@@ -513,13 +538,6 @@ const BanksPortal: React.FC = () => {
         icon: React.createElement(Payment),
         roles: ['BANKS', 'ADMIN', 'BANKS Portal Administrator', 'Bank Officer', 'LC Officer', 'Payment Officer', 'Document Officer'],
         children: [
-          { 
-            id: 'lc-management', 
-            label: `All LCs (${letterOfCredits.length})`, 
-            icon: React.createElement(AccountBalance),
-            roles: ['BANKS', 'ADMIN', 'BANKS Portal Administrator', 'Bank Officer', 'LC Officer'],
-            tabIndex: 10  // New tab index
-          },
           { 
             id: 'payment-methods', 
             label: 'Payment Methods', 
@@ -902,6 +920,9 @@ const BanksPortal: React.FC = () => {
           .then(result => {
             if (result.success) {
               devLog(`[BANKS] ⚡ Forex loaded: ${result.data?.length || 0}`);
+              if (result.data && result.data.length > 0) {
+                devLog(`[BANKS] 🔍 Forex statuses:`, result.data.map((f: any) => ({ id: f.forexId, status: f.status })));
+              }
               return result.data || [];
             }
             return [];
@@ -1044,16 +1065,35 @@ const BanksPortal: React.FC = () => {
       // Filter LCs for document examination (documents submitted, awaiting bank verification)
       if (lcs && lcs.length > 0) {
         const forExam = lcs.filter((lc: any) => {
-          // Must have documents uploaded
-          if (!lc.documents || lc.documents.length === 0) return false;
+          // ✅ FOREX_ALLOCATED is REQUIRED before document examination
+          // Pending: {FOREX_ALLOCATED only}
+          // Completed: {UTILIZED, PAYMENT_RELEASED} for audit trail
+          const isRelevantStatus = ['FOREX_ALLOCATED', 'UTILIZED', 'PAYMENT_RELEASED'].includes(lc.status);
+          if (!isRelevantStatus) {
+            if (lc.status === 'ISSUED') {
+              devLog(`[BANKS] ⚠️ LC ${lc.lcId} is ISSUED but needs forex allocation first (use Forex Allocations tab)`);
+            }
+            return false;
+          }
           
-          // ✅ Show LCs that have documents for examination
-          // Chaincode ExamineLCDocuments accepts exactly {ISSUED, FOREX_ALLOCATED}
-          // and rejects APPROVED; UTILIZED means already examined.
-          if (!['ISSUED', 'FOREX_ALLOCATED'].includes(lc.status)) return false;
+          // ✅ Check if there's a related shipment with DELIVERED status
+          // This indicates shipping documents are ready for examination
+          // Note: shipments table has contract_id but not lc_id column
+          const relatedShipment = shipments?.find((s: any) => 
+            s.contractId === lc.contractId
+          );
           
-          // ✅ Show ALL LCs in these statuses, regardless of document verification status
-          // Banks can see which documents are pending vs verified in the dialog
+          if (!relatedShipment) {
+            devLog(`[BANKS] ❌ No shipment found for LC ${lc.lcId}`);
+            return false; // No shipment = no shipping documents to examine
+          }
+          
+          if (relatedShipment.status !== 'DELIVERED') {
+            devLog(`[BANKS] ❌ Shipment ${relatedShipment.shipmentId} not DELIVERED yet (status: ${relatedShipment.status})`);
+            return false; // Shipment not delivered = documents not ready
+          }
+          
+          devLog(`[BANKS] ✅ LC ${lc.lcId} for examination tab - status: ${lc.status}, shipment ${relatedShipment.shipmentId} is DELIVERED`);
           return true;
         });
         setLcsForExamination(forExam);
@@ -1062,13 +1102,14 @@ const BanksPortal: React.FC = () => {
           devLog(`[BANKS] 📋 LCs awaiting examination:`, forExam.map((lc: any) => ({
             lcId: lc.lcId,
             status: lc.status,
-            docs: lc.documents.length,
-            pendingDocs: lc.documents.filter((d: any) => !d.status || d.status === 'pending' || d.status === 'uploaded').length
+            contractId: lc.contractId,
+            shipmentId: shipments?.find((s: any) => s.contractId === lc.contractId)?.shipmentId
           })));
         }
 
         // Filter LCs for payment release (documents examined and compliant, awaiting payment)
         console.log('[BANKS] 🚀 Starting payment release filter, total LCs:', lcs.length);
+        console.log('[BANKS] 🔍 Sample LC data:', lcs[0]);
         const forPayment = lcs.filter((lc: any) => {
           const isTarget = lc.lcId === 'LC1789460822330';
           if (isTarget) console.log('[BANKS] 🎯 Found target LC1789460822330, checking conditions...');
@@ -1081,17 +1122,17 @@ const BanksPortal: React.FC = () => {
           if (isTarget) console.log('[BANKS] ✅ Has documents:', lc.documents.length);
           
           // ✅ Must be UTILIZED (documents examined) to release payment
-          // Valid chaincode workflow: UTILIZED → PAYMENT_RELEASED (via ReleaseLCPayment,
-          // which requires UTILIZED only — FOREX_ALLOCATED is rejected on-chain).
-          if (lc.status !== 'UTILIZED') {
-            if (isTarget) console.log('[BANKS] ❌ FAIL: Status not UTILIZED. Current:', lc.status);
+          // Show both pending (UTILIZED) and completed (PAYMENT_RELEASED) for audit trail
+          const isRelevantPaymentStatus = ['UTILIZED', 'PAYMENT_RELEASED'].includes(lc.status);
+          if (!isRelevantPaymentStatus) {
+            if (isTarget) console.log('[BANKS] ❌ FAIL: Status not UTILIZED or PAYMENT_RELEASED. Current:', lc.status);
             return false;
           }
           if (isTarget) console.log('[BANKS] ✅ Status OK:', lc.status);
           
-          // ✅ All documents must be verified/compliant AND have complete approval workflows
-          const allDocsApproved = lc.documents.every((d: any) => {
-            // Check verification status
+          // ✅ All documents must be verified/compliant through Document Examination workflow
+          // Documents must be explicitly verified by bank officers - NO AUTO-VERIFICATION
+          const allDocsVerified = lc.documents.every((d: any) => {
             const docStatus = d.verificationStatus || d.status || '';
             const isVerified = docStatus === 'verified' || docStatus === 'approved' || docStatus === 'compliant';
             
@@ -1099,45 +1140,23 @@ const BanksPortal: React.FC = () => {
               console.log('[BANKS] ❌ Doc not verified:', d.documentType, 'status:', docStatus);
             }
             
-            // ✅ Check multi-party approval workflow
-            if (d.requiresMultiPartyApproval) {
-              // Document requires multi-party approval - must be complete
-              if (isTarget) console.log('[BANKS] 🔐 Doc requires approval:', d.documentType, 'complete:', d.approvalWorkflowComplete);
-              return isVerified && d.approvalWorkflowComplete === true;
-            }
-            
-            // No multi-party approval required - just needs verification
             return isVerified;
           });
           
-          if (!allDocsApproved) {
-            if (isTarget) console.log('[BANKS] ❌ FAIL: Not all docs approved');
+          if (!allDocsVerified) {
+            if (isTarget) console.log('[BANKS] ❌ FAIL: Not all docs verified');
             return false;
           }
-          if (isTarget) console.log('[BANKS] ✅ All docs approved');
+          if (isTarget) console.log('[BANKS] ✅ All docs verified');
           
-          // ✅ CUSTOMS CLEARANCE REQUIRED: Must have customs clearance before payment release
-          // Check if shipment has customs clearance completed
-          const hasCustomsClearance = lc.customsClearanceStatus === 'CLEARED' || 
-                                      lc.customsClearanceStatus === 'cleared' ||
-                                      lc.customsCleared === true;
+          // ✅ At this point:
+          // - LC status is UTILIZED (documents examined)
+          // - All documents are verified by bank
+          // - Ready for payment release
           
-          if (isTarget) {
-            console.log('[BANKS] 🚢 Customs check:', {
-              customsClearanceStatus: lc.customsClearanceStatus,
-              customsCleared: lc.customsCleared,
-              hasCustomsClearance
-            });
-          }
+          if (isTarget) console.log('[BANKS] ✅✅✅ ALL CHECKS PASSED! LC ready for payment release');
           
-          if (!hasCustomsClearance) {
-            if (isTarget) console.log('[BANKS] ❌ FAIL: Customs not cleared');
-            return false;
-          }
-          
-          if (isTarget) console.log('[BANKS] ✅✅✅ ALL CHECKS PASSED! LC should be included');
-          
-          return hasCustomsClearance;
+          return true;
         });
         console.log('[BANKS] 🚀 Payment filter complete, forPayment count:', forPayment.length);
         setLcsForPaymentRelease(forPayment);
@@ -1398,29 +1417,68 @@ const BanksPortal: React.FC = () => {
     setDialogType('lcDetails');
     setDialogOpen(true);
     setLcDetailsLoading(true); // Show loading indicator
+    setDocumentChecklist(null); // Reset checklist
     
     try {
-      // Fetch complete LC data from API (includes all enriched fields)
-      const response = await apiFetch(`/banking/lc/${encodeURIComponent(lc.lcId)}`, {
-        headers: getAuthHeaders(),
-      });
+      // Fetch complete LC data and related shipments
+      const token = localStorage.getItem('authToken');
+      
+      const [lcResponse, shipmentsResult, checklistResponse] = await Promise.all([
+        apiFetch(`/banking/lc/${encodeURIComponent(lc.lcId)}`, {
+          headers: token ? { 'Authorization': `Bearer ${token}` } : undefined,
+        }),
+        // Fetch all shipments and filter by contractId client-side
+        api.getShipments({}),
+        // Fetch document checklist
+        apiFetch(`/banking/lc/${encodeURIComponent(lc.lcId)}/document-checklist`, {
+          headers: token ? { 'Authorization': `Bearer ${token}` } : undefined,
+        }).catch(err => {
+          console.warn('[BANKS] Document checklist fetch failed:', err);
+          return null;
+        })
+      ]);
 
-      if (response.ok) {
-        const result = await response.json();
+      // Process LC data
+      if (lcResponse.ok) {
+        const result = await lcResponse.json();
         if (result.success && result.data) {
           devLog('[BANKS] ✅ Fetched complete LC data:', result.data);
-          setSelectedLC(result.data);
+          devLog('[BANKS] 📎 LC Documents count:', result.data.documents?.length || 0);
+          devLog('[BANKS] 📎 LC Documents:', result.data.documents);
+          
+          // Filter shipments for this LC's contract
+          const relatedShipments = (shipmentsResult.success && shipmentsResult.data)
+            ? shipmentsResult.data.filter((s: any) => s.contractId === result.data.contractId)
+            : [];
+          
+          devLog('[BANKS] ✅ Found', relatedShipments.length, 'shipments for contract:', result.data.contractId);
+          
+          // Attach shipments to LC data
+          setSelectedLC({
+            ...result.data,
+            relatedShipments
+          });
         } else {
           console.warn('[BANKS] ⚠️ API returned no data, using cached LC');
-          // Keep the initial LC data
+          setSelectedLC(lc);
         }
       } else {
         console.warn('[BANKS] ⚠️ API fetch failed, using cached LC');
-        // Keep the initial LC data
+        setSelectedLC(lc);
+      }
+
+      // Process document checklist
+      if (checklistResponse && checklistResponse.ok) {
+        const checklistResult = await checklistResponse.json();
+        if (checklistResult.success && checklistResult.data) {
+          devLog('[BANKS] ✅ Document checklist loaded:', checklistResult.data);
+          setDocumentChecklist(checklistResult.data);
+        }
       }
     } catch (error) {
       console.error('[BANKS] ❌ Error fetching LC details:', error);
       // Keep the initial LC data as fallback
+      setSelectedLC(lc);
     } finally {
       setLcDetailsLoading(false); // Hide loading indicator
     }
@@ -2104,13 +2162,57 @@ const BanksPortal: React.FC = () => {
         // ✅ Refresh the document dialog to show updated status from server
         if (selectedLC?.lcId) {
           try {
+            // Fetch updated LC data
             const lcResponse = await apiFetch(`/banking/lc/${selectedLC.lcId}`, {
               headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }
             });
             const lcResult = await lcResponse.json();
-            if (lcResult.success && lcResult.data) {
-              setSelectedLC(lcResult.data);  // ✅ Update dialog with fresh document statuses
+            let lcData = lcResult.success && lcResult.data ? lcResult.data : selectedLC;
+            
+            // Also re-fetch shipment documents if there's a related shipment
+            if (selectedLC.relatedShipments && selectedLC.relatedShipments.length > 0) {
+              const shipmentId = selectedLC.relatedShipments[0].shipmentId;
+              console.log('[VERIFY] Re-fetching shipment documents for:', shipmentId);
+              
+              let shipmentDocuments: any[] = [];
+              
+              // Fetch SHIPMENT documents
+              const shipmentDocsResponse = await apiFetch(
+                `/documents/entity/SHIPMENT/${encodeURIComponent(shipmentId)}`,
+                { headers: { 'Authorization': `Bearer ${token}` } }
+              );
+              if (shipmentDocsResponse.ok) {
+                const shipmentDocsResult = await shipmentDocsResponse.json();
+                if (shipmentDocsResult.success && shipmentDocsResult.data) {
+                  shipmentDocuments = [...shipmentDocuments, ...shipmentDocsResult.data];
+                }
+              }
+              
+              // Fetch CUSTOMS_DECLARATION documents
+              const customsDocsResponse = await apiFetch(
+                `/documents/entity/CUSTOMS_DECLARATION/${encodeURIComponent(shipmentId)}`,
+                { headers: { 'Authorization': `Bearer ${token}` } }
+              );
+              if (customsDocsResponse.ok) {
+                const customsDocsResult = await customsDocsResponse.json();
+                if (customsDocsResult.success && customsDocsResult.data) {
+                  shipmentDocuments = [...shipmentDocuments, ...customsDocsResult.data];
+                }
+              }
+              
+              // Remove duplicates and merge with LC documents
+              const uniqueShipmentDocs = shipmentDocuments.filter((doc, index, self) =>
+                index === self.findIndex((d) => d.documentId === doc.documentId)
+              );
+              
+              lcData = {
+                ...lcData,
+                documents: [...(lcData.documents || []), ...uniqueShipmentDocs],
+                relatedShipments: selectedLC.relatedShipments
+              };
             }
+            
+            setSelectedLC(lcData);  // ✅ Update dialog with fresh document statuses
           } catch (refreshError) {
             console.warn('Could not refresh LC documents:', refreshError);
           }
@@ -2354,39 +2456,94 @@ const BanksPortal: React.FC = () => {
   // Utilise Forex — POST /forex/utilize (BANKS). Chaincode UtilizeForex:
   // ALLOCATED → UTILIZED, amount > 0 and <= AllocatedAmount.
   const handleUtilizeForex = async (forex: any) => {
-    const token = localStorage.getItem('authToken');
-    if (!token) {
-      showError('Authentication Required', 'You are not authenticated');
-      return;
-    }
     const max = Number(forex.allocatedAmount) || 0;
     if (max <= 0) {
       showError('Nothing To Utilise', `Forex ${forex.forexId} has no allocated amount.`);
       return;
     }
-    const input = window.prompt(
-      `Utilise forex ${forex.forexId} — enter the amount in USD (max ${max.toLocaleString()}):`,
-      String(max)
-    );
-    if (input === null) return;
-    const utilizedAmount = Number(input);
-    if (!Number.isFinite(utilizedAmount) || utilizedAmount <= 0 || utilizedAmount > max) {
-      showError('Invalid Amount', `Enter an amount greater than 0 and no more than ${max.toLocaleString()} USD.`);
+    
+    // ✅ WORKFLOW ENFORCEMENT: Check if shipment exists before allowing utilization
+    // UCP 600 requires: LC → Forex Allocated → Shipment Created → Document Examination → Forex Utilized
+    try {
+      const token = localStorage.getItem('authToken');
+      if (token && forex.contractId) {
+        const shipmentsResponse = await apiFetch('/shipments', {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        
+        if (shipmentsResponse.ok) {
+          const shipmentsData = await shipmentsResponse.json();
+          const shipments = shipmentsData.shipments || [];
+          
+          // Check if any shipment exists for this contract or LC
+          const hasShipment = shipments.some((s: any) => 
+            s.contractId === forex.contractId || s.lcId === forex.lcId
+          );
+          
+          if (!hasShipment) {
+            showWarning(
+              'Shipment Required',
+              'Forex cannot be utilized before shipment creation',
+              'Please create a shipment first to comply with UCP 600 workflow requirements. Go to Exporter Portal → Shipments to create a shipment for this contract.'
+            );
+            return;
+          }
+        }
+      }
+    } catch (validationError) {
+      console.warn('Shipment validation check failed (continuing):', validationError);
+      // Continue if validation fails - don't block legitimate operations
+    }
+    
+    // Open utilize dialog with pre-filled max amount
+    setUtilizeForm({
+      forexId: forex.forexId,
+      maxAmount: max,
+      utilizedAmount: max // Default to full amount
+    });
+    setUtilizeDialogOpen(true);
+  };
+  
+  const confirmUtilizeForex = async () => {
+    const token = localStorage.getItem('authToken');
+    if (!token) {
+      showError('Authentication Required', 'You are not authenticated');
       return;
     }
+    
+    const { forexId, maxAmount, utilizedAmount } = utilizeForm;
+    
+    // Convert to number in case it's a string from the input
+    const amount = Number(utilizedAmount);
+    
+    if (!Number.isFinite(amount) || amount <= 0 || amount > maxAmount) {
+      showError('Invalid Amount', `Enter an amount greater than 0 and no more than ${maxAmount.toLocaleString()} USD.`);
+      return;
+    }
+    
     try {
       const response = await apiFetch('/forex/utilize', {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ forexId: forex.forexId, utilizedAmount }),
+        body: JSON.stringify({ forexId, utilizedAmount: amount }),
       });
       const result = await response.json();
       if (result.success) {
-        showSuccess('Forex Utilised', `${utilizedAmount.toLocaleString()} USD of forex ${forex.forexId} utilised.`);
+        showSuccess('Forex Utilised', `${amount.toLocaleString()} USD of forex ${forexId} utilised.`);
+        setUtilizeDialogOpen(false);
         setForexDetailsOpen(false);
         loadBankingData();
       } else {
-        showError('Forex Utilisation Failed', result.error?.message || 'Unknown error');
+        // Enhanced error handling for workflow violations
+        if (result.error?.code === 'SHIPMENT_REQUIRED') {
+          showWarning(
+            'Shipment Required',
+            result.error?.message || 'Forex cannot be utilized before shipment creation',
+            'Please create a shipment first to comply with UCP 600 workflow requirements.'
+          );
+        } else {
+          showError('Forex Utilisation Failed', result.error?.message || 'Unknown error');
+        }
       }
     } catch (error: any) {
       showError('Network Error', error.message || 'Failed to utilise forex');
@@ -2720,8 +2877,8 @@ const BanksPortal: React.FC = () => {
   const getFilteredDocumentExaminationLCs = () => {
     const baseList = documentExaminationFilter === 'VERIFIED'
       ? letterOfCredits.filter(lc => lc.status === 'UTILIZED') // UTILIZED = documents verified
-      // Pending queue: exclude UTILIZED — an examined LC must not also appear here.
-      : lcsForExamination.filter(lc => lc.status !== 'UTILIZED');
+      // ✅ Show both pending AND completed for audit trail (removed UTILIZED exclusion)
+      : lcsForExamination;
 
     if (!searchTerm) {
       return baseList;
@@ -2855,31 +3012,18 @@ const BanksPortal: React.FC = () => {
       link.click();
       document.body.removeChild(link);
     }
-  }; // End downloadCSV
+  };
 
   return (
     <ThemeProvider theme={banksTheme}>
       <PortalShell brand="BANKS" title="Banks Portal" subtitle="Commercial Bank of Ethiopia">
-        {/* ⛓️ BLOCKCHAIN NETWORK STATUS - Show blockchain features prominently */}
-        <Alert 
-          severity="info" 
-          icon={<Verified />}
-          sx={{ mb: 3, bgcolor: 'rgba(25, 118, 210, 0.08)', border: '2px solid #1976d2' }}
-        >
-          <Typography variant="subtitle2" fontWeight="bold">
-            🔗 Hyperledger Fabric Network
-          </Typography>
-          <Typography variant="caption">
-            Connection and proof details are shown from the committed ledger when available.
-          </Typography>
-        </Alert>
-
         {/* Professional KPI Cards - Dynamic per Tab */}
         <Grid container spacing={3} sx={{ mb: 3 }}>
           {(() => {
             // Dynamic KPI cards based on active tab (like ShippingPortal)
             const kpis = activeTab === 0 ? [
-              // Tab 0: Payment Methods - Show clickable payment method cards as KPIs
+              // Tab 0: Payment Methods - Show ALL LCs for complete visibility
+              // Include both pending (REQUESTED, APPROVED) and completed (all other statuses) for audit trail
               { 
                 icon: <Description />, 
                 label: 'Letter of Credit', 
@@ -2888,7 +3032,7 @@ const BanksPortal: React.FC = () => {
                 subtitle: 'Bank-guaranteed (UCP 600)',
                 method: 'LC',
                 clickable: true,
-                debug: `LC Array Length: ${letterOfCredits.length}, Has Data: ${letterOfCredits.length > 0 ? 'YES' : 'NO'}`
+                debug: `Total LCs: ${letterOfCredits.length} (Pending: ${letterOfCredits.filter(lc => ['REQUESTED', 'APPROVED'].includes(lc.status)).length}, Completed: ${letterOfCredits.filter(lc => !['REQUESTED', 'APPROVED'].includes(lc.status)).length})`
               },
               { 
                 icon: <DirectionsBoat />, 
@@ -3264,82 +3408,8 @@ const BanksPortal: React.FC = () => {
                 description: 'Delivered shipments whose LC is settled.',
                 clickable: false,
               },
-            ] : activeTab === 10 ? [
-              // Tab 10: All LCs KPIs — previously fell through to the
-              // Payment Release KPIs below. Each card filters this tab.
-              {
-                icon: <Description />,
-                label: 'Total LCs',
-                value: letterOfCredits.length,
-                color: '#9b30b7',
-                subtitle: 'All Letters of Credit',
-                description: 'Every LC regardless of status.',
-                clickable: true,
-                selected: allLcFilterStatus === 'ALL',
-                onClick: () => { setAllLcFilterStatus('ALL'); setCurrentPage(0); },
-              },
-              {
-                icon: <AccessTime />,
-                label: 'Requested',
-                value: letterOfCredits.filter(lc => lc.status === 'REQUESTED').length,
-                color: '#ff9800',
-                subtitle: 'Awaiting Approval',
-                description: 'LCs awaiting bank approval.',
-                clickable: true,
-                selected: allLcFilterStatus === 'REQUESTED',
-                onClick: () => { setAllLcFilterStatus('REQUESTED'); setCurrentPage(0); },
-              },
-              {
-                icon: <CheckCircle />,
-                label: 'Approved',
-                value: letterOfCredits.filter(lc => lc.status === 'APPROVED').length,
-                color: '#2196F3',
-                subtitle: 'Ready to Issue',
-                description: 'Approved LCs awaiting issuance.',
-                clickable: true,
-                selected: allLcFilterStatus === 'APPROVED',
-                onClick: () => { setAllLcFilterStatus('APPROVED'); setCurrentPage(0); },
-              },
-              {
-                // F2: was one "Issued" bucket counting ISSUED ||
-                // FOREX_ALLOCATED, and the same bucket was the filter
-                // value — so filtering by "Issued" also returned
-                // FOREX_ALLOCATED rows. Split into two honest buckets,
-                // each filtering to exactly its own status.
-                icon: <AccountBalance />,
-                label: 'Issued',
-                value: letterOfCredits.filter(lc => lc.status === 'ISSUED').length,
-                color: '#4caf50',
-                subtitle: 'Issued',
-                description: 'LCs issued, forex not yet allocated.',
-                clickable: true,
-                selected: allLcFilterStatus === 'ISSUED',
-                onClick: () => { setAllLcFilterStatus('ISSUED'); setCurrentPage(0); },
-              },
-              {
-                icon: <CurrencyExchange />,
-                label: 'Forex Allocated',
-                value: letterOfCredits.filter(lc => lc.status === 'FOREX_ALLOCATED').length,
-                color: '#2196F3',
-                subtitle: 'Forex Allocated',
-                description: 'Issued LCs with forex allocated.',
-                clickable: true,
-                selected: allLcFilterStatus === 'FOREX_ALLOCATED',
-                onClick: () => { setAllLcFilterStatus('FOREX_ALLOCATED'); setCurrentPage(0); },
-              },
-              {
-                icon: <AttachMoney />,
-                label: 'Settled',
-                value: letterOfCredits.filter(lc => lc.status === 'SETTLED').length,
-                color: '#9b30b7',
-                subtitle: 'Completed',
-                description: 'LCs settled after payment release.',
-                clickable: true,
-                selected: allLcFilterStatus === 'SETTLED',
-                onClick: () => { setAllLcFilterStatus('SETTLED'); setCurrentPage(0); },
-              },
             ] : [
-              // Tab 4: Payment Release KPIs - Show data in table
+              // Tab 3: Payment Release KPIs - Show data in table
               { 
                 icon: <AttachMoney />, 
                 label: 'Ready for Payment', 
@@ -3655,12 +3725,14 @@ const BanksPortal: React.FC = () => {
                   showError('LC Not Found', `Could not find LC ${paymentId}`, 'Please refresh and try again');
                   return;
                 }
-                const confirmed = window.confirm(
-                  `Release payment for LC ${lc.lcId}?\n\nExporter: ${lc.exporterId}\nAmount: $${lc.amount?.toLocaleString()} ${lc.currency}\n\nThis will initiate SWIFT payment to the beneficiary bank and create a blockchain signature.`
-                );
-                if (confirmed) {
-                  await handleReleasePayment(lc.lcId, lc.amount, lc.currency);
-                }
+                // Open Material-UI confirmation dialog
+                setPaymentConfirmData({
+                  lcId: lc.lcId,
+                  exporterId: lc.exporterId,
+                  amount: lc.amount,
+                  currency: lc.currency,
+                });
+                setPaymentConfirmOpen(true);
                 return;
               }
 
@@ -3855,6 +3927,45 @@ const BanksPortal: React.FC = () => {
               setValidationDialogOpen(true);
             }}
           />
+
+          {/* LC Bulk Operations - Only shown when Letter of Credit is selected */}
+          {selectedPaymentMethod === 'LC' && (
+            <Box sx={{ mt: 3, display: 'flex', gap: 2, flexWrap: 'wrap' }}>
+              <PrimaryButton 
+                brand="BANKS"
+                disabled={bulkApproving || selectedLCIds.length === 0 || letterOfCredits.filter((lc: any) => selectedLCIds.includes(lc.lcId) && lc.status === 'REQUESTED').length === 0}
+                onClick={() => handleBulkApproveLC()}
+              >
+                Bulk Approve ({selectedLCIds.length > 0 ? selectedLCIds.filter(id => {
+                  const lc = letterOfCredits.find((l: any) => l.lcId === id);
+                  return lc && lc.status === 'REQUESTED';
+                }).length : 0})
+              </PrimaryButton>
+              <PrimaryButton 
+                brand="BANKS"
+                onClick={() => {
+                  // Reset standby form and open dialog
+                  setStandbyForm({
+                    standbyLCNumber: '',
+                    contractId: '',
+                    amount: '',
+                    currency: 'USD',
+                    expiryDate: '',
+                    type: 'PERFORMANCE',
+                    purpose: '',
+                    beneficiary: '',
+                    applicant: '',
+                    terms: '',
+                    issuingBank: 'Commercial Bank of Ethiopia',
+                    advisingBank: '',
+                  });
+                  setStandbyDialogOpen(true);
+                }}
+              >
+                Issue Standby LC
+              </PrimaryButton>
+            </Box>
+          )}
 
           {/* Payments — raw payment records (GET /payments). The View Details
               button opens the payment details dialog, which is the only
@@ -4096,13 +4207,9 @@ const BanksPortal: React.FC = () => {
                               View Details
                             </SecondaryButton>
                             
-                            {forex.status === 'REQUESTED' && (
-                              <Chip size="small" color="warning" label="Awaiting NBE confirmation" />
-                            )}
-                            
                             <PrimaryButton brand="BANKS"
                               size="small"
-                              disabled={!forex.isDraft && forex.status !== 'CONFIRMED'}
+                              disabled={!forex.isDraft && forex.status !== 'REQUESTED' && forex.status !== 'CONFIRMED'}
                               startIcon={<CheckCircle />}
                               loadingLabel="Allocating…"
                               ledgerWrite
@@ -4129,14 +4236,18 @@ const BanksPortal: React.FC = () => {
                                   }
                                   setSelectedForex(forex);
                                   setAllocationPolicyReady(true);
+                                
+                                // Auto-generate approval reference with timestamp
+                                const approvalRef = `FOREX-ALLOC-${Date.now()}`;
+                                
                                 setAllocationForm({
                                   forexId: forex.forexId,
                                   lcId: forex.lcId || '',
                                   amount: forex.requestedAmount || forex.allocatedAmount || 0,
                                   exchangeRate: activeRate,
                                   retentionRate,
-                                  officer: user?.username || user?.fullName || 'Bank Officer',
-                                  approvalRef: '',
+                                  officer: user?.fullName || user?.username || 'Bank Officer',
+                                  approvalRef: approvalRef,
                                   expiryDate: forex.expiryDate || new Date(Date.now() + 90 * 24 * 60 * 60 * 1000).toISOString(),
                                 });
                                 setAllocationDialogOpen(true);
@@ -4145,7 +4256,7 @@ const BanksPortal: React.FC = () => {
                                 }
                               }}
                             >
-                              {forex.isDraft ? 'Request Forex' : forex.status === 'REQUESTED' ? 'Await NBE' : 'Allocate Forex'}
+                              {forex.isDraft ? 'Request Forex' : 'Allocate Forex'}
                             </PrimaryButton>
 
                             {/* Reject: REQUESTED/CONFIRMED → REJECTED
@@ -4646,12 +4757,80 @@ const BanksPortal: React.FC = () => {
       {/* Forex Allocation Details Dialog */}
             <PortalDialog brand="BANKS" open={forexDetailsOpen} onClose={() => setForexDetailsOpen(false)} maxWidth="md" title="Forex Allocation Details" icon={<CurrencyExchange />} actions={<>
           <GhostButton brand="BANKS" onClick={() => setForexDetailsOpen(false)}>Close</GhostButton>
-          {/* No "Confirm" button here: ConfirmForex is NBE-only
-              (POST /forex/:id/confirm, NBEMSP) — a bank calling it would
-              403, and the old button only showed a success toast without
-              calling anything. The real bank actions on a forex are
-              Reject (REQUESTED/CONFIRMED) and Utilise (ALLOCATED). */}
-          {selectedForex && (selectedForex.status === 'REQUESTED' || selectedForex.status === 'CONFIRMED') && (
+          {/* Bank actions on forex: Allocate (REQUESTED), Reject (REQUESTED/CONFIRMED), Utilise (ALLOCATED) */}
+          {selectedForex && selectedForex.status === 'REQUESTED' && (
+            <>
+              <PrimaryButton 
+                brand="BANKS"
+                onClick={async () => {
+                  // Close details dialog and open allocation dialog
+                  setForexDetailsOpen(false);
+                  
+                  // Fetch NBE exchange rate and retention policy
+                  setAllocationPolicyReady(false);
+                  try {
+                    const token = localStorage.getItem('authToken');
+                    const currency = String(selectedForex.currency || 'USD').toUpperCase();
+                    
+                    const [rateResponse, policyResponse] = await Promise.all([
+                      apiFetch(`/forex/rates/${encodeURIComponent(currency)}/current`, {
+                        method: 'GET',
+                        headers: token ? { 'Authorization': `Bearer ${token}` } : undefined,
+                      }),
+                      apiFetch('/forex/retention-policy/COFFEE', {
+                        method: 'GET',
+                        headers: token ? { 'Authorization': `Bearer ${token}` } : undefined,
+                      }),
+                    ]);
+                    
+                    const [rateResult, policyResult] = await Promise.all([
+                      rateResponse.json(),
+                      policyResponse.json()
+                    ]);
+                    
+                    const activeRate = Number(rateResult.data?.midRate ?? rateResult.data?.MidRate);
+                    const retentionRate = Number(policyResult.data?.retentionRate ?? policyResult.data?.RetentionRate);
+                    
+                    if (!rateResult.success || !policyResult.success || !Number.isFinite(activeRate) || activeRate <= 0 || !Number.isFinite(retentionRate) || retentionRate < 0) {
+                      showError('NBE Ledger Data Required', 'An active exchange rate and COFFEE retention policy are required before forex can be allocated.');
+                      return;
+                    }
+                    
+                    // Auto-generate approval reference with timestamp
+                    const approvalRef = `FOREX-ALLOC-${Date.now()}`;
+                    
+                    setAllocationForm({
+                      forexId: selectedForex.forexId,
+                      lcId: selectedForex.lcId || '',
+                      amount: selectedForex.requestedAmount || 0,
+                      exchangeRate: activeRate,
+                      retentionRate: retentionRate,
+                      officer: user?.fullName || user?.username || 'Bank Officer',
+                      approvalRef: approvalRef,
+                      expiryDate: selectedForex.expiryDate || new Date(Date.now() + 90 * 24 * 60 * 60 * 1000).toISOString(),
+                    });
+                    setAllocationPolicyReady(true);
+                  } catch (error) {
+                    showError('NBE Ledger Data Required', 'Unable to load the current exchange rate and retention policy.');
+                  }
+                  
+                  setAllocationDialogOpen(true);
+                }}
+                startIcon={<CheckCircle />}
+              >
+                Allocate Forex
+              </PrimaryButton>
+              <DangerButton brand="BANKS"
+                onClick={() => handleRejectForex(selectedForex)}
+                loadingLabel="Rejecting…"
+                ledgerWrite
+                color="error"
+              >
+                Reject
+              </DangerButton>
+            </>
+          )}
+          {selectedForex && selectedForex.status === 'CONFIRMED' && (
             <DangerButton brand="BANKS"
               onClick={() => handleRejectForex(selectedForex)}
               loadingLabel="Rejecting…"
@@ -4719,13 +4898,13 @@ const BanksPortal: React.FC = () => {
                 {/* Exchange Rate */}
                 <Grid item xs={12} md={6}>
                   <Typography variant="body2" color="text.secondary">Exchange Rate</Typography>
-                  {selectedForex.status === 'REQUESTED' || selectedForex.exchangeRate === 0 ? (
+                  {selectedForex.status === 'REQUESTED' || !selectedForex.exchangeRate || selectedForex.exchangeRate === 0 ? (
                     <Typography variant="h6" fontWeight={600} color="warning.main">
                       Pending Allocation
                     </Typography>
                   ) : (
                     <Typography variant="h6" fontWeight={600}>
-                      {selectedForex.exchangeRate.toFixed(2)} ETB/USD
+                      {Number(selectedForex.exchangeRate).toFixed(2)} ETB/USD
                     </Typography>
                   )}
                 </Grid>
@@ -4734,9 +4913,9 @@ const BanksPortal: React.FC = () => {
                 <Grid item xs={12} md={6}>
                   <Paper sx={{ p: 2, bgcolor: '#f5f5f5', border: '1px solid #e0e0e0' }}>
                     <Typography variant="body2" color="text.secondary">
-                      {selectedForex.retentionRate}% USD Retention
+                      {selectedForex.retentionRate || 0}% USD Retention
                     </Typography>
-                    {selectedForex.status === 'REQUESTED' || selectedForex.retentionRate === 0 ? (
+                    {selectedForex.status === 'REQUESTED' || !selectedForex.retentionRate || selectedForex.retentionRate === 0 ? (
                       <>
                         <Typography variant="h5" fontWeight={700} color="warning.main">
                           Pending Allocation
@@ -5341,15 +5520,61 @@ const BanksPortal: React.FC = () => {
             <CircularProgress size={20} sx={{ ml: 2, verticalAlign: 'middle' }} />
           )}</>} icon={<Description />} actions={<>
           <GhostButton brand="BANKS" onClick={handleCloseDialog}>Close</GhostButton>
+          {/* REQUESTED status: Show Approve and Reject buttons */}
           {selectedLC && selectedLC.status === 'REQUESTED' && (
-            <DangerButton brand="BANKS"
-              startIcon={<Cancel />}
-              loadingLabel="Rejecting…"
+            <>
+              <PrimaryButton brand="BANKS"
+                startIcon={<CheckCircle />}
+                loadingLabel="Approving…"
+                ledgerWrite
+                onClick={() => handleApproveLC(selectedLC.lcId, selectedLC.exporterId)}
+              >
+                Approve LC
+              </PrimaryButton>
+              <DangerButton brand="BANKS"
+                startIcon={<Cancel />}
+                loadingLabel="Rejecting…"
+                ledgerWrite
+                onClick={() => handleRejectLC(selectedLC.lcId)}
+              >
+                Reject LC
+              </DangerButton>
+            </>
+          )}
+          {/* APPROVED status: Show Issue button */}
+          {selectedLC && selectedLC.status === 'APPROVED' && (
+            <PrimaryButton brand="BANKS"
+              startIcon={<AccountBalance />}
+              loadingLabel="Issuing…"
               ledgerWrite
-              onClick={() => handleRejectLC(selectedLC.lcId)}
+              onClick={async () => {
+                try {
+                  const token = localStorage.getItem('authToken');
+                  const response = await apiFetch(`/banking/lc/${selectedLC.lcId}/issue`, {
+                    method: 'POST',
+                    headers: {
+                      'Authorization': `Bearer ${token}`,
+                      'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ 
+                      terms: selectedLC.terms || 'Standard UCP 600 terms and conditions apply' 
+                    }),
+                  });
+                  const result = await response.json();
+                  if (result.success) {
+                    showSuccess('LC Issued', `LC ${selectedLC.lcId} has been issued successfully`);
+                    loadBankingData();
+                    handleCloseDialog();
+                  } else {
+                    showError('LC Issue Failed', result.error?.message || 'Failed to issue LC');
+                  }
+                } catch (error: any) {
+                  showError('Network Error', 'Failed to issue LC', error.message);
+                }
+              }}
             >
-              Reject LC
-            </DangerButton>
+              Issue LC
+            </PrimaryButton>
           )}
           {selectedLC && selectedLC.status === 'ISSUED' && (
             <>
@@ -5574,11 +5799,19 @@ const BanksPortal: React.FC = () => {
                       <Grid item xs={12} md={6}>
                         <Typography variant="body2" color="black">Expiry Date</Typography>
                         <Typography variant="body1" fontWeight={600}>
-                          {selectedLC.expiryDate ? new Date(selectedLC.expiryDate).toLocaleDateString('en-US', {
-                            year: 'numeric',
-                            month: 'long',
-                            day: 'numeric'
-                          }) : 'N/A'}
+                          {(() => {
+                            console.log('[BANKS] Expiry Date Debug:', {
+                              expiryDate: selectedLC.expiryDate,
+                              ExpiryDate: (selectedLC as any).ExpiryDate,
+                              expiry_date: (selectedLC as any).expiry_date,
+                              allKeys: Object.keys(selectedLC).filter(k => k.toLowerCase().includes('expiry'))
+                            });
+                            return selectedLC.expiryDate ? new Date(selectedLC.expiryDate).toLocaleDateString('en-US', {
+                              year: 'numeric',
+                              month: 'long',
+                              day: 'numeric'
+                            }) : 'N/A';
+                          })()}
                         </Typography>
                       </Grid>
                       <Grid item xs={12}>
@@ -5590,6 +5823,253 @@ const BanksPortal: React.FC = () => {
                     </Grid>
                   </Paper>
                 </Grid>
+
+                {/* Recent Shipments Section */}
+                <Grid item xs={12}>
+                  <Typography variant="subtitle2" color="black" gutterBottom sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                    <LocalShipping />
+                    Recent Shipments
+                  </Typography>
+                  <Paper sx={{ p: 2, bgcolor: 'grey.50' }}>
+                    {selectedLC.relatedShipments && selectedLC.relatedShipments.length > 0 ? (
+                      <TableContainer>
+                        <Table size="small">
+                          <TableHead>
+                            <TableRow>
+                              <TableCell><strong>Shipment ID</strong></TableCell>
+                              <TableCell><strong>Status</strong></TableCell>
+                              <TableCell><strong>Transport</strong></TableCell>
+                              <TableCell><strong>Date</strong></TableCell>
+                            </TableRow>
+                          </TableHead>
+                          <TableBody>
+                            {selectedLC.relatedShipments.slice(0, 5).map((shipment: any) => {
+                              // Normalize status - handle various field names
+                              const shipmentStatus = (
+                                shipment.status || 
+                                shipment.Status || 
+                                shipment.shipmentStatus || 
+                                'UNKNOWN'
+                              ).toUpperCase();
+                              
+                              const statusColors: Record<string, any> = {
+                                'CREATED': 'default',
+                                'PENDING': 'default',
+                                'QUALITY_CONTROL': 'info',
+                                'APPROVED': 'warning',
+                                'REQUESTED': 'warning',
+                                'SHIPPED': 'info',
+                                'IN_TRANSIT': 'info',
+                                'DELIVERED': 'success',
+                                'CUSTOMS_CLEARED': 'success',
+                                'UNKNOWN': 'error'
+                              };
+                              
+                              return (
+                                <TableRow key={shipment.shipmentId || shipment.id}>
+                                  <TableCell>
+                                    <Typography variant="body2" fontWeight={600}>
+                                      {shipment.shipmentId || shipment.id || 'N/A'}
+                                    </Typography>
+                                  </TableCell>
+                                  <TableCell>
+                                    <Chip 
+                                      label={shipmentStatus.replace(/_/g, ' ')} 
+                                      size="small"
+                                      color={statusColors[shipmentStatus] || 'default'}
+                                    />
+                                  </TableCell>
+                                  <TableCell>
+                                    <Typography variant="body2">
+                                      {shipment.transportMode === 'AIR' ? '✈️ Air' : 
+                                       shipment.transportMode === 'SEA' ? '🚢 Sea' : 
+                                       shipment.transportMode || 'In Transit'}
+                                    </Typography>
+                                  </TableCell>
+                                  <TableCell>
+                                    <Typography variant="body2">
+                                      {shipment.actualDeparture ? 
+                                        new Date(shipment.actualDeparture).toLocaleDateString() : 
+                                        shipment.estimatedDeparture ? 
+                                        new Date(shipment.estimatedDeparture).toLocaleDateString() :
+                                        shipment.createdAt ? 
+                                        new Date(shipment.createdAt).toLocaleDateString() : 
+                                        'N/A'}
+                                    </Typography>
+                                  </TableCell>
+                                </TableRow>
+                              );
+                            })}
+                          </TableBody>
+                        </Table>
+                      </TableContainer>
+                    ) : (
+                      <Alert severity="info">
+                        No shipments recorded for this LC yet. Shipments will appear here once the exporter creates them.
+                      </Alert>
+                    )}
+                  </Paper>
+                </Grid>
+
+                {/* Document Compliance Check */}
+                {documentChecklist && (
+                  <Grid item xs={12}>
+                    <Divider sx={{ my: 2 }} />
+                    <Typography variant="h6" gutterBottom sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                      ✅ Document Compliance Check
+                    </Typography>
+                    
+                    {/* Validation Summary */}
+                    <Alert 
+                      severity={
+                        documentChecklist.validation?.canApprove || documentChecklist.validation?.canIssue
+                          ? 'success' 
+                          : 'warning'
+                      }
+                      sx={{ mb: 2 }}
+                      icon={
+                        documentChecklist.validation?.canApprove || documentChecklist.validation?.canIssue
+                          ? <CheckCircle />
+                          : <Warning />
+                      }
+                    >
+                      <Typography variant="body2" fontWeight={600}>
+                        {documentChecklist.validation?.canApprove || documentChecklist.validation?.canIssue
+                          ? `✅ All requirements met for ${documentChecklist.currentStage}`
+                          : `⚠️ ${documentChecklist.validation?.missingDocuments?.length || documentChecklist.validation?.missingRequirements?.length || 0} requirement(s) not met`
+                        }
+                      </Typography>
+                      {documentChecklist.validation?.reason && (
+                        <Typography variant="body2" sx={{ mt: 0.5 }}>
+                          {documentChecklist.validation.reason}
+                        </Typography>
+                      )}
+                    </Alert>
+
+                    {/* Current Stage Badge */}
+                    <Box sx={{ mb: 2 }}>
+                      <Chip 
+                        label={`Current Stage: ${documentChecklist.currentStage}`}
+                        color={
+                          documentChecklist.currentStage === 'APPROVAL' ? 'warning' :
+                          documentChecklist.currentStage === 'ISSUANCE' ? 'info' :
+                          'success'
+                        }
+                        sx={{ fontWeight: 600 }}
+                      />
+                    </Box>
+
+                    {/* Requirements Checklist Table */}
+                    <TableContainer component={Paper}>
+                      <Table size="small">
+                        <TableHead>
+                          <TableRow>
+                            <TableCell width="40%"><strong>Requirement</strong></TableCell>
+                            <TableCell width="20%"><strong>Category</strong></TableCell>
+                            <TableCell width="15%"><strong>Required</strong></TableCell>
+                            <TableCell width="25%"><strong>Status</strong></TableCell>
+                          </TableRow>
+                        </TableHead>
+                        <TableBody>
+                          {documentChecklist.checklist?.requirements?.map((req: any, index: number) => (
+                            <TableRow 
+                              key={req.documentType + index}
+                              sx={{ 
+                                bgcolor: req.status === 'MISSING' && req.required ? 'error.lighter' : 'transparent'
+                              }}
+                            >
+                              <TableCell>
+                                <Box>
+                                  <Typography variant="body2" fontWeight={600}>
+                                    {(req.documentType || req.type || 'Document').replace(/_/g, ' ')}
+                                  </Typography>
+                                  <Typography variant="caption" color="text.secondary">
+                                    {req.description}
+                                  </Typography>
+                                  {req.fileName && (
+                                    <Typography variant="caption" display="block" color="success.main" sx={{ mt: 0.5 }}>
+                                      📄 {req.fileName}
+                                    </Typography>
+                                  )}
+                                </Box>
+                              </TableCell>
+                              <TableCell>
+                                <Chip 
+                                  label={req.category} 
+                                  size="small"
+                                  variant="outlined"
+                                  sx={{ fontSize: '0.7rem' }}
+                                />
+                              </TableCell>
+                              <TableCell>
+                                {req.required ? (
+                                  <Chip label="Required" size="small" color="error" />
+                                ) : (
+                                  <Chip label="Optional" size="small" color="default" />
+                                )}
+                              </TableCell>
+                              <TableCell>
+                                <Chip 
+                                  label={req.status}
+                                  size="small"
+                                  color={
+                                    req.status === 'AVAILABLE' ? 'success' :
+                                    req.status === 'MISSING' ? 'error' : 
+                                    'default'
+                                  }
+                                  icon={
+                                    req.status === 'AVAILABLE' ? <CheckCircle sx={{ fontSize: 16 }} /> :
+                                    req.status === 'MISSING' ? <Close sx={{ fontSize: 16 }} /> :
+                                    undefined
+                                  }
+                                />
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </TableContainer>
+
+                    {/* Additional Validation Details */}
+                    {documentChecklist.validation?.validationDetails && (
+                      <Box sx={{ mt: 2, p: 2, bgcolor: 'grey.100', borderRadius: 1 }}>
+                        <Typography variant="caption" fontWeight={600} display="block" gutterBottom>
+                          Validation Details:
+                        </Typography>
+                        <Grid container spacing={1}>
+                          {documentChecklist.validation.validationDetails.contractStatus && (
+                            <Grid item xs={6}>
+                              <Typography variant="caption">
+                                Contract Status: <strong>{documentChecklist.validation.validationDetails.contractStatus}</strong>
+                              </Typography>
+                            </Grid>
+                          )}
+                          {documentChecklist.validation.validationDetails.exporterLicenseStatus && (
+                            <Grid item xs={6}>
+                              <Typography variant="caption">
+                                License Status: <strong>{documentChecklist.validation.validationDetails.exporterLicenseStatus}</strong>
+                              </Typography>
+                            </Grid>
+                          )}
+                          {documentChecklist.validation.validationDetails.requiredCount !== undefined && (
+                            <Grid item xs={6}>
+                              <Typography variant="caption">
+                                Required Documents: <strong>{documentChecklist.validation.validationDetails.requiredCount}</strong>
+                              </Typography>
+                            </Grid>
+                          )}
+                          {documentChecklist.validation.validationDetails.availableCount !== undefined && (
+                            <Grid item xs={6}>
+                              <Typography variant="caption">
+                                Available Documents: <strong>{documentChecklist.validation.validationDetails.availableCount}</strong>
+                              </Typography>
+                            </Grid>
+                          )}
+                        </Grid>
+                      </Box>
+                    )}
+                  </Grid>
+                )}
 
                 {/* Exporter Historical Trend - Show before approval */}
                 {selectedLC.status === 'REQUESTED' && selectedLC.exporterId && (
@@ -5646,21 +6126,21 @@ const BanksPortal: React.FC = () => {
                             <TableRow key={doc.documentId}>
                               <TableCell>
                                 <Chip 
-                                  label={doc.documentType.replace(/_/g, ' ')} 
+                                  label={(doc.documentType || doc.type || 'Document').replace(/_/g, ' ')} 
                                   size="small" 
                                   color="primary" 
                                   variant="outlined"
                                 />
                               </TableCell>
-                              <TableCell>{doc.fileName}</TableCell>
+                              <TableCell>{doc.fileName || doc.filename || 'N/A'}</TableCell>
                               <TableCell>
-                                {new Date(doc.uploadedAt).toLocaleDateString()}
+                                {doc.uploadedAt || doc.uploaded_at ? new Date(doc.uploadedAt || doc.uploaded_at).toLocaleDateString() : 'N/A'}
                               </TableCell>
                               <TableCell>
                                 <Chip 
-                                  label={doc.status || 'Active'} 
+                                  label={doc.status || doc.verificationStatus || 'Active'} 
                                   size="small" 
-                                  color={doc.status === 'verified' ? 'success' : 'default'}
+                                  color={doc.status === 'verified' || doc.verificationStatus === 'verified' ? 'success' : 'default'}
                                 />
                               </TableCell>
                               <TableCell align="right">
@@ -6088,6 +6568,83 @@ const BanksPortal: React.FC = () => {
           });
         }}
       />
+
+      {/* Utilize Forex Dialog */}
+      <PortalDialog
+        brand="BANKS"
+        open={utilizeDialogOpen}
+        onClose={() => setUtilizeDialogOpen(false)}
+        title="Utilize Forex"
+        icon={<CheckCircle />}
+        actions={
+          <>
+            <GhostButton brand="BANKS" onClick={() => setUtilizeDialogOpen(false)}>
+              Cancel
+            </GhostButton>
+            <PrimaryButton
+              brand="BANKS"
+              onClick={confirmUtilizeForex}
+              startIcon={<CheckCircle />}
+            >
+              Confirm Utilization
+            </PrimaryButton>
+          </>
+        }
+      >
+        <Box sx={{ pt: 2 }}>
+          <Typography variant="body2" color="text.secondary" gutterBottom>
+            Enter the amount to utilize from this forex allocation. You can utilize the full amount or a partial amount.
+          </Typography>
+          
+          <Grid container spacing={2} sx={{ mt: 1 }}>
+            <Grid item xs={12}>
+              <TextField
+                fullWidth
+                label="Forex ID"
+                value={utilizeForm.forexId}
+                disabled
+                size="small"
+              />
+            </Grid>
+            
+            <Grid item xs={12} md={6}>
+              <TextField
+                fullWidth
+                label="Available Amount (USD)"
+                value={`$${utilizeForm.maxAmount.toLocaleString()}`}
+                disabled
+                size="small"
+              />
+            </Grid>
+            
+            <Grid item xs={12} md={6}>
+              <TextField
+                fullWidth
+                label="Amount to Utilize (USD)"
+                type="number"
+                value={utilizeForm.utilizedAmount || ''}
+                onChange={(e) => {
+                  const val = e.target.value === '' ? 0 : Number(e.target.value);
+                  setUtilizeForm({ ...utilizeForm, utilizedAmount: val });
+                }}
+                inputProps={{
+                  min: 0,
+                  max: utilizeForm.maxAmount,
+                  step: 0.01
+                }}
+                size="small"
+                helperText={`Maximum: $${utilizeForm.maxAmount.toLocaleString()}`}
+                required
+              />
+            </Grid>
+          </Grid>
+          
+          <Alert severity="info" sx={{ mt: 2 }}>
+            <strong>Forex Utilization:</strong> This marks the forex as used for the shipment/payment. 
+            Once utilized, the amount is considered spent and cannot be reused.
+          </Alert>
+        </Box>
+      </PortalDialog>
 
       {/* SWIFT Compose Dialog */}
       <SwiftComposeDialog
@@ -6547,47 +7104,254 @@ const BanksPortal: React.FC = () => {
                             >
                               View Details
                             </SecondaryButton>
+                            {/* Show different button text based on LC status */}
+                            {lc.status === 'UTILIZED' || lc.status === 'PAYMENT_RELEASED' || lc.status === 'SETTLED' ? (
+                              <SecondaryButton brand="BANKS"
+                                size="small"
+                                startIcon={<Visibility />}
+                                onClick={() => {
+                                  console.log('[TAB3] 🔘 View Examination (Completed) button clicked for LC:', lc.lcId);
+                                  // ✅ OPEN DIALOG IMMEDIATELY with loading state
+                                  setSelectedLC({ ...lc, documents: lc.documents || [] });
+                                  setDocumentExaminationOpen(true);
+                                  setLcDetailsLoading(true);
+                                  // ✅ Fetch LC details AND shipment documents in background (read-only mode)
+                                  (async () => {
+                                    try {
+                                      // Step 1: Fetch LC details
+                                      const apiUrl = `${API_BASE_URL}/banking/lc/${lc.lcId}`;
+                                      console.log('[TAB3] Fetching LC details from:', apiUrl);
+                                      const response = await apiFetch(`/banking/lc/${encodeURIComponent(lc.lcId)}`, {
+                                        headers: getAuthHeaders(),
+                                      });
+                                      console.log('[TAB3] LC Response status:', response.status, response.statusText);
+                                      
+                                      let lcData = lc;
+                                      if (response.ok) {
+                                        const result = await response.json();
+                                        console.log('[TAB3] LC Response data received');
+                                        if (result.success && result.data) {
+                                          console.log('[TAB3] ✅ Fetched LC with', result.data.documents?.length || 0, 'documents');
+                                          lcData = result.data;
+                                        } else {
+                                          console.warn('[TAB3] API returned no data, keeping cached LC');
+                                        }
+                                      } else {
+                                        const errorText = await response.text();
+                                        console.error('[TAB3] LC API failed:', response.status, errorText);
+                                      }
+                                      
+                                      // Step 2: Find related shipment
+                                      console.log('[TAB3] 🚢 Looking for shipment related to LC:', lc.lcId, 'Contract:', lcData.contractId);
+                                      const shipmentsResponse = await apiFetch(`/shipping/shipments`, {
+                                        headers: getAuthHeaders(),
+                                      });
+                                      
+                                      let shipmentDocuments: any[] = [];
+                                      if (shipmentsResponse.ok) {
+                                        const shipmentsResult = await shipmentsResponse.json();
+                                        console.log('[TAB3] Shipments fetched:', shipmentsResult.data?.length || 0);
+                                        
+                                        // Find shipment for this LC by contract_id (shipments table doesn't have lc_id column)
+                                        const relatedShipment = shipmentsResult.data?.find((s: any) => 
+                                          s.contractId === lcData.contractId
+                                        );
+                                        
+                                        if (relatedShipment) {
+                                          console.log('[TAB3] ✅ Found related shipment:', relatedShipment.shipmentId, 'Status:', relatedShipment.status);
+                                          
+                                          // Step 3: Fetch documents from SHIPMENT entity
+                                          console.log('[TAB3] 📄 Fetching SHIPMENT documents for:', relatedShipment.shipmentId);
+                                          const shipmentDocsResponse = await apiFetch(
+                                            `/documents/entity/SHIPMENT/${encodeURIComponent(relatedShipment.shipmentId)}`,
+                                            { headers: getAuthHeaders() }
+                                          );
+                                          
+                                          if (shipmentDocsResponse.ok) {
+                                            const shipmentDocsResult = await shipmentDocsResponse.json();
+                                            if (shipmentDocsResult.success && shipmentDocsResult.data) {
+                                              console.log('[TAB3] ✅ Fetched', shipmentDocsResult.data.length, 'SHIPMENT documents');
+                                              shipmentDocuments = [...shipmentDocuments, ...shipmentDocsResult.data];
+                                            }
+                                          }
+                                          
+                                          // Step 4: Fetch documents from CUSTOMS_DECLARATION entity (fallback for incorrectly stored docs)
+                                          console.log('[TAB3] 📄 Fetching CUSTOMS_DECLARATION documents for:', relatedShipment.shipmentId);
+                                          const customsDocsResponse = await apiFetch(
+                                            `/documents/entity/CUSTOMS_DECLARATION/${encodeURIComponent(relatedShipment.shipmentId)}`,
+                                            { headers: getAuthHeaders() }
+                                          );
+                                          
+                                          if (customsDocsResponse.ok) {
+                                            const customsDocsResult = await customsDocsResponse.json();
+                                            if (customsDocsResult.success && customsDocsResult.data) {
+                                              console.log('[TAB3] ✅ Fetched', customsDocsResult.data.length, 'CUSTOMS_DECLARATION documents');
+                                              shipmentDocuments = [...shipmentDocuments, ...customsDocsResult.data];
+                                            }
+                                          }
+                                          
+                                          // Remove duplicates based on documentId
+                                          const uniqueShipmentDocs = shipmentDocuments.filter((doc, index, self) =>
+                                            index === self.findIndex((d) => d.documentId === doc.documentId)
+                                          );
+                                          
+                                          console.log('[TAB3] 📦 Total unique shipment documents:', uniqueShipmentDocs.length);
+                                          
+                                          // Merge shipment documents with LC documents
+                                          const allDocuments = [...(lcData.documents || []), ...uniqueShipmentDocs];
+                                          console.log('[TAB3] 📚 Total documents (LC + Shipment):', allDocuments.length);
+                                          
+                                          lcData = { 
+                                            ...lcData, 
+                                            documents: allDocuments,
+                                            relatedShipment: relatedShipment 
+                                          };
+                                        } else {
+                                          console.log('[TAB3] ⚠️ No shipment found for LC:', lc.lcId);
+                                        }
+                                      } else {
+                                        console.error('[TAB3] Failed to fetch shipments:', shipmentsResponse.status);
+                                      }
+                                      
+                                      // Step 5: Update selected LC with all documents
+                                      setSelectedLC(lcData);
+                                      
+                                    } catch (error) {
+                                      console.error('[TAB3] Error fetching documents:', error);
+                                    } finally {
+                                      setLcDetailsLoading(false);
+                                    }
+                                  })();
+                                }}
+                              >
+                                View Examination
+                              </SecondaryButton>
+                            ) : (
                             <PrimaryButton brand="BANKS"
                               size="small"
                               startIcon={<CheckCircle />}
-                              onClick={(() => {
+                              onClick={() => {
                                 console.log('[TAB3] 🔘 Examine Documents button clicked for LC:', lc.lcId);
                                 // ✅ OPEN DIALOG IMMEDIATELY with loading state
                                 setSelectedLC({ ...lc, documents: lc.documents || [] });
                                 setDocumentExaminationOpen(true);
                                 setLcDetailsLoading(true);
-                                // ✅ Fetch documents in background (non-blocking)
+                                // ✅ Fetch LC details AND shipment documents in background
                                 (async () => {
                                   try {
+                                    // Step 1: Fetch LC details
                                     const apiUrl = `${API_BASE_URL}/banking/lc/${lc.lcId}`;
-                                    console.log('[TAB3] Fetching documents from:', apiUrl);
+                                    console.log('[TAB3] Fetching LC details from:', apiUrl);
                                     const response = await apiFetch(`/banking/lc/${encodeURIComponent(lc.lcId)}`, {
                                       headers: getAuthHeaders(),
                                     });
-                                    console.log('[TAB3] Response status:', response.status, response.statusText);
+                                    console.log('[TAB3] LC Response status:', response.status, response.statusText);
+                                    
+                                    let lcData = lc;
                                     if (response.ok) {
                                       const result = await response.json();
-                                      console.log('[TAB3] Response data received');
+                                      console.log('[TAB3] LC Response data received');
                                       if (result.success && result.data) {
                                         console.log('[TAB3] ✅ Fetched LC with', result.data.documents?.length || 0, 'documents');
-                                        setSelectedLC(result.data);
+                                        lcData = result.data;
                                       } else {
                                         console.warn('[TAB3] API returned no data, keeping cached LC');
                                       }
                                     } else {
                                       const errorText = await response.text();
-                                      console.error('[TAB3] API failed:', response.status, errorText);
+                                      console.error('[TAB3] LC API failed:', response.status, errorText);
                                     }
+                                    
+                                    // Step 2: Fetch shipments to find related shipment
+                                    console.log('[TAB3] 🚢 Looking for shipment related to LC:', lc.lcId, 'Contract:', lcData.contractId);
+                                    const shipmentsResponse = await apiFetch('/shipments/all', {
+                                      headers: getAuthHeaders(),
+                                    });
+                                    
+                                    if (shipmentsResponse.ok) {
+                                      const shipmentsResult = await shipmentsResponse.json();
+                                      const shipments = shipmentsResult.success ? shipmentsResult.data : shipmentsResult;
+                                      console.log('[TAB3] Shipments fetched:', shipments?.length || 0);
+                                      
+                                      // Find shipment(s) for this contract
+                                      const relatedShipments = (shipments || []).filter((s: any) => 
+                                        s.contract_id === lcData.contractId || s.contractId === lcData.contractId
+                                      );
+                                      
+                                      if (relatedShipments.length > 0) {
+                                        const relatedShipment = relatedShipments[0];
+                                        console.log('[TAB3] ✅ Found related shipment:', relatedShipment.shipment_id, 'Status:', relatedShipment.status);
+                                        
+                                        // Step 3: Fetch documents for the shipment
+                                        const shipmentId = relatedShipment.shipment_id || relatedShipment.shipmentId;
+                                        console.log('[TAB3] 📄 Fetching SHIPMENT documents for:', shipmentId);
+                                        
+                                        let shipmentDocuments: any[] = [];
+                                        
+                                        // Fetch SHIPMENT documents
+                                        const shipmentDocsResponse = await apiFetch(
+                                          `/documents/entity/SHIPMENT/${encodeURIComponent(shipmentId)}`,
+                                          { headers: getAuthHeaders() }
+                                        );
+                                        if (shipmentDocsResponse.ok) {
+                                          const shipmentDocsResult = await shipmentDocsResponse.json();
+                                          if (shipmentDocsResult.success && shipmentDocsResult.data) {
+                                            shipmentDocuments = [...shipmentDocuments, ...shipmentDocsResult.data];
+                                          }
+                                        }
+                                        console.log('[TAB3] ✅ Fetched', shipmentDocuments.length, 'SHIPMENT documents');
+                                        
+                                        // Fetch CUSTOMS_DECLARATION documents
+                                        console.log('[TAB3] 📄 Fetching CUSTOMS_DECLARATION documents for:', shipmentId);
+                                        const customsDocsResponse = await apiFetch(
+                                          `/documents/entity/CUSTOMS_DECLARATION/${encodeURIComponent(shipmentId)}`,
+                                          { headers: getAuthHeaders() }
+                                        );
+                                        if (customsDocsResponse.ok) {
+                                          const customsDocsResult = await customsDocsResponse.json();
+                                          if (customsDocsResult.success && customsDocsResult.data) {
+                                            shipmentDocuments = [...shipmentDocuments, ...customsDocsResult.data];
+                                          }
+                                        }
+                                        console.log('[TAB3] ✅ Fetched', shipmentDocuments.filter((d: any) => d.entityType === 'CUSTOMS_DECLARATION').length, 'CUSTOMS_DECLARATION documents');
+                                        
+                                        // Remove duplicates
+                                        const uniqueShipmentDocs = shipmentDocuments.filter((doc, index, self) =>
+                                          index === self.findIndex((d) => d.documentId === doc.documentId)
+                                        );
+                                        
+                                        console.log('[TAB3] 📦 Total unique shipment documents:', uniqueShipmentDocs.length);
+                                        
+                                        // Merge shipment documents with LC documents
+                                        const allDocuments = [...(lcData.documents || []), ...uniqueShipmentDocs];
+                                        console.log('[TAB3] 📚 Total documents (LC + Shipment):', allDocuments.length);
+                                        
+                                        lcData = { 
+                                          ...lcData, 
+                                          documents: allDocuments,
+                                          relatedShipments: [{ shipmentId, status: relatedShipment.status }]
+                                        };
+                                      } else {
+                                        console.log('[TAB3] ⚠️ No shipment found for LC:', lc.lcId);
+                                      }
+                                    } else {
+                                      console.error('[TAB3] Failed to fetch shipments:', shipmentsResponse.status);
+                                    }
+                                    
+                                    // Step 5: Update selected LC with all documents
+                                    setSelectedLC(lcData);
+                                    
                                   } catch (error) {
-                                    console.error('[TAB3] Error fetching LC:', error);
+                                    console.error('[TAB3] Error fetching documents:', error);
                                   } finally {
                                     setLcDetailsLoading(false);
                                   }
                                 })();
-                              })}
+                              }}
                             >
                               Examine Documents
                             </PrimaryButton>
+                            )}
                           </Box>
                         </TableCell>
                       </TableRow>
@@ -6642,239 +7406,6 @@ const BanksPortal: React.FC = () => {
               )}
             </Box>
           )}
-        </PortalCard>
-      )}
-
-      {/* Tab 10: All LCs Management - Show ALL LCs regardless of status */}
-      {activeTab === 10 && (
-        <PortalCard brand="BANKS" title="LC Management - All Letter of Credits">
-          <Alert severity="info" sx={{ mb: 3 }}>
-            <Typography variant="body2">
-              View and manage all Letter of Credits in the system regardless of status.
-              Use the status filter to narrow the list to one of the 11 real LC statuses.
-            </Typography>
-          </Alert>
-
-          <Box sx={{ mb: 3, display: 'flex', gap: 2, flexWrap: 'wrap', alignItems: 'center' }}>
-            <Typography variant="h6" gutterBottom sx={{ mb: 0 }}>
-              All LCs ({getFilteredAllLCs().length})
-            </Typography>
-            {/* Search (2026-11-12 audit): this tab had a status filter
-                only — the shared searchTerm was never applied to the LC
-                list. getFilteredAllLCs() now applies it (LC / contract /
-                exporter id). */}
-            <TextField
-              size="small"
-              placeholder="Search LCs..."
-              value={searchTerm}
-              onChange={(e) => {
-                setSearchTerm(e.target.value);
-                setCurrentPage(0);
-              }}
-              sx={{ minWidth: 280 }}
-            />
-            <TextField
-              select
-              size="small"
-              label="Filter by Status"
-              value={allLcFilterStatus}
-              onChange={(e) => {
-                setAllLcFilterStatus(e.target.value);
-                setCurrentPage(0);
-              }}
-              sx={{ minWidth: 200 }}
-            >
-              <MenuItem value="ALL">All Statuses</MenuItem>
-              <MenuItem value="PENDING">Pending</MenuItem>
-              <MenuItem value="REQUESTED">Requested</MenuItem>
-              <MenuItem value="APPROVED">Approved</MenuItem>
-              <MenuItem value="REJECTED">Rejected</MenuItem>
-              <MenuItem value="ISSUED">Issued</MenuItem>
-              <MenuItem value="FOREX_ALLOCATED">Forex Allocated</MenuItem>
-              <MenuItem value="AMENDED">Amended</MenuItem>
-              <MenuItem value="UTILIZED">Utilized</MenuItem>
-              <MenuItem value="PAYMENT_RELEASED">Payment Released</MenuItem>
-              <MenuItem value="SETTLED">Settled</MenuItem>
-              <MenuItem value="EXPIRED">Expired</MenuItem>
-            </TextField>
-            <Button
-              size="small"
-              variant="outlined"
-              onClick={() => {
-                setAllLcFilterStatus('ALL');
-                setCurrentPage(0);
-              }}
-            >
-              Clear Filter
-            </Button>
-            <PrimaryButton brand="BANKS"
-              size="small"
-              disabled={selectedLCIds.length === 0 || bulkApproving}
-              loading={bulkApproving}
-              loadingLabel="Approving…"
-              ledgerWrite
-              onClick={() => handleBulkApproveLC()}
-            >
-              Bulk Approve ({selectedLCIds.length})
-            </PrimaryButton>
-            <PrimaryButton brand="BANKS"
-              size="small"
-              onClick={() => {
-                const firstContract = contracts[0];
-                setStandbyResult(null);
-                setStandbyError('');
-                setStandbyForm(prev => ({
-                  ...prev,
-                  standbyLCNumber: `SBLC-${new Date().getFullYear()}-${Date.now().toString().slice(-6)}`,
-                  contractId: firstContract?.contractId || '',
-                  beneficiary: firstContract?.exporterId || '',
-                  applicant: firstContract?.exporterId || '',
-                }));
-                setStandbyDialogOpen(true);
-              }}
-            >
-              Issue Standby LC
-            </PrimaryButton>
-          </Box>
-          <Box sx={{ mb: 3 }}>
-            <TableContainer component={Paper}>
-              <Table>
-                <TableHead>
-                  <TableRow sx={{ bgcolor: '#f5f5f5' }}>
-                    <TableCell padding="checkbox">
-                      <Checkbox
-                        checked={
-                          getFilteredAllLCs().filter(lc => lc.status === 'REQUESTED').length > 0 &&
-                          getFilteredAllLCs().filter(lc => lc.status === 'REQUESTED').every(lc => selectedLCIds.includes(lc.lcId))
-                        }
-                        indeterminate={
-                          selectedLCIds.length > 0 &&
-                          !getFilteredAllLCs().filter(lc => lc.status === 'REQUESTED').every(lc => selectedLCIds.includes(lc.lcId))
-                        }
-                        onChange={() => toggleAllLCSelection()}
-                        inputProps={{ 'aria-label': 'Select all REQUESTED LCs for bulk approval' }}
-                      />
-                    </TableCell>
-                    <TableCell><strong>LC ID</strong></TableCell>
-                    <TableCell><strong>Contract ID</strong></TableCell>
-                    <TableCell><strong>Exporter</strong></TableCell>
-                    <TableCell><strong>Buyer</strong></TableCell>
-                    <TableCell><strong>Amount</strong></TableCell>
-                    <TableCell><strong>Status</strong></TableCell>
-                    <TableCell><strong>Request Date</strong></TableCell>
-                    <TableCell><strong>Actions</strong></TableCell>
-                  </TableRow>
-                </TableHead>
-                <TableBody>
-                  {getFilteredAllLCs().length === 0 ? (
-                    <TableRow>
-                      <TableCell colSpan={9} align="center">
-                        <Typography variant="body2" color="textSecondary">
-                          No LCs found
-                        </Typography>
-                      </TableCell>
-                    </TableRow>
-                  ) : (
-                    getFilteredAllLCs().slice(currentPage * rowsPerPage, (currentPage + 1) * rowsPerPage).map((lc) => (
-                      <TableRow key={lc.lcId} hover selected={selectedLCIds.includes(lc.lcId)}>
-                        <TableCell padding="checkbox">
-                          <Checkbox
-                            checked={selectedLCIds.includes(lc.lcId)}
-                            disabled={lc.status !== 'REQUESTED'}
-                            onChange={() => toggleLCSelection(lc.lcId)}
-                            inputProps={{ 'aria-label': `Select LC ${lc.lcId} for bulk approval` }}
-                          />
-                        </TableCell>
-                        <TableCell>{lc.lcId}</TableCell>
-                        <TableCell>{lc.contractId}</TableCell>
-                        <TableCell>{lc.exporterId}</TableCell>
-                        <TableCell>
-                          {lc.buyerName}<br/>
-                          <Typography variant="caption" color="textSecondary">
-                            {lc.buyerCountry}
-                          </Typography>
-                        </TableCell>
-                        <TableCell>
-                          {lc.amount.toLocaleString()} {lc.currency}
-                        </TableCell>
-                        <TableCell>
-                          <Chip 
-                            label={lc.status} 
-                            size="small"
-                            color={
-                              lc.status === 'REQUESTED' ? 'warning' :
-                              lc.status === 'APPROVED' ? 'info' :
-                              lc.status === 'ISSUED' ? 'primary' :
-                              lc.status === 'FOREX_ALLOCATED' ? 'secondary' :
-                              lc.status === 'UTILIZED' ? 'default' :
-                              lc.status === 'PAYMENT_RELEASED' ? 'success' :
-                              lc.status === 'SETTLED' ? 'success' :
-                              lc.status === 'REJECTED' || lc.status === 'EXPIRED' ? 'error' :
-                              'default'
-                            }
-                          />
-                        </TableCell>
-                        <TableCell>
-                          {lc.requestDate ? new Date(lc.requestDate).toLocaleDateString() : 'N/A'}
-                        </TableCell>
-                        <TableCell>
-                          <Tooltip title="View Details">
-                            <IconButton
-                              size="small"
-                              aria-label={`View details for LC ${lc.lcId}`}
-                              onClick={() => {
-                                setSelectedLC(lc);
-                                setDialogType('lcDetails');
-                                setDialogOpen(true);
-                              }}
-                            >
-                              <Visibility />
-                            </IconButton>
-                          </Tooltip>
-                          {lc.status === 'REQUESTED' && (
-                            <Tooltip title="Approve LC">
-                              <IconButton
-                                size="small"
-                                color="primary"
-                                aria-label={`Approve LC ${lc.lcId}`}
-                                onClick={() => handleApproveLC(lc.lcId, lc.exporterId)}
-                              >
-                                <CheckCircle />
-                              </IconButton>
-                            </Tooltip>
-                          )}
-                          {lc.status === 'REQUESTED' && (
-                            <Tooltip title="Reject LC">
-                              <IconButton
-                                size="small"
-                                color="error"
-                                aria-label={`Reject LC ${lc.lcId}`}
-                                onClick={() => handleRejectLC(lc.lcId)}
-                              >
-                                <Cancel />
-                              </IconButton>
-                            </Tooltip>
-                          )}
-                        </TableCell>
-                      </TableRow>
-                    ))
-                  )}
-                </TableBody>
-              </Table>
-            </TableContainer>
-            
-            <TablePagination
-              component="div"
-              count={getFilteredAllLCs().length}
-              page={currentPage}
-              onPageChange={(_, newPage) => setCurrentPage(newPage)}
-              rowsPerPage={rowsPerPage}
-              onRowsPerPageChange={(e) => {
-                setRowsPerPage(parseInt(e.target.value, 10));
-                setCurrentPage(0);
-              }}
-            />
-          </Box>
         </PortalCard>
       )}
 
@@ -6972,26 +7503,34 @@ const BanksPortal: React.FC = () => {
                             >
                               View Details
                             </SecondaryButton>
-                            <PrimaryButton brand="BANKS"
-                              size="small"
-                              startIcon={<Payment />}
-                              loadingLabel="Releasing…"
-                              ledgerWrite
-                              onClick={async () => {
-                                // Confirm before releasing payment
-                                const confirmed = window.confirm(
-                                  `Release payment for LC ${lc.lcId}?\n\n` +
-                                  `Exporter: ${lc.exporterId}\n` +
-                                  `Amount: $${lc.amount?.toLocaleString()} ${lc.currency}\n\n` +
-                                  `This will initiate SWIFT payment to the beneficiary bank and create a blockchain signature.`
-                                );
-                                if (confirmed) {
-                                  await handleReleasePayment(lc.lcId, lc.amount, lc.currency);
-                                }
-                              }}
-                            >
-                              Release Payment
-                            </PrimaryButton>
+                            {/* ✅ Only show "Release Payment" button if status is UTILIZED (ready but not yet released) */}
+                            {lc.status === 'UTILIZED' ? (
+                              <PrimaryButton brand="BANKS"
+                                size="small"
+                                startIcon={<Payment />}
+                                loadingLabel="Releasing…"
+                                ledgerWrite
+                                onClick={async () => {
+                                  // Open Material-UI confirmation dialog
+                                  setPaymentConfirmData({
+                                    lcId: lc.lcId,
+                                    exporterId: lc.exporterId,
+                                    amount: lc.amount,
+                                    currency: lc.currency,
+                                  });
+                                  setPaymentConfirmOpen(true);
+                                }}
+                              >
+                                Release Payment
+                              </PrimaryButton>
+                            ) : lc.status === 'PAYMENT_RELEASED' ? (
+                              <Chip 
+                                icon={<CheckCircle />} 
+                                label="Payment Released" 
+                                color="success" 
+                                size="small" 
+                              />
+                            ) : null}
                           </Box>
                         </TableCell>
                       </TableRow>
@@ -7190,23 +7729,23 @@ const BanksPortal: React.FC = () => {
               {/* LC Summary */}
               <Alert severity="info" sx={{ mb: 3 }}>
                 <Grid container spacing={2}>
-                  <Grid item xs={3}>
+                  <Grid item xs={12} sm={6} md={3}>
                     <Typography variant="caption" color="text.secondary">LC Amount:</Typography>
                     <Typography variant="body1" fontWeight="bold">
                       ${selectedLC.amount?.toLocaleString()} {selectedLC.currency}
                     </Typography>
                   </Grid>
-                  <Grid item xs={3}>
+                  <Grid item xs={12} sm={6} md={3}>
                     <Typography variant="caption" color="text.secondary">Exporter:</Typography>
-                    <Typography variant="body1">{selectedLC.exporterId}</Typography>
+                    <Typography variant="body1" sx={{ wordBreak: 'break-word' }}>{selectedLC.exporterId}</Typography>
                   </Grid>
-                  <Grid item xs={3}>
+                  <Grid item xs={12} sm={6} md={3}>
                     <Typography variant="caption" color="text.secondary">Buyer:</Typography>
-                    <Typography variant="body1">{selectedLC.buyerName || 'N/A'}</Typography>
+                    <Typography variant="body1" sx={{ wordBreak: 'break-word' }}>{selectedLC.buyerName || 'N/A'}</Typography>
                   </Grid>
-                  <Grid item xs={3}>
+                  <Grid item xs={12} sm={6} md={3}>
                     <Typography variant="caption" color="text.secondary">Status:</Typography>
-                    <Typography variant="body1" fontWeight="bold">{selectedLC.status}</Typography>
+                    <Typography variant="body1" fontWeight="bold" sx={{ wordBreak: 'break-word' }}>{selectedLC.status}</Typography>
                   </Grid>
                 </Grid>
               </Alert>
@@ -7214,34 +7753,58 @@ const BanksPortal: React.FC = () => {
               {/* Document Checklist */}
               <Typography variant="h6" sx={{ mb: 2, display: 'flex', alignItems: 'center', gap: 1 }}>
                 <Assignment />
-                Complete Document Package - All Transaction Documents
+                Document Examination - UCP 600 Compliance
               </Typography>
               
-              <Alert severity="info" sx={{ mb: 2 }}>
-                <Typography variant="body2">
-                  Banks must examine <strong>all documents</strong> across the transaction lifecycle: LC documents, Contract documents, Shipment documents, and Customs documents. All must be verified before payment release.
+              <Alert severity="warning" sx={{ mb: 2 }}>
+                <Typography variant="body2" fontWeight={600} gutterBottom>
+                  ⚠️ Document Examination Workflow (UCP 600):
+                </Typography>
+                <Typography variant="body2" component="div">
+                  <strong>Pre-Shipment Documents</strong> (CONTRACT, PROFORMA_INVOICE): Examined during LC approval/issuance<br/>
+                  <strong>Shipping Documents</strong> (BILL_OF_LADING, COMMERCIAL_INVOICE, PACKING_LIST, etc.): Examined AFTER shipment creation for payment release<br/>
+                  <br/>
+                  Banks should only examine shipping documents when shipment exists. Pre-shipment documents are verified earlier in the workflow.
                 </Typography>
               </Alert>
 
               {selectedLC.documents && selectedLC.documents.length > 0 ? (
                 <Box>
-                  {/* Group documents by entity type */}
-                  {['LC', 'CONTRACT', 'SHIPMENT', 'CUSTOMS_DECLARATION'].map(entityType => {
-                    const docsOfType = (selectedLC.documents || []).filter((d: any) => d.entityType === entityType);
-                    if (docsOfType.length === 0) return null;
+                  {/* Group documents by workflow stage */}
+                  {(() => {
+                    // Pre-shipment documents (examined during LC approval)
+                    const preShipmentTypes = ['CONTRACT', 'LC'];
+                    const preShipmentDocs = (selectedLC.documents || []).filter((d: any) => 
+                      preShipmentTypes.includes(d.entityType) || 
+                      d.documentType === 'PROFORMA_INVOICE'
+                    );
                     
-                    const entityLabel = entityType === 'LC' ? '📋 Letter of Credit Documents' 
-                                      : entityType === 'CONTRACT' ? '📄 Sales Contract Documents'
-                                      : entityType === 'SHIPMENT' ? '🚢 Shipment & Export Documents'
-                                      : '🛃 Customs & Compliance Documents';
+                    // Shipping documents (examined for payment release)
+                    const shippingTypes = ['SHIPMENT', 'CUSTOMS_DECLARATION'];
+                    const shippingDocs = (selectedLC.documents || []).filter((d: any) => 
+                      shippingTypes.includes(d.entityType) &&
+                      d.documentType !== 'PROFORMA_INVOICE'
+                    );
                     
                     return (
-                      <Box key={entityType} sx={{ mb: 3 }}>
-                        <Typography variant="subtitle1" fontWeight="bold" sx={{ mb: 1, color: '#9b30b7' }}>
-                          {entityLabel} ({docsOfType.length})
-                        </Typography>
-                        
-                        {docsOfType.map((doc: any, index: number) => (
+                      <>
+                        {/* Pre-Shipment Documents Section */}
+                        {preShipmentDocs.length > 0 && (
+                          <Box sx={{ mb: 4 }}>
+                            <Paper sx={{ p: 2, mb: 2, bgcolor: '#f5f5f5', border: '2px dashed #9e9e9e' }}>
+                              <Typography variant="subtitle1" fontWeight="bold" sx={{ mb: 1, color: '#616161', display: 'flex', alignItems: 'center', gap: 1 }}>
+                                📋 Pre-Shipment Documents ({preShipmentDocs.length})
+                              </Typography>
+                              <Typography variant="caption" color="text.secondary">
+                                These documents were examined during LC approval/issuance. They verify contract terms, exporter credentials, and LC requirements before shipment.
+                              </Typography>
+                            </Paper>
+                            {preShipmentDocs.map((doc: any, index: number) => {
+                              const entityLabel = doc.entityType === 'LC' ? '📋 LC Document' 
+                                                : doc.entityType === 'CONTRACT' ? '📄 Contract Document'
+                                                : '📋 Pre-Shipment Document';
+                              
+                              return (
                     <Card 
                       key={doc.documentId || index} 
                       sx={{ 
@@ -7386,7 +7949,7 @@ const BanksPortal: React.FC = () => {
                                       
                                       // If file not found, show document info instead
                                       if (errorData?.error?.code === 'FILE_NOT_FOUND' || response.status === 404) {
-                                        alert(`Document Information:\n\nType: ${doc.documentType}\nFile: ${doc.fileName}\nUploaded: ${new Date(doc.uploadedAt).toLocaleString()}\nStatus: ${doc.verificationStatus || doc.status}\n\n⚠️ Note: This is a test document. The actual file is not available on the server.`);
+                                        alert(`Document Information:\n\nType: ${doc.documentType || doc.type || 'N/A'}\nFile: ${doc.fileName || doc.filename || 'N/A'}\nUploaded: ${doc.uploadedAt || doc.uploaded_at ? new Date(doc.uploadedAt || doc.uploaded_at).toLocaleString() : 'N/A'}\nStatus: ${doc.verificationStatus || doc.status || 'N/A'}\n\n⚠️ Note: This is a test document. The actual file is not available on the server.`);
                                         return;
                                       }
                                       
@@ -7464,10 +8027,292 @@ const BanksPortal: React.FC = () => {
                         </Grid>
                       </CardContent>
                     </Card>
-                        ))}
-                      </Box>
+                              );
+                            })}
+                          </Box>
+                        )}
+                        
+                        {/* Shipping Documents Section */}
+                        {shippingDocs.length > 0 && (
+                          <Box sx={{ mb: 4 }}>
+                            <Paper sx={{ p: 2, mb: 2, bgcolor: '#e3f2fd', border: '2px solid #1976d2' }}>
+                              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1 }}>
+                                <Typography variant="subtitle1" fontWeight="bold" sx={{ color: '#1565c0', display: 'flex', alignItems: 'center', gap: 1 }}>
+                                  🚢 Shipping Documents ({shippingDocs.length})
+                                </Typography>
+                                <PrimaryButton
+                                  brand="BANKS"
+                                  startIcon={<CloudUpload />}
+                                  size="small"
+                                  onClick={() => setUploadShippingDocDialogOpen(true)}
+                                >
+                                  Upload Documents
+                                </PrimaryButton>
+                              </Box>
+                              <Typography variant="caption" color="text.secondary">
+                                These documents are examined for payment release after shipment creation. They verify actual export performance and compliance with UCP 600 requirements.
+                              </Typography>
+                            </Paper>
+                            {shippingDocs.map((doc: any, index: number) => {
+                              const entityLabel = doc.entityType === 'SHIPMENT' ? '🚢 Shipment Document' 
+                                                : doc.entityType === 'CUSTOMS_DECLARATION' ? '🛃 Customs Document'
+                                                : '🚢 Shipping Document';
+                              
+                              return (
+                    <Card 
+                      key={doc.documentId || index} 
+                      sx={{ 
+                        mb: 2, 
+                        border: '2px solid', 
+                        borderColor: doc.verificationStatus === 'verified' || doc.status === 'verified' 
+                          ? 'success.main' 
+                          : doc.verificationStatus === 'rejected' || doc.status === 'rejected' 
+                          ? 'error.main' 
+                          : '#1976d2',
+                        bgcolor: doc.verificationStatus === 'verified' || doc.status === 'verified' 
+                          ? 'rgba(76, 175, 80, 0.05)' 
+                          : doc.verificationStatus === 'rejected' || doc.status === 'rejected' 
+                          ? 'rgba(244, 67, 54, 0.05)' 
+                          : 'white'
+                      }}
+                    >
+                      <CardContent>
+                        <Typography variant="caption" color="text.secondary" sx={{ mb: 1, display: 'block' }}>
+                          {entityLabel}
+                        </Typography>
+                        <Grid container spacing={2} alignItems="center">
+                          {/* Document Icon & Info */}
+                          <Grid item xs={1}>
+                            <Box sx={{ 
+                              width: 60, 
+                              height: 60, 
+                              borderRadius: 1, 
+                              bgcolor: doc.verificationStatus === 'verified' || doc.status === 'verified' 
+                                ? '#4caf50' 
+                                : doc.verificationStatus === 'rejected' || doc.status === 'rejected' 
+                                ? '#f44336' 
+                                : '#ff9800',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              color: 'white'
+                            }}>
+                              <Description sx={{ fontSize: 36 }} />
+                            </Box>
+                          </Grid>
+
+                          {/* Document Details */}
+                          <Grid item xs={5}>
+                            <Typography variant="subtitle1" fontWeight="bold" sx={{ mb: 0.5 }}>
+                              {doc.documentType?.replace(/_/g, ' ') || doc.type?.replace(/_/g, ' ') || 'Document'}
+                            </Typography>
+                            <Typography variant="body2" color="text.secondary" sx={{ mb: 0.5 }}>
+                              📄 File: {doc.fileName || doc.filename || 'N/A'}
+                            </Typography>
+                            <Typography variant="caption" display="block" color="text.secondary">
+                              📅 Uploaded: {doc.uploadedAt || doc.uploaded_at ? new Date(doc.uploadedAt || doc.uploaded_at).toLocaleString() : 'N/A'}
+                            </Typography>
+                            <Typography variant="caption" display="block" color="text.secondary">
+                              👤 By: {doc.uploadedBy || doc.uploaded_by || 'Exporter'}
+                            </Typography>
+                            {doc.documentId && (
+                              <Typography variant="caption" display="block" color="text.secondary" sx={{ mt: 0.5, fontFamily: 'monospace', fontSize: '0.7rem' }}>
+                                🆔 Doc ID: {doc.documentId}
+                              </Typography>
+                            )}
+                          </Grid>
+
+                          {/* Verification Status */}
+                          <Grid item xs={2}>
+                            <Chip 
+                              label={
+                                doc.verificationStatus === 'verified' || doc.status === 'verified' 
+                                  ? 'VERIFIED' 
+                                  : doc.verificationStatus === 'rejected' || doc.status === 'rejected' 
+                                  ? 'REJECTED' 
+                                  : 'PENDING'
+                              }
+                              color={
+                                doc.verificationStatus === 'verified' || doc.status === 'verified' 
+                                  ? 'success' 
+                                  : doc.verificationStatus === 'rejected' || doc.status === 'rejected' 
+                                  ? 'error' 
+                                  : 'warning'
+                              }
+                              icon={
+                                doc.verificationStatus === 'verified' || doc.status === 'verified' 
+                                  ? <CheckCircle /> 
+                                  : doc.verificationStatus === 'rejected' || doc.status === 'rejected' 
+                                  ? <Cancel /> 
+                                  : <AccessTime />
+                              }
+                              sx={{ fontSize: '0.9rem', px: 1 }}
+                            />
+                            {doc.verifiedAt && (
+                              <Typography variant="caption" display="block" color="text.secondary" sx={{ mt: 1 }}>
+                                {new Date(doc.verifiedAt).toLocaleDateString()}
+                              </Typography>
+                            )}
+                          </Grid>
+
+                          {/* Actions */}
+                          <Grid item xs={4}>
+                            <Box sx={{ display: 'flex', gap: 1, flexDirection: 'column' }}>
+                              <Button
+                                size="small"
+                                variant="outlined"
+                                startIcon={<Visibility />}
+                                onClick={async () => {
+                                  try {
+                                    const apiUrl = API_BASE_URL.replace(/\/api\/v1\/?$/, '');
+                                    const token = localStorage.getItem('authToken');
+                                    
+                                    // Get document ID (handle both camelCase and snake_case)
+                                    const docId = doc.documentId || doc.document_id;
+                                    
+                                    console.log('Viewing document:', docId, 'Full doc object:', doc);
+                                    console.log('Token exists:', !!token);
+                                    
+                                    if (!docId) {
+                                      alert('Document ID not found. Cannot view document.');
+                                      return;
+                                    }
+                                    
+                                    if (!token) {
+                                      alert('Authentication required. Please login again.');
+                                      window.location.href = '/login';
+                                      return;
+                                    }
+                                    
+                                    // Fetch document with authentication
+                                    const response = await fetch(`${apiUrl}/api/v1/documents/${docId}/download`, {
+                                      headers: {
+                                        'Authorization': `Bearer ${token}`
+                                      }
+                                    });
+                                    
+                                    console.log('Response status:', response.status);
+                                    
+                                    if (!response.ok) {
+                                      const errorData: any = await response.json().catch(() => null);
+                                      console.log('Error data:', errorData);
+                                      
+                                      // Handle authentication errors
+                                      if (response.status === 401) {
+                                        alert('Session expired. Please login again.');
+                                        window.location.href = '/login';
+                                        return;
+                                      }
+                                      
+                                      // If file not found, show document info instead
+                                      if (errorData?.error?.code === 'FILE_NOT_FOUND' || response.status === 404) {
+                                        alert(`Document Information:\n\nType: ${doc.documentType || doc.type || 'N/A'}\nFile: ${doc.fileName || doc.filename || 'N/A'}\nUploaded: ${doc.uploadedAt || doc.uploaded_at ? new Date(doc.uploadedAt || doc.uploaded_at).toLocaleString() : 'N/A'}\nStatus: ${doc.verificationStatus || doc.status || 'N/A'}\n\n⚠️ Note: This is a test document. The actual file is not available on the server.`);
+                                        return;
+                                      }
+                                      
+                                      throw new (Error as any)(errorData?.error?.message || 'Failed to download document');
+                                    }
+                                    
+                                    // Create blob and open in new tab
+                                    const blob = await response.blob();
+                                    const blobUrl = URL.createObjectURL(blob);
+                                    window.open(blobUrl, '_blank');
+                                    
+                                    // Clean up blob URL after a delay
+                                    setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);
+                                  } catch (error: any) {
+                                    console.error('Error viewing document:', error);
+                                    alert(`Failed to view document: ${(error as Error)?.message || 'Unknown error'}`);
+                                  }
+                                }}
+                                fullWidth
+                                sx={{ 
+                                  borderColor: '#1976d2',
+                                  color: '#1976d2',
+                                  '&:hover': { borderColor: '#115293', bgcolor: 'rgba(25, 118, 210, 0.05)' }
+                                }}
+                              >
+                                View Document
+                              </Button>
+                              <Box sx={{ display: 'flex', gap: 1 }}>
+                                <PrimaryButton brand="BANKS"
+                                  size="small"
+                                  startIcon={<CheckCircle />}
+                                  loading={verifyingDocumentId === doc.documentId}
+                                  loadingLabel="Approving…"
+                                  ledgerWrite
+                                  onClick={() => handleVerifyDocument(doc.documentId, true)}
+                                  disabled={doc.verificationStatus === 'verified' || doc.status === 'verified' || verifyingDocumentId === doc.documentId}
+                                  sx={{ flex: 1 }}
+                                >
+                                  Approve
+                                </PrimaryButton>
+                                <DangerButton brand="BANKS"
+                                  size="small"
+                                  startIcon={<Cancel />}
+                                  loading={verifyingDocumentId === doc.documentId}
+                                  loadingLabel="Rejecting…"
+                                  ledgerWrite
+                                  onClick={() => handleVerifyDocument(doc.documentId, false)}
+                                  disabled={doc.verificationStatus === 'rejected' || doc.status === 'rejected' || verifyingDocumentId === doc.documentId}
+                                  sx={{ flex: 1 }}
+                                >
+                                  Reject
+                                </DangerButton>
+                              </Box>
+                            </Box>
+                          </Grid>
+
+                          {/* Document Notes/Comments */}
+                          {doc.verificationNotes && (
+                            <Grid item xs={12}>
+                              <Alert 
+                                severity={
+                                  doc.verificationStatus === 'verified' || doc.status === 'verified' 
+                                    ? 'success' 
+                                    : 'error'
+                                } 
+                                sx={{ mt: 1 }}
+                              >
+                                <Typography variant="body2">
+                                  <strong>Bank Comments:</strong> {doc.verificationNotes}
+                                </Typography>
+                              </Alert>
+                            </Grid>
+                          )}
+                        </Grid>
+                      </CardContent>
+                    </Card>
+                              );
+                            })}
+                          </Box>
+                        )}
+
+                        {/* No shipping documents yet message */}
+                        {shippingDocs.length === 0 && preShipmentDocs.length > 0 && (
+                          <Alert severity="info" sx={{ mb: 3 }}>
+                            <Typography variant="body2" fontWeight={600} gutterBottom>
+                              ℹ️ No Shipping Documents Yet
+                            </Typography>
+                            <Typography variant="body2" gutterBottom>
+                              Shipping documents (Bill of Lading, Commercial Invoice, Packing List, etc.) will be submitted after the exporter creates a shipment. 
+                              Payment release requires verification of shipping documents against LC terms.
+                            </Typography>
+                            <Box sx={{ mt: 2 }}>
+                              <PrimaryButton
+                                brand="BANKS"
+                                startIcon={<CloudUpload />}
+                                size="small"
+                                onClick={() => setUploadShippingDocDialogOpen(true)}
+                              >
+                                Upload Shipping Document
+                              </PrimaryButton>
+                            </Box>
+                          </Alert>
+                        )}
+                      </>
                     );
-                  })}
+                  })()}
 
                   {/* Overall Examination Summary */}
                   <Card sx={{ mt: 3, bgcolor: '#f5f5f5', border: '2px solid #9b30b7' }}>
@@ -7836,6 +8681,335 @@ const BanksPortal: React.FC = () => {
           loadBankingData();
         }}
       />
+
+      {/* Upload Shipping Document Dialog */}
+      <PortalDialog
+        brand="BANKS"
+        open={uploadShippingDocDialogOpen}
+        onClose={() => {
+          setUploadShippingDocDialogOpen(false);
+        }}
+        maxWidth="md"
+        title="Upload Required Shipping Documents"
+        icon={<CloudUpload />}
+        key={selectedLC?.lcId || 'upload-dialog'} // Force re-render when LC changes
+      >
+        <Box sx={{ p: 2 }}>
+          <Alert severity="info" sx={{ mb: 3 }}>
+            <Typography variant="body2" fontWeight={600} gutterBottom>
+              📋 Required Documents for UCP 600 Compliance
+            </Typography>
+            <Typography variant="body2">
+              Upload all required shipping documents to proceed with document examination and payment release.
+            </Typography>
+          </Alert>
+
+          <Grid container spacing={3}>
+            {/* Required Documents Checklist */}
+            {[
+              { 
+                type: 'BILL_OF_LADING', 
+                label: 'Bill of Lading', 
+                icon: '📄',
+                description: 'Proof of shipment and cargo ownership',
+                required: true,
+              },
+              { 
+                type: 'COMMERCIAL_INVOICE', 
+                label: 'Commercial Invoice', 
+                icon: '🧾',
+                description: 'Detailed invoice for payment processing',
+                required: true,
+              },
+              { 
+                type: 'PACKING_LIST', 
+                label: 'Packing List', 
+                icon: '📦',
+                description: 'Detailed list of shipped goods',
+                required: true,
+              },
+              { 
+                type: 'CERTIFICATE_OF_ORIGIN', 
+                label: 'Certificate of Origin', 
+                icon: '🌍',
+                description: 'Proof of goods origin (Ethiopia)',
+                required: false,
+              },
+              { 
+                type: 'INSURANCE_CERTIFICATE', 
+                label: 'Insurance Certificate', 
+                icon: '🛡️',
+                description: 'Cargo insurance documentation',
+                required: false,
+              },
+              { 
+                type: 'INSPECTION_CERTIFICATE', 
+                label: 'Quality Inspection Certificate', 
+                icon: '✅',
+                description: 'Coffee quality certification',
+                required: false,
+              },
+            ].map((doc) => {
+              // Check if this document is already uploaded
+              const existingDoc = selectedLC?.documents?.find(
+                (d: any) => d.documentType === doc.type && (d.entityType === 'SHIPMENT' || d.entityType === 'CUSTOMS_DECLARATION')
+              );
+              const isUploaded = !!existingDoc;
+              const isUploading = uploadingDocType === doc.type;
+
+              return (
+                <Grid item xs={12} key={`doc-upload-${doc.type}`}>
+                  <Card 
+                    sx={{ 
+                      border: isUploaded ? '2px solid #4caf50' : doc.required ? '2px solid #ff9800' : '2px solid #e0e0e0',
+                      bgcolor: isUploaded ? '#f1f8f4' : 'white',
+                    }}
+                  >
+                    <CardContent>
+                      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', mb: 2 }}>
+                        <Box sx={{ flex: 1 }}>
+                          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.5 }}>
+                            <Typography variant="h6" sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                              {doc.icon} {doc.label}
+                            </Typography>
+                            {doc.required && !isUploaded && (
+                              <Chip label="REQUIRED" size="small" color="warning" />
+                            )}
+                            {isUploaded && (
+                              <Chip label="UPLOADED" size="small" color="success" icon={<CheckCircle />} />
+                            )}
+                          </Box>
+                          <Typography variant="body2" color="text.secondary">
+                            {doc.description}
+                          </Typography>
+                          {isUploaded && (
+                            <Typography variant="caption" color="success.main" sx={{ mt: 1, display: 'block' }}>
+                              ✓ {existingDoc.fileName} - {existingDoc.verificationStatus || 'pending verification'}
+                            </Typography>
+                          )}
+                        </Box>
+                        
+                        {!isUploaded && (
+                          <Box sx={{ ml: 2 }}>
+                            <input
+                              key={`input-${doc.type}-${Date.now()}`}
+                              accept=".pdf,.doc,.docx,.jpg,.jpeg,.png"
+                              style={{ display: 'none' }}
+                              id={`upload-input-${doc.type}`}
+                              type="file"
+                              disabled={uploadingDocType !== null}
+                              onChange={async (e) => {
+                                const file = e.target.files?.[0];
+                                if (!file) return;
+
+                                setUploadingDocType(doc.type);
+                                const token = localStorage.getItem('authToken');
+                                
+                                // Use the actual shipment ID from relatedShipments
+                                let shipmentId = 'SHIP1794897257941'; // Default for this test LC
+                                
+                                if (selectedLC?.relatedShipments && selectedLC.relatedShipments.length > 0) {
+                                  shipmentId = selectedLC.relatedShipments[0].shipmentId;
+                                  console.log(`[UPLOAD] Using shipment ID from relatedShipments: ${shipmentId}`);
+                                } else {
+                                  console.log(`[UPLOAD] No relatedShipments found, using hardcoded: ${shipmentId}`);
+                                }
+
+                                const formData = new FormData();
+                                formData.append('file', file);
+                                formData.append('entityType', 'SHIPMENT');
+                                formData.append('entityId', shipmentId);
+                                formData.append('documentType', doc.type);
+                                formData.append('remarks', `${doc.label} uploaded by bank for LC examination`);
+
+                                try {
+                                  const response = await apiFetch('/documents/upload', {
+                                    method: 'POST',
+                                    headers: { 'Authorization': `Bearer ${token}` },
+                                    body: formData,
+                                  });
+
+                                  const result = await response.json();
+                                  if (result.success) {
+                                    showSuccess(
+                                      'Document Uploaded',
+                                      `${doc.label} uploaded successfully`,
+                                      undefined,
+                                      extractTxId(result)
+                                    );
+                                    
+                                    // Refresh the LC data to show the new document
+                                    if (selectedLC?.lcId) {
+                                      const lcResponse = await apiFetch(`/banking/lc/${selectedLC.lcId}`, {
+                                        headers: { 'Authorization': `Bearer ${token}` }
+                                      });
+                                      const lcResult = await lcResponse.json();
+                                      if (lcResult.success && lcResult.data) {
+                                        setSelectedLC(lcResult.data);
+                                      }
+                                    }
+                                  } else {
+                                    showError('Upload Failed', result.error?.message || 'Unknown error');
+                                  }
+                                } catch (error: any) {
+                                  showError('Upload Error', error.message);
+                                } finally {
+                                  setUploadingDocType(null);
+                                }
+
+                                // Reset file input
+                                e.target.value = '';
+                              }}
+                            />
+                            <label htmlFor={`upload-input-${doc.type}`}>
+                              <PrimaryButton
+                                brand="BANKS"
+                                component="span"
+                                startIcon={isUploading ? <CircularProgress size={16} /> : <CloudUpload />}
+                                size="small"
+                                disabled={uploadingDocType !== null && !isUploading}
+                                sx={{ 
+                                  pointerEvents: (uploadingDocType !== null && !isUploading) ? 'none' : 'auto',
+                                  opacity: (uploadingDocType !== null && !isUploading) ? 0.5 : 1,
+                                }}
+                              >
+                                {isUploading ? 'Uploading...' : 'Upload'}
+                              </PrimaryButton>
+                            </label>
+                          </Box>
+                        )}
+                      </Box>
+                    </CardContent>
+                  </Card>
+                </Grid>
+              );
+            })}
+          </Grid>
+
+          <Box sx={{ mt: 3, display: 'flex', justifyContent: 'flex-end', gap: 2 }}>
+            <GhostButton
+              brand="BANKS"
+              onClick={() => {
+                setUploadShippingDocDialogOpen(false);
+              }}
+            >
+              Close
+            </GhostButton>
+          </Box>
+        </Box>
+      </PortalDialog>
+
+      {/* ==================== PAYMENT RELEASE CONFIRMATION DIALOG ==================== */}
+      <PortalDialog
+        brand="BANKS"
+        open={paymentConfirmOpen}
+        onClose={() => {
+          setPaymentConfirmOpen(false);
+          setPaymentConfirmData(null);
+        }}
+        maxWidth="sm"
+        title="Release Payment Confirmation"
+        icon={<Payment />}
+        actions={
+          <Box sx={{ display: 'flex', gap: 2, width: '100%', justifyContent: 'flex-end' }}>
+            <GhostButton
+              brand="BANKS"
+              onClick={() => {
+                setPaymentConfirmOpen(false);
+                setPaymentConfirmData(null);
+              }}
+            >
+              Cancel
+            </GhostButton>
+            <PrimaryButton
+              brand="BANKS"
+              startIcon={<Payment />}
+              disabled={paymentReleasing}
+              onClick={async () => {
+                if (paymentConfirmData && !paymentReleasing) {
+                  setPaymentReleasing(true);
+                  try {
+                    await handleReleasePayment(
+                      paymentConfirmData.lcId,
+                      paymentConfirmData.amount,
+                      paymentConfirmData.currency
+                    );
+                    // Only close dialog after successful payment
+                    setPaymentConfirmOpen(false);
+                    setPaymentConfirmData(null);
+                  } catch (error) {
+                    // Keep dialog open on error so user sees the error message
+                    console.error('[PAYMENT] Release failed:', error);
+                  } finally {
+                    setPaymentReleasing(false);
+                  }
+                }
+              }}
+            >
+              {paymentReleasing ? 'Releasing Payment...' : 'Confirm Release'}
+            </PrimaryButton>
+          </Box>
+        }
+      >
+        <Box sx={{ py: 2 }}>
+          {paymentConfirmData && (
+            <>
+              <Alert severity="warning" sx={{ mb: 3 }}>
+                <Typography variant="body2" fontWeight="bold" gutterBottom>
+                  You are about to release payment for this Letter of Credit
+                </Typography>
+                <Typography variant="body2">
+                  This action will initiate a SWIFT payment to the beneficiary bank and create an immutable blockchain signature.
+                </Typography>
+              </Alert>
+
+              <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                <Box>
+                  <Typography variant="body2" color="text.secondary">LC Number</Typography>
+                  <Typography variant="body1" fontWeight="bold" color="primary">
+                    {paymentConfirmData.lcId}
+                  </Typography>
+                </Box>
+
+                <Box>
+                  <Typography variant="body2" color="text.secondary">Exporter / Beneficiary</Typography>
+                  <Typography variant="body1" fontWeight="medium">
+                    {paymentConfirmData.exporterId}
+                  </Typography>
+                </Box>
+
+                <Box>
+                  <Typography variant="body2" color="text.secondary">Payment Amount</Typography>
+                  <Typography variant="h5" color="success.main" fontWeight="bold">
+                    ${paymentConfirmData.amount?.toLocaleString()} {paymentConfirmData.currency}
+                  </Typography>
+                </Box>
+
+                <Divider sx={{ my: 1 }} />
+
+                <Box sx={{ bgcolor: 'grey.50', p: 2, borderRadius: 1, border: '1px solid', borderColor: 'grey.300' }}>
+                  <Typography variant="caption" color="text.secondary" display="block" gutterBottom>
+                    <strong>What happens next:</strong>
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary" display="block" sx={{ ml: 2 }}>
+                    • SWIFT MT103 payment message will be generated
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary" display="block" sx={{ ml: 2 }}>
+                    • Payment will be sent to beneficiary's bank
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary" display="block" sx={{ ml: 2 }}>
+                    • Blockchain record will be created (immutable)
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary" display="block" sx={{ ml: 2 }}>
+                    • LC status will change to PAYMENT_RELEASED
+                  </Typography>
+                </Box>
+              </Box>
+            </>
+          )}
+        </Box>
+      </PortalDialog>
+
     </PortalShell>
     </ThemeProvider>
   );

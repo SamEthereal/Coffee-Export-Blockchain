@@ -1597,10 +1597,11 @@ func (c *CoffeeContract) ExamineLCDocuments(ctx contractapi.TransactionContextIn
 		return fmt.Errorf("failed to unmarshal LC: %w", err)
 	}
 
-	// Only ISSUED or FOREX_ALLOCATED LCs can have documents examined
-	// (FOREX_ALLOCATED is set after forex allocation; LC is still eligible for examination)
-	if lc.Status != "ISSUED" && lc.Status != "FOREX_ALLOCATED" {
-		return fmt.Errorf("LC must be in ISSUED or FOREX_ALLOCATED status for document examination (current: %s)", lc.Status)
+	// ✅ FOREX_ALLOCATED is REQUIRED for document examination
+	// This ensures forex is allocated before documents can be examined
+	// Enforces linear workflow: ISSUED → Allocate Forex → FOREX_ALLOCATED → Examine Docs
+	if lc.Status != "FOREX_ALLOCATED" {
+		return fmt.Errorf("LC must be FOREX_ALLOCATED before document examination (current: %s). Please allocate forex first in Forex Allocations tab.", lc.Status)
 	}
 
 	// Update LC with examination results - move to UTILIZED if compliant
@@ -1608,7 +1609,7 @@ func (c *CoffeeContract) ExamineLCDocuments(ctx contractapi.TransactionContextIn
 		lc.Status = "UTILIZED" // Documents verified, ready for payment
 		fmt.Printf("ExamineLCDocuments: Documents COMPLIANT for LC %s, status set to UTILIZED\n", lcID)
 	} else {
-		// Keep current status (ISSUED or FOREX_ALLOCATED) if discrepant, exporter must resubmit
+		// Keep current status (FOREX_ALLOCATED) if discrepant, exporter must resubmit
 		fmt.Printf("ExamineLCDocuments: Documents DISCREPANT for LC %s: %s (status remains %s)\n", lcID, discrepancies, lc.Status)
 	}
 
@@ -1784,6 +1785,87 @@ func (c *CoffeeContract) ReleaseLCPayment(ctx contractapi.TransactionContextInte
 	ctx.GetStub().SetEvent("LCPaymentReleased", eventJSON)
 
 	fmt.Printf("ReleaseLCPayment: Payment released for LC %s: %s %.2f\n", lcID, currency, paymentAmount)
+	return nil
+}
+
+// ResetLCStatusForTesting - DEVELOPMENT ONLY: Reset LC status for testing purposes
+// This function allows resetting an LC back to a previous status to test workflows
+// WARNING: This bypasses normal workflow validation and should ONLY be used in development/testing
+func (c *CoffeeContract) ResetLCStatusForTesting(ctx contractapi.TransactionContextInterface,
+	lcID string, targetStatus string) error {
+	
+	fmt.Printf("=== ResetLCStatusForTesting called: lcID=%s, targetStatus=%s ===\n", lcID, targetStatus)
+	
+	// Validate inputs
+	if err := ValidateID(lcID, "lcID"); err != nil {
+		return fmt.Errorf("ResetLCStatusForTesting: %w", err)
+	}
+	
+	// Validate target status is one of the allowed values
+	validStatuses := map[string]bool{
+		"REQUESTED":        true,
+		"APPROVED":         true,
+		"ISSUED":           true,
+		"FOREX_ALLOCATED":  true,
+		"SHIPPED":          true,
+		"UTILIZED":         true,
+		"PAYMENT_RELEASED": true,
+		"SETTLED":          true,
+		"COMPLETED":        true,
+		"REJECTED":         true,
+		"CANCELLED":        true,
+	}
+	
+	if !validStatuses[targetStatus] {
+		return fmt.Errorf("invalid target status: %s", targetStatus)
+	}
+	
+	// Fetch LC
+	lcJSON, err := ctx.GetStub().GetState("LC_" + lcID)
+	if err != nil {
+		return fmt.Errorf("failed to read LC %s: %w", lcID, err)
+	}
+	if lcJSON == nil {
+		return fmt.Errorf("LC %s does not exist", lcID)
+	}
+	
+	var lc LetterOfCredit
+	if err := json.Unmarshal(lcJSON, &lc); err != nil {
+		return fmt.Errorf("failed to unmarshal LC: %w", err)
+	}
+	
+	oldStatus := lc.Status
+	lc.Status = targetStatus
+	
+	// Update timestamp
+	ledgerNow, err := ledgerTransactionTime(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get ledger time: %w", err)
+	}
+	lc.UpdatedAt = ledgerNow
+	
+	// Save updated LC
+	lcJSON, err = json.Marshal(lc)
+	if err != nil {
+		return fmt.Errorf("failed to marshal LC: %w", err)
+	}
+	
+	if err := ctx.GetStub().PutState("LC_"+lcID, lcJSON); err != nil {
+		return fmt.Errorf("failed to update LC: %w", err)
+	}
+	
+	// Emit event
+	eventPayload := map[string]interface{}{
+		"lcID":        lcID,
+		"oldStatus":   oldStatus,
+		"newStatus":   targetStatus,
+		"resetReason": "TESTING",
+		"timestamp":   ledgerNow,
+	}
+	eventJSON, _ := json.Marshal(eventPayload)
+	ctx.GetStub().SetEvent("LCStatusResetForTesting", eventJSON)
+	
+	fmt.Printf("ResetLCStatusForTesting: LC %s status changed from %s to %s\n", lcID, oldStatus, targetStatus)
 	return nil
 }
 

@@ -760,11 +760,12 @@ router.post('/request', authMiddleware, requireRole(['BANKS', 'BANK_ADMIN', 'BAN
           // ✅ STORE BLOCKCHAIN METADATA in PostgreSQL
           try {
             const db = DatabaseService.getInstance();
+            const forexExpiryDate = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
             await db.run(
               `INSERT INTO forex_allocations (
                 allocation_id, forex_id, contract_id, lc_id, exporter_id, requested_amount, currency, status,
-                blockchain_tx_id, blockchain_timestamp, last_blockchain_sync, request_date, updated_at
-              ) VALUES ($1, $1, $2, $3, $4, $5, $6, $7, $8, NOW(), NOW(), NOW(), NOW())
+                expiry_date, blockchain_tx_id, blockchain_timestamp, last_blockchain_sync, request_date, updated_at
+              ) VALUES ($1, $1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), NOW(), NOW(), NOW())
               ON CONFLICT (forex_id) DO UPDATE SET
                 allocation_id = EXCLUDED.allocation_id,
                 contract_id = EXCLUDED.contract_id,
@@ -773,11 +774,12 @@ router.post('/request', authMiddleware, requireRole(['BANKS', 'BANK_ADMIN', 'BAN
                 requested_amount = EXCLUDED.requested_amount,
                 currency = EXCLUDED.currency,
                 status = EXCLUDED.status,
+                expiry_date = EXCLUDED.expiry_date,
                 blockchain_tx_id = EXCLUDED.blockchain_tx_id,
                 blockchain_timestamp = NOW(),
                 last_blockchain_sync = NOW(),
                 updated_at = NOW()`,
-              [forexId, contractId, requestLcId || null, finalExporterId, finalAmount, finalCurrency, 'REQUESTED', result.txId]
+              [forexId, contractId, requestLcId || null, finalExporterId, finalAmount, finalCurrency, 'REQUESTED', forexExpiryDate, result.txId]
             );
             logger.info(`✅ Stored blockchain metadata for forex ${forexId}: txId=${result.txId}`);
             // Audit: this inline chain move never called the audited
@@ -1289,9 +1291,62 @@ router.post('/utilize', authMiddleware, requireRole(['BANKS', 'BANK_ADMIN', 'BAN
     const { forexId, utilizedAmount } = req.body;
     const user = (req as any).user;
     const role = String(user?.role || '').toUpperCase();
+    
+    // ✅ WORKFLOW ENFORCEMENT: Check if shipment exists before utilization
+    // UCP 600 requires: LC → Forex Allocated → Shipment Created → Document Examination → Forex Utilized
+    try {
+      // Get the LC associated with this forex allocation
+      const forexQuery = await postgresDb.query(
+        'SELECT lc_id, contract_id FROM forex_allocations WHERE forex_id = $1',
+        [forexId]
+      );
+      
+      if (forexQuery.rows.length > 0) {
+        const { lc_id, contract_id } = forexQuery.rows[0];
+        
+        // Check if a shipment exists for this contract/LC
+        const shipmentQuery = await postgresDb.query(
+          'SELECT shipment_id FROM shipments WHERE contract_id = $1 OR lc_id = $2 LIMIT 1',
+          [contract_id, lc_id]
+        );
+        
+        if (shipmentQuery.rows.length === 0) {
+          logger.warn(`Forex utilization blocked: No shipment exists for forex ${forexId}, LC ${lc_id}, contract ${contract_id}`);
+          return res.status(400).json({ 
+            success: false, 
+            error: { 
+              code: 'SHIPMENT_REQUIRED', 
+              message: 'Forex cannot be utilized before shipment creation. Please create a shipment first to comply with UCP 600 workflow requirements.' 
+            }, 
+            timestamp: new Date().toISOString() 
+          });
+        }
+        
+        logger.info(`Forex utilization validation passed: Shipment exists for forex ${forexId}`);
+      }
+    } catch (validationError) {
+      logger.error('Shipment validation error (continuing with utilization):', validationError);
+      // Continue if validation check fails - don't block legitimate operations
+    }
+    
     await fabricService.connectAsOrg(role.startsWith('NBE') ? 'NBEMSP' : 'BanksMSP');
     const result = await fabricService.invokeChaincode('UtilizeForex', [forexId, utilizedAmount.toString()]);
     if (result.success) {
+      // ✅ UPDATE DATABASE with utilization
+      try {
+        await postgresDb.query(
+          `UPDATE forex_allocations 
+           SET status = $1, 
+               utilization_date = $2,
+               updated_at = $2
+           WHERE forex_id = $3`,
+          ['UTILIZED', new Date(), forexId]
+        );
+      } catch (dbError) {
+        logger.error('Failed to update forex in database:', dbError);
+        // Continue even if DB update fails - blockchain is source of truth
+      }
+      
       // ✅ Record blockchain signature for utilization
       try {
         const user = (req as any).user;

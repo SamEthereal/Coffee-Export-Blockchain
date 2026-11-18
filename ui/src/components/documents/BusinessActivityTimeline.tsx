@@ -92,7 +92,11 @@ const BusinessActivityTimeline: React.FC<Props> = ({ entityType, entityId }) => 
 
   const fetchActivitiesInternal = async () => {
     try {
-      console.log(`[Timeline] 🔗 Fetching ${entityType} ${entityId} from BLOCKCHAIN...`);
+      // Display entity properly (avoid duplicate prefix like "LC LC-...")
+      const displayEntity = entityId.startsWith(entityType + '-') || entityId.startsWith(entityType + '_') 
+        ? entityId 
+        : `${entityType} ${entityId}`;
+      console.log(`[Timeline] 🔗 Fetching ${displayEntity} from BLOCKCHAIN...`);
       const reconstructedActivities: BusinessActivity[] = [];
 
       if (entityType === 'LC') {
@@ -453,13 +457,18 @@ const BusinessActivityTimeline: React.FC<Props> = ({ entityType, entityId }) => 
   }
 
   if (activities.length === 0) {
+    // Display entity properly (avoid duplicate prefix like "LC LC-...")
+    const displayEntity = entityId.startsWith(entityType + '-') || entityId.startsWith(entityType + '_') 
+      ? entityId 
+      : `${entityType} ${entityId}`;
+    
     return (
       <Alert severity="info" sx={{ mt: 2 }}>
         <Typography variant="body2" sx={{ fontWeight: 600, mb: 0.5 }}>
           No timeline data available
         </Typography>
         <Typography variant="caption">
-          {entityType} {entityId} does not have recorded activity dates.
+          {displayEntity} does not have recorded activity dates.
         </Typography>
       </Alert>
     );
