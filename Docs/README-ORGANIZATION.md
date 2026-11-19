@@ -30,10 +30,11 @@ scripts/
 
 ## Quick Access from Root
 
-Convenience symlinks in the project root:
 - `./start-all.sh` (repo root — the live startup script)
-- `./stop.sh` → `scripts/operations/stop-api.sh`
-- `./status.sh` → `scripts/monitoring/status.sh`
+- `./stop-all.sh` (repo root — stops API, UI and the blockchain containers)
+- `./scripts/monitoring/status.sh` (system status check)
+
+Note: there are no `./stop.sh` or `./status.sh` symlinks in the repo root — use the paths above. `scripts/operations/stop-api.sh` stops the API only, not the whole system.
 
 ## Common Operations
 
@@ -46,14 +47,14 @@ Convenience symlinks in the project root:
 
 ### Stop Services
 ```bash
-./stop.sh                               # Stop all
+./stop-all.sh                           # Stop all
 ./scripts/operations/stop-api.sh        # Stop API only
 ./scripts/operations/stop-ui.sh         # Stop UI only
 ```
 
 ### Monitor System
 ```bash
-./status.sh                             # Check status
+./scripts/monitoring/status.sh          # Check status
 ./scripts/monitoring/system-health.sh   # Full health check
 ```
 

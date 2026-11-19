@@ -999,13 +999,18 @@ start_blockchain_network() {
     BLOCKCHAIN_STARTED=true
     write_success "Blockchain network is operational"
     
-    # Verify external builders are accessible inside containers
+    # Verify external builders are accessible inside containers.
+    # Fatal, like the restart branch above: a chaincode deploy later
+    # in this run cannot succeed without the builders mounted, so
+    # continuing here used to end in "✅ Blockchain network is
+    # operational" followed by a deploy failure.
     write_step "Verifying external builders in peer containers..."
     if docker exec peer0.ecta.cecbs.et test -x /builders/ccaas/bin/detect 2>/dev/null; then
         write_success "External builders are accessible in peer containers"
     else
-        write_warning "External builders may not be mounted correctly"
+        write_error "External builders not accessible in peer containers!"
         write_info "Check: docker exec peer0.ecta.cecbs.et ls -la /builders/ccaas/bin/"
+        return 1
     fi
 }
 
