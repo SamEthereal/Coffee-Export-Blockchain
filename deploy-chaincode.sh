@@ -455,7 +455,7 @@ SERVER_PROBE_OK=1
 # so the smoke test must verify that address, or a stale address would
 # pass this gate and only die later at the warm-up query.
 for i in $(seq 1 30); do
-    docker exec peer0.ecta.cecbs.et sh -c "echo > /dev/tcp/${PKG_CONN_HOST}/${PKG_CONN_PORT}" 2>/dev/null
+    docker exec peer0.ecta.cecbs.et bash -c "echo > /dev/tcp/${PKG_CONN_HOST}/${PKG_CONN_PORT}" 2>/dev/null
     PROBE_RC=$?
     if [ $PROBE_RC -eq 0 ]; then
         SERVER_READY=1
