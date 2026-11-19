@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"strconv"
 	"strings"
@@ -3362,6 +3363,15 @@ func main() {
 			tlsStatus = "enabled"
 		}
 		log.Printf("Chaincode configuration: CCID=%s, Address=%s, TLS=%s", ccid, address, tlsStatus)
+
+		// Create a listener first to verify the port is available
+		log.Printf("Pre-flight check: Testing if port %s is available...", address)
+		testListener, err := net.Listen("tcp", address)
+		if err != nil {
+			log.Panicf("FATAL: Cannot bind to %s: %v", address, err)
+		}
+		testListener.Close()
+		log.Printf("✓ Port %s is available", address)
 
 		server := &shim.ChaincodeServer{
 			CCID:     ccid,

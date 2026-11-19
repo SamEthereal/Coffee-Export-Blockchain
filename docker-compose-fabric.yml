@@ -449,17 +449,17 @@ services:
     build:
       context: ./chaincodes/coffee
       dockerfile: Dockerfile
-    image: coffee-chaincode:2.13
+    image: coffee-chaincode:2.18
     environment:
       - CHAINCODE_SERVER_ADDRESS=0.0.0.0:9999
-      - CORE_CHAINCODE_ID_NAME=coffee_2.13:1df95a1495eb6bfdf56d2945056a2783f54238348b695545b06b467df9110b42
+      - CORE_CHAINCODE_ID_NAME=coffee_2.18:5bd39d77946e51963d7713779614f8f337395b793a2a86ee1492bfcc74c0ff00
       - CHAINCODE_TLS_DISABLED=true
       - CORE_CHAINCODE_LOGGING_LEVEL=DEBUG
       - CORE_PEER_LOCALMSPID=ECTAMSP
       - GRPC_GO_LOG_VERBOSITY_LEVEL=99
       - GRPC_GO_LOG_SEVERITY_LEVEL=info
-    expose:
-      - "9999"
+    ports:
+      - "9999:9999"
     networks:
       - cecbs
     restart: unless-stopped
