@@ -187,7 +187,12 @@ if [ "$SSL_TYPE" == "selfsigned" ]; then
     
     chmod 600 /etc/nginx/ssl/cecbs.key
     chmod 644 /etc/nginx/ssl/cecbs.crt
-    
+
+    # Point the deployed config at the self-signed cert (it defaults to the
+    # Let's Encrypt paths, which do not exist for a self-signed setup)
+    sed -i "s|^[[:space:]]*ssl_certificate .*|    ssl_certificate /etc/nginx/ssl/cecbs.crt;|" "$CONFIG_FILE"
+    sed -i "s|^[[:space:]]*ssl_certificate_key .*|    ssl_certificate_key /etc/nginx/ssl/cecbs.key;|" "$CONFIG_FILE"
+
     echo -e "${GREEN}✓ Self-signed certificate created${NC}"
     echo -e "${YELLOW}Note: Browsers will show security warnings for self-signed certificates${NC}"
     
@@ -209,8 +214,14 @@ elif [ "$SSL_TYPE" == "letsencrypt" ]; then
     mkdir -p /var/www/certbot
     
     echo "Obtaining Let's Encrypt certificate..."
-    certbot --nginx -d "$DOMAIN" --non-interactive --agree-tos --email admin@$DOMAIN
-    
+    # Standalone mode: nginx is not running yet at this step, so port 80 is
+    # free. The config already contains the full 443 server block pointing
+    # at the Let's Encrypt paths below, so certbot must NOT rewrite it
+    # (certbot --nginx would). Stop nginx first on a re-run.
+    systemctl stop nginx 2>/dev/null || true
+    mkdir -p /var/www/certbot
+    certbot certonly --standalone -d "$DOMAIN" --non-interactive --agree-tos --email admin@$DOMAIN
+
     echo -e "${GREEN}✓ Let's Encrypt certificate obtained${NC}"
     
 else
@@ -306,10 +317,11 @@ fi
 
 echo ""
 echo -e "${BLUE}Service URLs:${NC}"
-echo "  Frontend: http://$SERVER_NAME/"
-echo "  API: http://$SERVER_NAME/api/v1/"
-echo "  Health: http://$SERVER_NAME/health"
-echo "  IPFS Gateway: http://$SERVER_NAME/ipfs/<CID>"
+if [ "$SSL_TYPE" != "none" ]; then SCHEME="https"; else SCHEME="http"; fi
+echo "  Frontend: $SCHEME://$SERVER_NAME/"
+echo "  API: $SCHEME://$SERVER_NAME/api/v1/"
+echo "  Health: $SCHEME://$SERVER_NAME/health"
+echo "  IPFS Gateway: $SCHEME://$SERVER_NAME/ipfs/<CID>"
 
 echo ""
 echo -e "${BLUE}Next Steps:${NC}"
@@ -319,8 +331,8 @@ echo "     - API on port 3001"
 echo "     - IPFS on ports 5001 (API) and 8080 (Gateway)"
 echo ""
 echo "  2. Test the deployment:"
-echo "     curl http://$SERVER_NAME/health"
-echo "     curl http://$SERVER_NAME/api/v1/health"
+echo "     curl $SCHEME://$SERVER_NAME/health"
+echo "     curl $SCHEME://$SERVER_NAME/api/v1/health"
 echo ""
 echo "  3. Check Nginx logs:"
 echo "     tail -f /var/log/nginx/cecbs-access.log"
@@ -335,8 +347,8 @@ echo ""
 
 if [ "$SSL_TYPE" == "letsencrypt" ]; then
     echo -e "${YELLOW}SSL Certificate Auto-Renewal:${NC}"
-    echo "  Let's Encrypt certificates will auto-renew"
-    echo "  Test renewal: certbot renew --dry-run"
+    echo "  Certificates were issued in standalone mode, so renewal needs port 80 free:"
+    echo "  Test renewal: certbot renew --dry-run --pre-hook \"systemctl stop nginx\" --post-hook \"systemctl start nginx\""
     echo ""
 fi
 
