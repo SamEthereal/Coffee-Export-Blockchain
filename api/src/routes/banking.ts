@@ -2721,6 +2721,138 @@ router.get('/lc', async (req, res) => {
 });
 
 /**
+ * POST /banking/lc/resync (2a, 2026-11-19, open-items round 2)
+ *
+ * Backfill letters_of_credit rows that exist on the ledger but never
+ * reached PostgreSQL. The RequestLC mirror (above) is best-effort and
+ * non-fatal: if the API dies between the chain commit and the PG
+ * insert, the LC lives on the ledger only. Live case:
+ * LC-CONT-SEQ24-20261119-20261119072453 (RequestLC tx 2fd4162b…,
+ * block 14176) had no PG row, no audit_trail row and no
+ * blockchain_signatures row. The list (GET /banking/lc) is PG-only,
+ * global search is PG-driven, and the Banks KPIs read audit_trail, so
+ * the LC was invisible everywhere except the ledger-backed detail
+ * endpoint — while the ledger duplicate check (QueryAllLCs) still
+ * 409s any fresh request for its APPROVED contract, wedging the
+ * contract: its only LC could never be actioned through the UI.
+ * Examine/release on the orphan fail honestly (400), so the gap is
+ * visibility + the wedged contract, not a state-corruption risk.
+ *
+ * Safety: INSERT-only. Rows that already exist in PG are left
+ * untouched (no UPDATE, no DELETE, no status healing — that is D5's
+ * read-time reconciliation). Each insert is ON CONFLICT (lc_id)
+ * DO NOTHING, so a concurrent normal mirror can never duplicate a
+ * row and a repeat call is a no-op. Unknown ledger statuses are
+ * skipped, never inserted. Every backfilled row gets an audit_trail
+ * RESYNC row so the backfill itself is traceable. ADMIN-only.
+ */
+router.post('/lc/resync',
+  authMiddleware,
+  requireRole(['ADMIN']),
+  async (req: Request, res: Response) => {
+    try {
+      const result = await fabricService.queryAllLCs();
+      if (!result || !(result as any).success || !Array.isArray((result as any).data)) {
+        return res.status(502).json({
+          success: false,
+          error: { code: 'LEDGER_UNAVAILABLE', message: 'Could not read LCs from the ledger (QueryAllLCs failed)' },
+          timestamp: new Date().toISOString(),
+        });
+      }
+      const KNOWN_LC_STATUSES = new Set([
+        'REQUESTED', 'APPROVED', 'ISSUED', 'FOREX_ALLOCATED', 'UTILIZED',
+        'PAYMENT_RELEASED', 'SETTLED', 'REJECTED', 'EXPIRED', 'AMENDED',
+      ]);
+      const ledgerLCs = (result as any).data as any[];
+      const resynced: string[] = [];
+      const skippedUnknownStatus: string[] = [];
+      let skippedExisting = 0;
+      for (const lc of ledgerLCs) {
+        const lcId = String(lc?.lcId || lc?.LCID || lc?.LcId || lc?.id || '').trim();
+        if (!lcId) continue;
+        const status = String(lc?.status || lc?.Status || '').trim().toUpperCase();
+        if (!KNOWN_LC_STATUSES.has(status)) {
+          skippedUnknownStatus.push(`${lcId} (${status || 'no-status'})`);
+          continue;
+        }
+        const existing = await dbService.get(
+          `SELECT lc_id FROM letters_of_credit WHERE lc_id = $1`,
+          [lcId]
+        );
+        if (existing) { skippedExisting++; continue; }
+        const amount = lc?.amount ?? lc?.Amount ?? null;
+        const requestDate = lc?.requestDate || lc?.RequestDate || null;
+        const expiryDate = lc?.expiryDate || lc?.ExpiryDate || null;
+        const inserted = await dbService.run(
+          `INSERT INTO letters_of_credit (
+            lc_id, lc_number, contract_id, exporter_id, issuing_bank, advising_bank,
+            beneficiary, amount, currency, terms,
+            latest_shipment_date, port_of_loading, port_of_discharge, payment_terms,
+            partial_shipment, transhipment,
+            status, expiry_date, request_date, created_at, updated_at
+          ) VALUES ($1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, NOW(), NOW())
+          ON CONFLICT (lc_id) DO NOTHING
+          RETURNING lc_id`,
+          [
+            lcId,
+            lc?.contractId || lc?.ContractID || null,
+            lc?.exporterId || lc?.ExporterId || null,
+            lc?.issuingBank || lc?.IssuingBank || null,
+            lc?.advisingBank || lc?.AdvisingBank || null,
+            lc?.beneficiary || lc?.Beneficiary || null,
+            amount === '' ? null : amount,
+            lc?.currency || lc?.Currency || 'USD',
+            lc?.terms || lc?.Terms || null,
+            lc?.latestShipmentDate || lc?.LatestShipmentDate || null,
+            lc?.portOfLoading || lc?.PortOfLoading || null,
+            lc?.portOfDischarge || lc?.PortOfDischarge || null,
+            lc?.paymentTerms || lc?.PaymentTerms || null,
+            lc?.partialShipment === true || lc?.PartialShipment === true,
+            lc?.transhipment === true || lc?.Transhipment === true,
+            status,
+            expiryDate || null,
+            requestDate ? new Date(requestDate).toISOString() : new Date().toISOString(),
+          ]
+        );
+        if (inserted && (inserted as any).rowCount > 0) {
+          resynced.push(lcId);
+          logger.info(`[BANKING] 🔧 LC resync: backfilled missing PG row for ${lcId} (${status}) from ledger truth`);
+          await logAuditBestEffort(req, {
+            entityType: 'LC',
+            entityId: lcId,
+            action: 'RESYNC',
+            newValue: status,
+            reason: 'LC re-sync: backfilled missing PG row from ledger truth (no PG row existed)',
+            metadata: { contractId: lc?.contractId || lc?.ContractID || null, resynced: true, source: 'ledger' },
+          }, `lc ${lcId} resync`);
+        } else {
+          skippedExisting++;
+        }
+      }
+      logger.info(`[BANKING] 🔧 LC resync complete: ledger=${ledgerLCs.length} existing=${skippedExisting} resynced=${resynced.length} unknownStatus=${skippedUnknownStatus.length}`);
+      res.json({
+        success: true,
+        data: {
+          ledgerTotal: ledgerLCs.length,
+          skippedExisting,
+          resynced,
+          resyncedCount: resynced.length,
+          skippedUnknownStatus,
+        },
+        timestamp: new Date().toISOString(),
+      });
+    } catch (error: any) {
+      logger.error('[BANKING] LC resync error:', error);
+      return res.status(500).json({
+        success: false,
+        error: { code: 'SERVER_ERROR', message: error.message },
+        timestamp: new Date().toISOString(),
+      });
+    }
+  }
+);
+
+/**
  * @swagger
  * /api/v1/banking/lcs:
  *   get:
