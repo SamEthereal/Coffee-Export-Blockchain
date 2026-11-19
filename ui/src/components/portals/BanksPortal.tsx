@@ -2881,7 +2881,7 @@ const BanksPortal: React.FC = () => {
     isRelevant: (row: LiveNotificationRow) => BANKS_LIVE_TYPES.has(row.type),
     resolveRefetch: (row: LiveNotificationRow) =>
       row.type.startsWith('swift_')
-        ? { key: 'swift', run: () => refreshSwiftMessagesUntilChanged(row.entityId || '') }
+        ? { key: 'swift', run: () => { void refreshSwiftMessagesUntilChanged(row.entityId || ''); } }
         : null,
   });
 
