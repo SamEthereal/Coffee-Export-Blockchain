@@ -109,6 +109,36 @@ interface PooledGatewayEntry {
 // identities are required. Least-recently-used entries are evicted past this.
 const MAX_GATEWAY_POOL_ENTRIES = 24;
 
+/**
+ * Real-payment discriminator for rows returned by the payments
+ * chaincode queries (2026-11-19, leftovers round).
+ *
+ * QueryPaymentsByExporter selects on {"exporterId": ...} alone, so it
+ * matches EVERY doc type carrying that exporterId — contracts, LCs,
+ * forex, shipments, permits, phyto, customs, ECX lots — and Go
+ * unmarshals each of them into PaymentSettlement without error, so they
+ * come back as zero-valued "payments". Repatriation docs are worse:
+ * they carry a real paymentId (they link to a payment), so a
+ * paymentId-only filter still lets them through — and they share the
+ * linked payment's paymentId, so dedupe-by-paymentId would drop a real
+ * row. The one field that separates the sets is lcId: verified live
+ * 2026-11-19, all 205 PAYMENT_* ledger docs carry a non-empty lcId and
+ * paymentId, while 0/20 repatriation docs carry lcId and every
+ * non-payment doc has an empty paymentId. (Same discriminator the
+ * QueryAllPayments seq-26 fix documents in payment.go:1367.)
+ *
+ * This is the API-side guard; the chaincode source fix is to narrow
+ * QueryPaymentsByExporter's selector the way QueryAllPayments was
+ * narrowed at seq 26. Until that deploys, every payments-by-exporter
+ * consumer must go through queryPayments() below.
+ */
+export function isRealPaymentRow(row: any): boolean {
+  if (!row || typeof row !== 'object') return false;
+  const paymentId = String(row.paymentId ?? row.PaymentID ?? '').trim();
+  const lcId = String(row.lcId ?? row.LcId ?? row.LCID ?? '').trim();
+  return paymentId !== '' && lcId !== '';
+}
+
 export class FabricService {
   private static instance: FabricService | null = null;
 
@@ -2404,7 +2434,15 @@ export class FabricService {
   }
 
   public async queryPayments(params: { exporterId: string }): Promise<ChaincodeResponse> {
-    return this.getPaymentsByExporter(params.exporterId);
+    const result = await this.getPaymentsByExporter(params.exporterId);
+    // Drop the non-payment rows QueryPaymentsByExporter returns (see
+    // isRealPaymentRow above): the chaincode selector matches any doc
+    // with this exporterId. Without this, an exporter with 1 payment
+    // saw 16 rows (live case ALN-HAPPY-1794465737-EXP, 2026-11-19).
+    if (result.success && Array.isArray(result.data)) {
+      result.data = result.data.filter(isRealPaymentRow);
+    }
+    return result;
   }
 
   public async queryShipments(params: { exporterId?: string }): Promise<ChaincodeResponse> {

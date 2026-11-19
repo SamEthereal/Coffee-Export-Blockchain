@@ -2,7 +2,7 @@
 // Banking API Routes - Letter of Credit, Forex & Export Permits
 
 import express, { Request, Response } from 'express';
-import { FabricService } from '../services/fabricService';
+import { FabricService, isRealPaymentRow } from '../services/fabricService';
 import { LCService } from '../services/lcService';
 import { ForexService } from '../services/forexService';
 import { PaymentService } from '../services/paymentService';
@@ -3015,30 +3015,70 @@ router.get('/payments', async (req, res) => {
   try {
     // Get exporterId from query params or user context if needed
     const exporterId = req.query.exporterId as string;
-    
-    if (!exporterId) {
-      return res.status(400).json({
-        success: false,
-        error: 'exporterId parameter is required'
-      });
+
+    // With exporterId: the filtered list, as before (queryPayments drops
+    // the non-payment rows QueryPaymentsByExporter returns — see
+    // isRealPaymentRow in services/fabricService.ts).
+    if (exporterId) {
+      const result = await fabricService.queryPayments({ exporterId });
+
+      if (result.success) {
+        res.json({
+          success: true,
+          data: result.data || [],
+          count: result.data?.length || 0,
+          timestamp: new Date().toISOString()
+        });
+      } else {
+        res.status(500).json({
+          success: false,
+          error: result.error,
+          timestamp: new Date().toISOString()
+        });
+      }
+      return;
     }
-    
-    const result = await fabricService.queryPayments({ exporterId });
-    
-    if (result.success) {
-      res.json({
-        success: true,
-        data: result.data || [],
-        count: result.data?.length || 0,
-        timestamp: new Date().toISOString()
-      });
-    } else {
+
+    // Without exporterId: the full payments list, paginated (2026-11-19,
+    // leftovers round — this used to 400 with "exporterId parameter is
+    // required", which also broke the PaymentDocuments tab's
+    // /banking/payments?status=PENDING call). Same {success, data, count}
+    // shape as the filtered call, plus total/page/limit/totalPages so a
+    // caller can tell the page size from the ledger total. QueryAllPayments
+    // already excludes repatriation docs (chaincode seq 26); the
+    // isRealPaymentRow guard below is defence-in-depth (a no-op on the
+    // live ledger: 205/205 rows carry paymentId + lcId).
+    const statusFilter = typeof req.query.status === 'string' ? req.query.status.trim() : '';
+    const page = Math.max(1, parseInt(String(req.query.page || '1'), 10) || 1);
+    const limit = Math.min(200, Math.max(1, parseInt(String(req.query.limit || '50'), 10) || 50));
+    const result = await fabricService.queryChaincode('QueryAllPayments', []);
+
+    if (!result.success) {
       res.status(500).json({
         success: false,
         error: result.error,
         timestamp: new Date().toISOString()
       });
+      return;
     }
+
+    let payments = (result.data || []).filter(isRealPaymentRow);
+    if (statusFilter) {
+      payments = payments.filter((p: any) => String(p.status || '').toUpperCase() === statusFilter.toUpperCase());
+    }
+    const total = payments.length;
+    const totalPages = Math.max(1, Math.ceil(total / limit));
+    const pageData = payments.slice((page - 1) * limit, page * limit);
+    res.json({
+      success: true,
+      data: pageData,
+      count: pageData.length,
+      total,
+      page,
+      limit,
+      totalPages,
+      timestamp: new Date().toISOString()
+    });
   } catch (error: any) {
     logger.error('Error querying payments:', error);
     res.status(500).json({

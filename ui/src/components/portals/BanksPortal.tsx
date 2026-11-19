@@ -330,6 +330,14 @@ const BanksPortal: React.FC = () => {
   const [lcDetailsLoading, setLcDetailsLoading] = useState(false); // ✅ Loading state for LC details
   const [letterOfCredits, setLetterOfCredits] = useState<LetterOfCredit[]>([]);
   const [forexAllocations, setForexAllocations] = useState<ForexAllocation[]>([]);
+  // Persisted rows only: the portal appends an unpersisted draft row for
+  // each ISSUED LC with no forex row yet (see the load effect below), so
+  // forexAllocations.length runs 2 over the API count. Tab totals, KPI
+  // cards and the "Showing X of Y" line all count this list, never the
+  // combined one — the drafts stay visible in the table, clearly marked
+  // "LC draft — not on ledger", but they are not API rows and must not
+  // be counted as such. (2026-11-19, leftovers round: label read 413
+  // against an API count of 411.)
   const persistedForexAllocations = forexAllocations.filter((forex) => !forex.isDraft);
   const [exportPermits, setExportPermits] = useState<any[]>([]);
   // F26: analytics summary (GET /analytics/dashboard) — the Analytics
@@ -599,11 +607,6 @@ const BanksPortal: React.FC = () => {
   // Search and Filter State
   const [searchTerm, setSearchTerm] = useState('');
   const [filterStatus, setFilterStatus] = useState<string>('ALL');
-  // Tab-local LC status filter for the All LCs tab (tab 10). The shared
-  // filterStatus above is per-tab state in effect (forex / SWIFT / LC
-  // dropdowns use different value domains), so the All LCs tab keeps its
-  // own filter instead of reusing it.
-  const [allLcFilterStatus, setAllLcFilterStatus] = useState<string>('ALL');
   const [currentPage, setCurrentPage] = useState(0);
   const [rowsPerPage, setRowsPerPage] = useState(10);
   
@@ -667,7 +670,7 @@ const BanksPortal: React.FC = () => {
         children: [
           { 
             id: 'forex-allocations', 
-            label: `Forex Allocations${forexAllocations.length > 0 ? ` (${forexAllocations.length})` : ''}`, 
+            label: `Forex Allocations${persistedForexAllocations.length > 0 ? ` (${persistedForexAllocations.length})` : ''}`, 
             icon: React.createElement(CurrencyExchange),
             roles: ['BANKS', 'ADMIN', 'BANKS Portal Administrator', 'Bank Officer', 'Forex Officer'],
             tabIndex: 1
@@ -770,7 +773,6 @@ const BanksPortal: React.FC = () => {
   // tab used to keep filtering (and showing in the box of) the next tab.
   React.useEffect(() => {
     setFilterStatus('ALL');
-    setAllLcFilterStatus('ALL');
     setSearchTerm('');
   }, [activeTab]);
 
@@ -850,7 +852,7 @@ const BanksPortal: React.FC = () => {
     
     const allTabs = [
       { index: 0, label: 'Payment Methods', icon: React.createElement(Payment), roles: ['BANKS', 'ADMIN', 'BANKS Portal Administrator', 'Bank Officer', 'LC Officer', 'Payment Officer'] },
-      { index: 1, label: `Forex Allocations${forexAllocations.length > 0 ? ` (${forexAllocations.length})` : ''}`, icon: React.createElement(CurrencyExchange), roles: ['BANKS', 'ADMIN', 'BANKS Portal Administrator', 'Bank Officer', 'Forex Officer'] },
+      { index: 1, label: `Forex Allocations${persistedForexAllocations.length > 0 ? ` (${persistedForexAllocations.length})` : ''}`, icon: React.createElement(CurrencyExchange), roles: ['BANKS', 'ADMIN', 'BANKS Portal Administrator', 'Bank Officer', 'Forex Officer'] },
       { index: 2, label: `Document Examination${pendingExaminationCount > 0 ? ` (${pendingExaminationCount})` : ''}`, icon: React.createElement(Description), roles: ['BANKS', 'ADMIN', 'BANKS Portal Administrator', 'Bank Officer', 'Document Officer'] },
       { index: 3, label: `Payment Release${lcsForPaymentRelease.length > 0 ? ` (${lcsForPaymentRelease.length})` : ''}`, icon: React.createElement(AttachMoney), roles: ['BANKS', 'ADMIN', 'BANKS Portal Administrator', 'Bank Officer', 'Payment Officer'] },
       { index: 4, label: `SWIFT Messages${swiftMessages.length > 0 ? ` (${swiftMessages.length})` : ''}`, icon: React.createElement(AccountBalance), roles: ['BANKS', 'ADMIN', 'BANKS Portal Administrator', 'Bank Officer', 'SWIFT Officer'] },
@@ -1964,18 +1966,6 @@ const BanksPortal: React.FC = () => {
     );
   };
 
-  const toggleAllLCSelection = () => {
-    // Select-all applies to the All LCs tab (tab 10) list this button
-    // lives in — getFilteredAllLCs() (the old getFilteredLCs was deleted
-    // as dead code in the 2026-11-12 search audit).
-    const requestedLCs = getFilteredAllLCs().filter(lc => lc.status === 'REQUESTED');
-    if (selectedLCIds.length === requestedLCs.length) {
-      setSelectedLCIds([]);
-    } else {
-      setSelectedLCIds(requestedLCs.map(lc => lc.lcId));
-    }
-  };
-
   const handleAmendLC = async () => {
     if (!selectedLC) return;
 
@@ -2960,34 +2950,11 @@ const BanksPortal: React.FC = () => {
 
   // Filter and Pagination Helper Functions
   // NOTE (2026-11-12 search audit): the old getFilteredLCs() lived here
-  // and filtered letterOfCredits by searchTerm, but no tab ever called
-  // it — the All LCs tab uses getFilteredAllLCs() below. Deleted as dead
-  // code; do not revive it, extend getFilteredAllLCs() instead.
-  // All LCs tab (tab 10) filter — the 11 real LC statuses (matrix §3: the 10
-  // chaincode states plus PENDING, the letters_of_credit default from
-  // migration 058). Uses the tab-local allLcFilterStatus state, plus the
-  // shared search box. (The old getFilteredLCs filtered by searchTerm
-  // but was never called — this tab rendered this function, which
-  // ignored the search term, so the LC list was the one Banks list
-  // with no search at all. getFilteredLCs is deleted, not revived:
-  // this is the live path.)
-  const getFilteredAllLCs = () => {
-    let filtered =
-      allLcFilterStatus === 'ALL'
-        ? letterOfCredits
-        : letterOfCredits.filter((lc) => lc.status === allLcFilterStatus);
-    if (searchTerm) {
-      const lowerSearch = searchTerm.toLowerCase();
-      filtered = filtered.filter(
-        (lc) =>
-          (lc.lcId || '').toLowerCase().includes(lowerSearch) ||
-          (lc.contractId || '').toLowerCase().includes(lowerSearch) ||
-          (lc.exporterId || '').toLowerCase().includes(lowerSearch),
-      );
-    }
-    return filtered;
-  };
-
+  // and was deleted as dead code; do not revive it. The All LCs tab
+  // (tab 10) filter getFilteredAllLCs() and its tab-local
+  // allLcFilterStatus state were removed with the tab in the 2026-11-18
+  // merge (leftovers round, 2026-11-19) — do not revive either. The
+  // Payment Methods tab (tab 0) renders letterOfCredits directly.
   const getFilteredForex = () => {
     let filtered = forexAllocations;
     devLog(`[BANKS] 🔍 getFilteredForex() called with ${forexAllocations.length} total forex allocations`);
@@ -3024,6 +2991,12 @@ const BanksPortal: React.FC = () => {
     devLog(`[BANKS] ✅ getFilteredForex() returning ${filtered.length} items`);
     return filtered;
   };
+
+  // Persisted-only view of the filtered forex list (see the
+  // persistedForexAllocations note above): the "Showing X of Y" line
+  // counts API rows, not the unpersisted ISSUED-LC drafts, which still
+  // render in the table marked as drafts.
+  const getFilteredPersistedForex = () => getFilteredForex().filter((forex) => !forex.isDraft);
 
   const getFilteredSwiftMessages = () => {
     let filtered = swiftMessages;
@@ -4426,7 +4399,7 @@ const BanksPortal: React.FC = () => {
             </SecondaryButton>
             <Box sx={{ flexGrow: 1 }} />
             <Typography variant="body2" color="black">
-              Showing {getPaginatedData(getFilteredForex()).length} of {getFilteredForex().length} allocations
+              Showing {getPaginatedData(getFilteredForex()).filter((forex) => !forex.isDraft).length} of {getFilteredPersistedForex().length} allocations
             </Typography>
           </Box>
 

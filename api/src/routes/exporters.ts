@@ -2524,6 +2524,75 @@ router.post('/resync',
   requireRole('ADMIN'),
   async (req: Request, res: Response) => {
     try {
+      // Audit repair (2026-11-19, leftovers round): the first resync call
+      // wedged on one CreateAuditLog submit (EXP-20261112102402, tx
+      // submitted 15:13:37, never completed), so that exporter's PG row
+      // was backfilled but its RESYNC audit row was never written — in
+      // either store, since AuditService.log() writes Fabric first and
+      // only then PG. A plain re-run cannot heal it: the row already
+      // exists, so the loop below skips it without writing an audit row.
+      // This explicit pass writes exactly the missing rows for the named
+      // exporterIds (ADMIN-only, same endpoint). It never invents a
+      // backfill: the PG row must already exist and no RESYNC row may
+      // exist for the id yet. Idempotent: alreadyPresent on repeat calls.
+      const repairAuditFor = (req.body as any)?.repairAuditFor;
+      if (Array.isArray(repairAuditFor) && repairAuditFor.length > 0) {
+        const repaired: string[] = [];
+        const alreadyPresent: string[] = [];
+        const notFound: string[] = [];
+        const failed: string[] = [];
+        for (const rawId of repairAuditFor) {
+          const exporterId = String(rawId || '').trim();
+          if (!exporterId) continue;
+          const existing = await postgresDb.get(
+            `SELECT exporter_id, license_status FROM exporters WHERE exporter_id = $1`,
+            [exporterId]
+          );
+          if (!existing) {
+            notFound.push(exporterId);
+            continue;
+          }
+          const auditRow = await postgresDb.get(
+            `SELECT id FROM audit_trail WHERE action = 'RESYNC' AND entity_type = 'EXPORTER' AND entity_id = $1 LIMIT 1`,
+            [exporterId]
+          );
+          if (auditRow) {
+            alreadyPresent.push(exporterId);
+            continue;
+          }
+          const app = await postgresDb.get(
+            `SELECT exporter_id FROM exporter_applications WHERE exporter_id = $1 AND status = 'approved' LIMIT 1`,
+            [exporterId]
+          );
+          const licenseStatus = String(existing.license_status || '').toUpperCase();
+          await logAuditBestEffort(req, {
+            entityType: 'EXPORTER',
+            entityId: exporterId,
+            action: 'RESYNC',
+            newValue: licenseStatus,
+            reason: 'Exporter re-sync audit repair: backfilled PG row was missing its RESYNC audit row (first resync call wedged on the audit write); row repaired from ledger truth',
+            metadata: { resynced: true, source: 'ledger', auditRepair: true, fromApplication: !!app },
+          }, `exporter ${exporterId} resync audit repair`);
+          // Verify the row actually landed (the audit write is
+          // best-effort and can wedge); never claim a repair that
+          // did not persist.
+          const written = await postgresDb.get(
+            `SELECT id FROM audit_trail WHERE action = 'RESYNC' AND entity_type = 'EXPORTER' AND entity_id = $1 LIMIT 1`,
+            [exporterId]
+          );
+          if (written) {
+            repaired.push(exporterId);
+            logger.info(`[EXPORTERS] 🔧 Resync audit repair: RESYNC row written for ${exporterId}`);
+          } else {
+            failed.push(exporterId);
+          }
+        }
+        return res.json({
+          success: true,
+          data: { repaired, repairedCount: repaired.length, alreadyPresent, notFound, failed },
+          timestamp: new Date().toISOString(),
+        });
+      }
       const result = await fabricService.getAllExporters();
       if (!result || !(result as any).success || !Array.isArray((result as any).data)) {
         return res.status(502).json({
