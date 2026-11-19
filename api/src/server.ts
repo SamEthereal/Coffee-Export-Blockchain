@@ -101,6 +101,28 @@ class CECBSServer {
   private fabricService: FabricService;
   private databaseService: DatabaseService;
   private wsService!: WebSocketService; // Retained: notificationService broadcasts via WebSocketService.getInstance()
+  // Graceful shutdown state: set on SIGTERM/SIGINT, read by the drain
+  // middleware below. New requests get 503 once draining starts; in-flight
+  // requests are counted so shutdown() can wait for them instead of
+  // exiting underneath them (the old code called server.close() without
+  // awaiting it, then disconnected Fabric, closed the DB and called
+  // process.exit(0) immediately — a client mid-request got an empty
+  // reply even though its transaction had committed on the ledger).
+  private shuttingDown = false;
+  private shutdownStarted = false;
+  private inFlightRequests = 0;
+  // Bounded grace period for in-flight handlers to finish. Default 60s:
+  // Fabric invokes in this codebase routinely take 6–30s (AllocateForex
+  // ~7–9s, permit ~14s, repatriation observed at ~47s) and /ready takes
+  // ~38s, so a 30s bound would still drop legitimate in-flight work.
+  // Override with SHUTDOWN_TIMEOUT_MS (clamped 5s–300s). This is a
+  // shutdown grace bound, NOT a request timeout — no request timeout
+  // is raised by this change.
+  private readonly shutdownTimeoutMs: number = (() => {
+    const raw = Number(process.env.SHUTDOWN_TIMEOUT_MS);
+    if (Number.isFinite(raw)) return Math.min(300_000, Math.max(5_000, raw));
+    return 60_000;
+  })();
 
   constructor() {
     this.app = express();
@@ -113,6 +135,34 @@ class CECBSServer {
   }
 
   private setupMiddleware(): void {
+    // Drain middleware — FIRST, before every other handler, so every
+    // in-flight request is counted and new ones are refused cleanly
+    // (503, not a dropped connection) once shutdown has started.
+    this.app.use((req, res, next) => {
+      if (this.shuttingDown) {
+        res.status(503).json({
+          success: false,
+          error: { code: 'SERVER_SHUTTING_DOWN', message: 'Server is shutting down, please retry' },
+          timestamp: new Date().toISOString(),
+        });
+        return;
+      }
+      this.inFlightRequests++;
+      let counted = true;
+      const release = () => {
+        if (counted) {
+          counted = false;
+          this.inFlightRequests--;
+        }
+      };
+      // 'finish' fires when the response is fully sent; 'close' fires
+      // when the underlying connection ends (including client aborts).
+      // Either one ends the request — the guard makes it count once.
+      res.on('finish', release);
+      res.on('close', release);
+      next();
+    });
+
     // Keep each request's Fabric MSP selection isolated from concurrent portal requests.
     // SAFE to enable now: the Fabric service keeps one pooled Gateway per
     // signing identity instead of a single shared gateway, so entering a
@@ -193,6 +243,16 @@ class CECBSServer {
 
     // Health check endpoint
     this.app.get('/health', (_req, res) => {
+      // During shutdown, report unhealthy so load balancers / restart
+      // scripts stop routing new traffic here while in-flight work drains.
+      if (this.shuttingDown) {
+        res.status(503).json({
+          status: 'shutting_down',
+          timestamp: new Date().toISOString(),
+          version: process.env.npm_package_version || '1.0.0',
+        });
+        return;
+      }
       res.json({
         status: 'healthy',
         timestamp: new Date().toISOString(),
@@ -508,9 +568,11 @@ class CECBSServer {
         // blockchainSyncService.start();
       });
 
-      // Graceful shutdown
-      process.on('SIGTERM', () => this.shutdown());
-      process.on('SIGINT', () => this.shutdown());
+      // Graceful shutdown: stop accepting new work, drain in-flight
+      // requests up to a bounded timeout, then close services and exit.
+      // A second signal forces an immediate exit.
+      process.on('SIGTERM', () => this.shutdown('SIGTERM'));
+      process.on('SIGINT', () => this.shutdown('SIGINT'));
 
     } catch (error) {
       logger.error('Failed to start server:', error);
@@ -518,25 +580,95 @@ class CECBSServer {
     }
   }
 
-  private async shutdown(): Promise<void> {
-    logger.info('Shutting down server...');
-    
+  private async shutdown(signal: string): Promise<void> {
+    if (this.shutdownStarted) {
+      logger.warn(`Shutdown already in progress, forcing exit on second ${signal}`);
+      process.exit(1);
+    }
+    this.shutdownStarted = true;
+    this.shuttingDown = true;
+    logger.info(
+      `Shutting down server (${signal}) — ${this.inFlightRequests} in-flight request(s), ` +
+      `grace timeout ${this.shutdownTimeoutMs}ms...`
+    );
+
     // ⚠️ DISABLED: BlockchainSyncService disabled
     // blockchainSyncService.stop();
-    
-    if (this.server) {
-      this.server.close();
-    }
-    
-    if (this.wsServer) {
-      this.wsServer.close();
+
+    let forced = false;
+    try {
+      if (this.server) {
+        // Stop accepting new connections. Idle keep-alive sockets would
+        // otherwise hold server.close() open indefinitely, so drop them
+        // now; sockets carrying an in-flight request are left alone.
+        if (typeof this.server.closeIdleConnections === 'function') {
+          this.server.closeIdleConnections();
+        }
+        const closed = new Promise<void>((resolve) => {
+          this.server.close(() => resolve());
+        });
+        const timedOut = await Promise.race([
+          closed.then(() => false),
+          new Promise<boolean>((resolve) =>
+            setTimeout(() => resolve(true), this.shutdownTimeoutMs)
+          ),
+        ]);
+        if (timedOut) {
+          forced = true;
+          logger.warn(
+            `Shutdown grace timeout (${this.shutdownTimeoutMs}ms) expired with ` +
+            `${this.inFlightRequests} in-flight request(s) — force-closing remaining connections`
+          );
+          if (typeof this.server.closeAllConnections === 'function') {
+            this.server.closeAllConnections();
+          }
+          // Give the forced close a moment to settle before tearing
+          // down Fabric/DB underneath any handler still unwinding.
+          await new Promise((resolve) => setTimeout(resolve, 1000));
+        } else {
+          logger.info(`HTTP server drained (${this.inFlightRequests} in-flight at close)`);
+        }
+      }
+
+      if (this.wsServer) {
+        const wsClosed = new Promise<void>((resolve) => {
+          try {
+            this.wsServer.close(() => resolve());
+          } catch (_) {
+            resolve();
+          }
+        });
+        const wsTimedOut = await Promise.race([
+          wsClosed.then(() => false),
+          new Promise<boolean>((resolve) => setTimeout(() => resolve(true), 5000)),
+        ]);
+        if (wsTimedOut) {
+          logger.warn('WebSocket close timed out — terminating remaining clients');
+          this.wsServer.clients.forEach((client: any) => {
+            try { client.terminate(); } catch (_) { /* ignore */ }
+          });
+        }
+      }
+    } catch (error) {
+      logger.error('Error during server close:', error);
     }
 
-    await this.fabricService.disconnect();
-    await this.databaseService.close();
-    
-    logger.info('Server shutdown complete');
-    process.exit(0);
+    // Only now, with no HTTP handler still running (or after the bounded
+    // force-close above), tear down Fabric and the database. Disconnecting
+    // earlier is what dropped in-flight responses.
+    try {
+      await this.fabricService.disconnect();
+    } catch (error) {
+      logger.error('Error disconnecting Fabric during shutdown:', error);
+    }
+    try {
+      await this.databaseService.close();
+    } catch (error) {
+      logger.error('Error closing database during shutdown:', error);
+    }
+
+    logger.info(`Server shutdown complete${forced ? ' (forced after grace timeout)' : ''}`);
+    process.exit(forced ? 1 : 0);
   }
 }
 
