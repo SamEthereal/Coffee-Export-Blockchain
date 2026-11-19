@@ -1282,17 +1282,27 @@ test_chaincode_basic() {
     COMMITTED_INFO=$(docker exec peer0.ecta.cecbs.et peer lifecycle chaincode querycommitted --channelID coffeechannel --name coffee 2>&1 || echo "")
     COMMITTED_VERSION=$(echo "$COMMITTED_INFO" | grep -oP 'Version: \K[0-9.]+' || echo "unknown")
     COMMITTED_SEQUENCE=$(echo "$COMMITTED_INFO" | grep -oP 'Sequence: \K[0-9]+' || echo "unknown")
-    INSTALLED_ID=$(docker exec \
-        -e CORE_PEER_LOCALMSPID=ECTAMSP \
-        -e CORE_PEER_MSPCONFIGPATH=/etc/hyperledger/fabric/users/Admin@ecta.cecbs.et/msp \
-        peer0.ecta.cecbs.et peer lifecycle chaincode queryinstalled 2>/dev/null | grep "coffee_${COMMITTED_VERSION}" | awk '{print $3}' | sed 's/,//' | head -1)
+    # Expected package ID: recompute it from the package tar the deploy
+    # just built (newest coffee_*.tar.gz in chaincodes/coffee — the deploy
+    # rewrites it on every run, so it is the current package). Do NOT grep
+    # queryinstalled by the lifecycle Version (2.3): the package label is
+    # coffee_2.13, so that grep matches nothing; and several same-label
+    # packages stay installed, so picking one from that list is a guess.
+    # calculatepackageid on the tar is exact. If the tar is absent the
+    # comparison is skipped (prints unknown) — the query retries above are
+    # the gate, this is diagnostic evidence only.
+    EXPECTED_ID=""
+    PKG_TAR=$(ls -t "$PROJECT_ROOT/chaincodes/coffee"/coffee_*.tar.gz 2>/dev/null | head -1)
+    if [ -n "$PKG_TAR" ] && docker cp "$PKG_TAR" peer0.ecta.cecbs.et:/tmp/diag-package.tar.gz 2>/dev/null; then
+        EXPECTED_ID=$(docker exec peer0.ecta.cecbs.et peer lifecycle chaincode calculatepackageid /tmp/diag-package.tar.gz 2>/dev/null | grep -oP 'coffee_[^ ]+' | head -1)
+    fi
     SERVER_ID=$(docker inspect coffee-chaincode --format '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null | grep '^CORE_CHAINCODE_ID_NAME=' | cut -d= -f2-)
     [ -z "$SERVER_ID" ] && SERVER_ID=$(docker exec coffee-chaincode printenv CORE_CHAINCODE_ID_NAME 2>/dev/null || echo "unknown")
     write_info "Committed definition: coffee v${COMMITTED_VERSION} seq ${COMMITTED_SEQUENCE}"
-    write_info "Package ID installed on the peer for that version: ${INSTALLED_ID:-unknown}"
+    write_info "Package ID expected for the committed definition (from ${PKG_TAR:-no package tar found}): ${EXPECTED_ID:-unknown}"
     write_info "Package ID the server registered under (CORE_CHAINCODE_ID_NAME): ${SERVER_ID:-unknown}"
-    if [ -n "$INSTALLED_ID" ] && [ -n "$SERVER_ID" ] && [ "$INSTALLED_ID" != "$SERVER_ID" ]; then
-        write_error "PACKAGE-ID MISMATCH: the server registered under $SERVER_ID but the peer has $INSTALLED_ID installed — rebuild/recreate coffee-chaincode with the new package ID (see deploy-chaincode.sh)"
+    if [ -n "$EXPECTED_ID" ] && [ -n "$SERVER_ID" ] && [ "$EXPECTED_ID" != "$SERVER_ID" ]; then
+        write_error "PACKAGE-ID MISMATCH: the server registered under $SERVER_ID but the committed package is $EXPECTED_ID — rebuild/recreate coffee-chaincode with the new package ID (see deploy-chaincode.sh)"
     fi
     write_info "Last 50 lines of docker logs coffee-chaincode:"
     docker logs --tail 50 coffee-chaincode 2>&1 | while IFS= read -r line; do log_verbose "  $line"; done

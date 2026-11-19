@@ -44,20 +44,28 @@ for peer_info in "peer0.ecta.cecbs.et:ECTAMSP:ecta.cecbs.et" \
 done
 
 echo ""
-echo "=== 3. Server package ID (container env) vs installed ID ==="
+echo "=== 3. Server package ID (container env) vs expected ID ==="
 SERVER_ID=$(docker inspect coffee-chaincode --format '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null | grep '^CORE_CHAINCODE_ID_NAME=' | cut -d= -f2-)
 [ -z "$SERVER_ID" ] && SERVER_ID=$(docker exec coffee-chaincode printenv CORE_CHAINCODE_ID_NAME 2>/dev/null || echo "unknown")
 echo "Server CORE_CHAINCODE_ID_NAME: ${SERVER_ID}"
-INSTALLED_ID=$(docker exec \
-    -e CORE_PEER_LOCALMSPID=ECTAMSP \
-    -e CORE_PEER_MSPCONFIGPATH=/etc/hyperledger/fabric/users/Admin@ecta.cecbs.et/msp \
-    peer0.ecta.cecbs.et peer lifecycle chaincode queryinstalled 2>/dev/null | grep "coffee_${COMMITTED_VERSION}" | awk '{print $3}' | sed 's/,//' | head -1)
-echo "Installed ID for committed version coffee_${COMMITTED_VERSION:-?} (ECTA peer): ${INSTALLED_ID:-unknown}"
-if [ -n "$INSTALLED_ID" ] && [ -n "$SERVER_ID" ] && [ "$SERVER_ID" != "unknown" ]; then
-    if [ "$INSTALLED_ID" = "$SERVER_ID" ]; then
-        echo "MATCH: server registered under the installed package ID."
+# Expected package ID: recompute it from the package tar the deploy built
+# (newest coffee_*.tar.gz in chaincodes/coffee). Do NOT grep queryinstalled
+# by the lifecycle Version (2.3): the package label is coffee_2.13, so that
+# grep matches nothing; and several same-label packages stay installed, so
+# picking one from that list is a guess. calculatepackageid on the tar is
+# exact. If the tar is absent the comparison is skipped.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+EXPECTED_ID=""
+PKG_TAR=$(ls -t "$SCRIPT_DIR/chaincodes/coffee"/coffee_*.tar.gz 2>/dev/null | head -1)
+if [ -n "$PKG_TAR" ] && docker cp "$PKG_TAR" peer0.ecta.cecbs.et:/tmp/diag-package.tar.gz 2>/dev/null; then
+    EXPECTED_ID=$(docker exec peer0.ecta.cecbs.et peer lifecycle chaincode calculatepackageid /tmp/diag-package.tar.gz 2>/dev/null | grep -oP 'coffee_[^ ]+' | head -1)
+fi
+echo "Expected ID for the committed definition (from ${PKG_TAR:-no package tar found}): ${EXPECTED_ID:-unknown}"
+if [ -n "$EXPECTED_ID" ] && [ -n "$SERVER_ID" ] && [ "$SERVER_ID" != "unknown" ]; then
+    if [ "$EXPECTED_ID" = "$SERVER_ID" ]; then
+        echo "MATCH: server registered under the committed package ID."
     else
-        echo "MISMATCH: server registered under $SERVER_ID but the peer has $INSTALLED_ID installed."
+        echo "MISMATCH: server registered under $SERVER_ID but the committed package is $EXPECTED_ID."
         echo "  This is the stale-server failure: rebuild with --no-cache and recreate with --force-recreate (deploy-chaincode.sh does both), then re-run this script."
     fi
 else
@@ -88,9 +96,9 @@ echo ""
 echo "=== 7. Peer logs: committed package ID / connection errors ==="
 for peer_name in peer0.ecta.cecbs.et peer0.ecx.cecbs.et peer0.banks.cecbs.et peer0.nbe.cecbs.et peer0.customs.cecbs.et peer0.shipping.cecbs.et; do
     echo "--- $peer_name ---"
-    # The committed package ID is a variable, never hardcoded: grep for the
-    # installed ID (same value as the server env when healthy).
-    docker logs "$peer_name" 2>&1 | grep -iE "${INSTALLED_ID:-NO_INSTALLED_ID}|could not launch chaincode|connection refused|REQUEST TIMEOUT|error in simulation" | tail -5 || echo "(no matching log lines)"
+    # The expected package ID is a variable, never hardcoded: grep for it
+    # (same value as the server env when healthy).
+    docker logs "$peer_name" 2>&1 | grep -iE "${EXPECTED_ID:-NO_EXPECTED_ID}|could not launch chaincode|connection refused|REQUEST TIMEOUT|error in simulation" | tail -5 || echo "(no matching log lines)"
 done
 
 echo ""
