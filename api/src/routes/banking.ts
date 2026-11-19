@@ -2664,9 +2664,26 @@ router.get('/lc', async (req, res) => {
           }
         }
 
+        // F4 (2026-11-19): honor ?status= — the list used to ignore it
+        // and always return every LC. 'ALL' (or no param) means no
+        // filter. The filter runs AFTER the ledger reconciliation above,
+        // so a row whose PG status is stale (e.g. PG PAYMENT_RELEASED
+        // vs ledger SETTLED) is matched on the status actually shown,
+        // and the returned total is the filtered count.
+        const rawStatusFilter = typeof req.query.status === 'string' ? req.query.status.trim() : '';
+        const statusFilter = rawStatusFilter ? rawStatusFilter.toUpperCase() : '';
+        const totalUnfiltered = lcData.length;
+        if (statusFilter && statusFilter !== 'ALL') {
+          lcData = lcData.filter((row: any) => String(row.status || '').toUpperCase() === statusFilter);
+          logger.info(`[BANKING] 🔎 LC list filtered by status=${statusFilter}: ${lcData.length} of ${totalUnfiltered}`);
+        }
+
         return res.json({
           success: true,
           data: lcData,
+          total: lcData.length,
+          totalUnfiltered,
+          statusFilter: statusFilter || null,
           source: 'postgresql',
           statusReconciled,
           statusHealed,
