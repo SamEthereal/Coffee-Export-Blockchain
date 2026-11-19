@@ -23,7 +23,7 @@ services:
   # Orderer
   orderer.cecbs.et:
     container_name: orderer.cecbs.et
-    image: hyperledger/fabric-orderer:2.5
+    image: hyperledger/fabric-orderer:2.5.16
     environment:
       - FABRIC_LOGGING_SPEC=INFO
       - ORDERER_GENERAL_LISTENADDRESS=0.0.0.0
@@ -61,7 +61,7 @@ services:
   # ECTA Peer
   peer0.ecta.cecbs.et:
     container_name: peer0.ecta.cecbs.et
-    image: hyperledger/fabric-peer:2.5
+    image: hyperledger/fabric-peer:2.5.16
     environment:
       - CORE_VM_ENDPOINT=unix:///host/var/run/docker.sock
       - CORE_VM_DOCKER_HOSTCONFIG_NETWORKMODE=cecbs-network
@@ -125,7 +125,7 @@ services:
   # ECX Peer
   peer0.ecx.cecbs.et:
     container_name: peer0.ecx.cecbs.et
-    image: hyperledger/fabric-peer:2.5
+    image: hyperledger/fabric-peer:2.5.16
     environment:
       - CORE_VM_ENDPOINT=unix:///host/var/run/docker.sock
       - CORE_VM_DOCKER_HOSTCONFIG_NETWORKMODE=cecbs-network
@@ -189,7 +189,7 @@ services:
   # Banks Peer
   peer0.banks.cecbs.et:
     container_name: peer0.banks.cecbs.et
-    image: hyperledger/fabric-peer:2.5
+    image: hyperledger/fabric-peer:2.5.16
     environment:
       - CORE_VM_ENDPOINT=unix:///host/var/run/docker.sock
       - CORE_VM_DOCKER_HOSTCONFIG_NETWORKMODE=cecbs-network
@@ -253,7 +253,7 @@ services:
   # NBE Peer
   peer0.nbe.cecbs.et:
     container_name: peer0.nbe.cecbs.et
-    image: hyperledger/fabric-peer:2.5
+    image: hyperledger/fabric-peer:2.5.16
     environment:
       - CORE_VM_ENDPOINT=unix:///host/var/run/docker.sock
       - CORE_VM_DOCKER_HOSTCONFIG_NETWORKMODE=cecbs-network
@@ -316,7 +316,7 @@ services:
 
   peer0.customs.cecbs.et:
     container_name: peer0.customs.cecbs.et
-    image: hyperledger/fabric-peer:2.5
+    image: hyperledger/fabric-peer:2.5.16
     environment:
       - CORE_VM_ENDPOINT=unix:///host/var/run/docker.sock
       - CORE_VM_DOCKER_HOSTCONFIG_NETWORKMODE=cecbs-network
@@ -380,7 +380,7 @@ services:
   # Shipping Peer
   peer0.shipping.cecbs.et:
     container_name: peer0.shipping.cecbs.et
-    image: hyperledger/fabric-peer:2.5
+    image: hyperledger/fabric-peer:2.5.16
     environment:
       - CORE_VM_ENDPOINT=unix:///host/var/run/docker.sock
       - CORE_VM_DOCKER_HOSTCONFIG_NETWORKMODE=cecbs-network

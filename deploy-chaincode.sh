@@ -278,12 +278,17 @@ sed -i "s|\"label\": \"coffee_[0-9.]*\"|\"label\": \"coffee_${VERSION}\"|" "$CHA
 echo -e "${GREEN}✓ Compose file updated: coffee-chaincode:${VERSION}, ID ${PACKAGE_ID}${NC}"
 
 cd "$REPO_ROOT"
-if ! $COMPOSE -f docker-compose-fabric.yml build coffee-chaincode; then
+# F8: --no-cache so a stale layer can never resurrect old Go code, and
+# --force-recreate --no-deps so the container is really recreated from the
+# new image (a plain `up -d` can leave the old container running when
+# compose thinks nothing changed — the stale-server failure mode, where
+# the old package ID stays registered and every query hangs ~20 s).
+if ! $COMPOSE -f docker-compose-fabric.yml build --no-cache coffee-chaincode; then
     echo -e "${RED}✗ Failed to rebuild the coffee-chaincode image${NC}"
     echo -e "${RED}  The v${VERSION} definition must not be committed while the server still runs old code — stopping here.${NC}"
     exit 1
 fi
-if ! $COMPOSE -f docker-compose-fabric.yml up -d coffee-chaincode; then
+if ! $COMPOSE -f docker-compose-fabric.yml up -d --force-recreate --no-deps coffee-chaincode; then
     echo -e "${RED}✗ Failed to recreate the coffee-chaincode container${NC}"
     exit 1
 fi
@@ -300,6 +305,38 @@ done
 if ! docker ps --filter "name=^coffee-chaincode$" --format "{{.Status}}" 2>/dev/null | grep -q "Up"; then
     echo -e "${RED}✗ coffee-chaincode container did not come up after the rebuild${NC}"
     echo -e "${RED}  Check: docker logs coffee-chaincode${NC}"
+    exit 1
+fi
+# F8: verify the recreated container actually carries the NEW package ID.
+# A stale container (old image, or a compose file the sed above did not
+# rewrite) registers under the old ID, and the peer then waits ~20 s on a
+# server that will never answer for the new definition. Fail fast here,
+# printing both values, instead of hanging later at approve/commit/query.
+SERVER_ID=$(docker inspect coffee-chaincode --format '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null | grep '^CORE_CHAINCODE_ID_NAME=' | cut -d= -f2-)
+[ -z "$SERVER_ID" ] && SERVER_ID=$(docker exec coffee-chaincode printenv CORE_CHAINCODE_ID_NAME 2>/dev/null || echo "unknown")
+echo -e "${YELLOW}  Package ID expected (new): ${PACKAGE_ID}${NC}"
+echo -e "${YELLOW}  Package ID in container env: ${SERVER_ID}${NC}"
+if [ "$SERVER_ID" != "$PACKAGE_ID" ]; then
+    echo -e "${RED}✗ PACKAGE-ID MISMATCH: container env is ${SERVER_ID}, expected ${PACKAGE_ID}${NC}"
+    echo -e "${RED}  The recreated container is stale (old image or unrewritten compose env) — it will never serve the new definition.${NC}"
+    echo -e "${RED}  Check: docker logs coffee-chaincode; docker inspect coffee-chaincode${NC}"
+    docker logs --tail 30 coffee-chaincode 2>&1 || true
+    exit 1
+fi
+echo -e "${GREEN}✓ Container package ID matches ${PACKAGE_ID}${NC}"
+# F8: DNS must resolve from a peer before the TCP probe means anything —
+# a failed getent is a different cause (network/DNS) from a refused
+# connection (server not listening), and the deploy should name it.
+echo -e "${YELLOW}  Resolving coffee-chaincode from peer0.ecta...${NC}"
+DNS_OUT=$(docker exec peer0.ecta.cecbs.et getent hosts coffee-chaincode 2>&1)
+DNS_RC=$?
+if [ $DNS_RC -eq 0 ]; then
+    echo -e "${GREEN}✓ DNS resolves: ${DNS_OUT}${NC}"
+elif [ $DNS_RC -eq 126 ] || [ $DNS_RC -eq 127 ]; then
+    echo -e "${YELLOW}  (cannot run getent in the peer container — no getent/shell there; skipping DNS check)${NC}"
+else
+    echo -e "${RED}✗ DNS resolution failed from peer0.ecta (rc=${DNS_RC}): ${DNS_OUT}${NC}"
+    echo -e "${RED}  coffee-chaincode does not resolve on the peer network — check that the peer and coffee-chaincode share the cecbs network (docker-compose-fabric.yml) and that the container is named coffee-chaincode.${NC}"
     exit 1
 fi
 # A chaincode query CANNOT gate readiness here, and must not be used as
