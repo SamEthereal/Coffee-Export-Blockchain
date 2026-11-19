@@ -1243,23 +1243,61 @@ initialize_chaincode() {
 # so it fails if the server was not rebuilt/restarted with the new package
 # ID after an upgrade. QueryAllLCs returns [] on an empty ledger, which is
 # a pass — only a connection/endorsement error is a failure.
+# RETRY (F6, 2026-11-19): the server takes ~25s to start and register after
+# a rebuild and connection.json dial_timeout is 10s, so a single query fired
+# immediately after deploy-chaincode.sh returns races the still-starting
+# server and fails even when everything is correct. Retry for ~90s and
+# succeed on the first good response. On final failure, print the real
+# error, the package ID the peer has for the committed version vs the ID
+# the server registered under, and the server's recent logs — the old
+# single-shot "may not be serving" message carried zero evidence.
 test_chaincode_basic() {
     write_step "Testing chaincode with a read query (QueryAllLCs)..."
-    QUERY_RESULT=$(docker exec \
+    local attempt=1 max_attempts=9 query_rc=0
+    QUERY_RESULT=""
+    while [ $attempt -le $max_attempts ]; do
+        QUERY_RESULT=$(docker exec \
+            -e CORE_PEER_LOCALMSPID=ECTAMSP \
+            -e CORE_PEER_MSPCONFIGPATH=/etc/hyperledger/fabric/users/Admin@ecta.cecbs.et/msp \
+            peer0.ecta.cecbs.et peer chaincode query \
+            -C coffeechannel -n coffee \
+            -c '{"function":"QueryAllLCs","Args":[]}' 2>&1)
+        query_rc=$?
+        # Success: peer CLI exited 0 and the response is the JSON array
+        # QueryAllLCs returns (possibly "[]"). Anything else is a failure
+        # of this attempt only, not yet of the check.
+        if [ $query_rc -eq 0 ] && printf '%s' "$QUERY_RESULT" | grep -qE '^\s*\['; then
+            write_success "Chaincode is responding to queries (attempt $attempt/$max_attempts)"
+            return 0
+        fi
+        log_verbose "Query attempt $attempt/$max_attempts failed (rc=$query_rc); retrying in 10s..."
+        attempt=$((attempt + 1))
+        [ $attempt -le $max_attempts ] && sleep 10
+    done
+
+    # All retries exhausted: fail LOUD with evidence, not the vague
+    # "may not be serving" message.
+    write_error "Chaincode query failed after $max_attempts attempts (~90s) — the chaincode server is not serving the committed version"
+    log_verbose "Last error: $QUERY_RESULT"
+    COMMITTED_INFO=$(docker exec peer0.ecta.cecbs.et peer lifecycle chaincode querycommitted --channelID coffeechannel --name coffee 2>&1 || echo "")
+    COMMITTED_VERSION=$(echo "$COMMITTED_INFO" | grep -oP 'Version: \K[0-9.]+' || echo "unknown")
+    COMMITTED_SEQUENCE=$(echo "$COMMITTED_INFO" | grep -oP 'Sequence: \K[0-9]+' || echo "unknown")
+    INSTALLED_ID=$(docker exec \
         -e CORE_PEER_LOCALMSPID=ECTAMSP \
         -e CORE_PEER_MSPCONFIGPATH=/etc/hyperledger/fabric/users/Admin@ecta.cecbs.et/msp \
-        peer0.ecta.cecbs.et peer chaincode query \
-        -C coffeechannel -n coffee \
-        -c '{"function":"QueryAllLCs","Args":[]}' 2>&1 || echo "FAILED")
-
-    if echo "$QUERY_RESULT" | grep -qE "FAILED|Error|error"; then
-        write_error "Chaincode query failed — the chaincode server may not be serving the committed version"
-        log_verbose "Error: $QUERY_RESULT"
-        write_info "Check: docker logs coffee-chaincode"
-        return 1
-    else
-        write_success "Chaincode is responding to queries"
+        peer0.ecta.cecbs.et peer lifecycle chaincode queryinstalled 2>/dev/null | grep "coffee_${COMMITTED_VERSION}" | awk '{print $3}' | sed 's/,//' | head -1)
+    SERVER_ID=$(docker inspect coffee-chaincode --format '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null | grep '^CORE_CHAINCODE_ID_NAME=' | cut -d= -f2-)
+    [ -z "$SERVER_ID" ] && SERVER_ID=$(docker exec coffee-chaincode printenv CORE_CHAINCODE_ID_NAME 2>/dev/null || echo "unknown")
+    write_info "Committed definition: coffee v${COMMITTED_VERSION} seq ${COMMITTED_SEQUENCE}"
+    write_info "Package ID installed on the peer for that version: ${INSTALLED_ID:-unknown}"
+    write_info "Package ID the server registered under (CORE_CHAINCODE_ID_NAME): ${SERVER_ID:-unknown}"
+    if [ -n "$INSTALLED_ID" ] && [ -n "$SERVER_ID" ] && [ "$INSTALLED_ID" != "$SERVER_ID" ]; then
+        write_error "PACKAGE-ID MISMATCH: the server registered under $SERVER_ID but the peer has $INSTALLED_ID installed — rebuild/recreate coffee-chaincode with the new package ID (see deploy-chaincode.sh)"
     fi
+    write_info "Last 50 lines of docker logs coffee-chaincode:"
+    docker logs --tail 50 coffee-chaincode 2>&1 | while IFS= read -r line; do log_verbose "  $line"; done
+    write_info "Check: docker logs coffee-chaincode"
+    return 1
 }
 
 ################################################################################

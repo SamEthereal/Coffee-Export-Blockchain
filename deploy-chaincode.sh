@@ -24,6 +24,15 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CHAINCODE_DIR="$REPO_ROOT/chaincodes/coffee"
 COMPOSE_FILE="$REPO_ROOT/docker-compose-fabric.yml"
 
+# Endorsement policy for the readiness check (F5 follow-up): the native
+# deploy.sh evaluates readiness against AND(all 6 MSPs), and without the
+# flag the check once reported all-6-false with 5/6 approvals genuinely
+# recorded. NOTE: approveformyorg/commit below still omit --signature-policy
+# and therefore use the channel default — aligning all three is an open
+# follow-up; readiness alone is fixed here because it is only informational
+# (the script does not gate on its output).
+POLICY="AND('ECTAMSP.peer','ECXMSP.peer','BanksMSP.peer','NBEMSP.peer','CustomsMSP.peer','ShippingMSP.peer')"
+
 # Compose command (v2 plugin preferred, v1 binary as fallback)
 if docker compose version &> /dev/null 2>&1; then
     COMPOSE="docker compose"
@@ -111,30 +120,49 @@ rm -rf pkg-temp code-temp
 mkdir -p pkg-temp
 cat > pkg-temp/metadata.json <<EOF
 {
-  "label": "coffee_${VERSION}"
+  "label": "coffee_${VERSION}",
+  "type": "ccaas"
 }
 EOF
 
 # For CCAAS external chaincode in Fabric 2.5:
 # Package structure MUST have:
-#   - metadata.json (label only, no type field)  
-#   - code.tar.gz (containing connection.json)
+#   - metadata.json with "type": "ccaas" — the external-builder detect step
+#     requires it. Without the type field the peer install fails with
+#     "Unknown chaincodeType"; that was the seq-21 install failure, fixed
+#     in the repo's chaincodes/coffee/metadata.json in ffaad3f8. A package
+#     built with label only reintroduces it.
+#   - code.tar.gz (containing connection.json + META-INF/statedb/... indexes)
 # Fabric requires code.tar.gz to exist, and extracts it before calling builders
 
 # Create the package directory
 rm -rf pkg-temp code-temp
 mkdir -p pkg-temp code-temp
 
-# Create metadata.json with label only (no type field)
+# Create metadata.json — label AND type. The type field must match the
+# repo's chaincodes/coffee/metadata.json exactly, or the host install
+# reintroduces the seq-21 external-builder detect failure (see above).
 cat > pkg-temp/metadata.json <<EOF
 {
-  "label": "coffee_${VERSION}"
+  "label": "coffee_${VERSION}",
+  "type": "ccaas"
 }
 EOF
 
-# Create code.tar.gz containing connection.json
+# Create code.tar.gz containing connection.json plus the CouchDB index
+# definitions (META-INF/statedb/couchdb/indexes/). The peer extracts the
+# indexes from the package at install time; without them a redeploy would
+# silently drop the shipped indexes (rate + repatriation, F2/F3 seq 24)
+# and the allocate/repatriation queries would fall back to full scans.
+# This must match the live seq-24 package, which ships all 10 indexes.
 cp connection.json code-temp/
-tar -czf pkg-temp/code.tar.gz -C code-temp connection.json
+if [ -d "$CHAINCODE_DIR/META-INF" ]; then
+    cp -r "$CHAINCODE_DIR/META-INF" code-temp/META-INF
+    tar -czf pkg-temp/code.tar.gz -C code-temp connection.json META-INF
+else
+    echo -e "${YELLOW}  (no META-INF indexes in $CHAINCODE_DIR — packaging connection.json only)${NC}"
+    tar -czf pkg-temp/code.tar.gz -C code-temp connection.json
+fi
 
 # Verify package structure
 echo "Verifying package structure..."
@@ -274,8 +302,42 @@ if ! docker ps --filter "name=^coffee-chaincode$" --format "{{.Status}}" 2>/dev/
     echo -e "${RED}  Check: docker logs coffee-chaincode${NC}"
     exit 1
 fi
-sleep 5
-echo -e "${GREEN}✓ Chaincode server rebuilt and running with the new package ID${NC}"
+# A chaincode query CANNOT gate readiness here, and must not be used as
+# one: the rebuilt server registers under the NEW package ID, but the OLD
+# definition is still committed until the commit step below, so a
+# pre-commit query would fail even when the server is perfect (the peer
+# enforces the package-ID match — proven by the F6 wrong-ID test). The
+# strongest check possible at this point is that the server's port is
+# actually reachable FROM a peer on the cecbs-network — "container Up"
+# alone does not prove that. Retry ~60s; fail loudly if the listener
+# never answers. (If the peer image has no shell, docker exec exits
+# 126/127 and the gate is skipped with a warning instead of failing the
+# deploy.) Real query readiness is verified after the commit by the
+# warm-up loop below.
+SERVER_READY=0
+SERVER_PROBE_OK=1
+for i in $(seq 1 30); do
+    docker exec peer0.ecta.cecbs.et sh -c 'echo > /dev/tcp/coffee-chaincode/9999' 2>/dev/null
+    PROBE_RC=$?
+    if [ $PROBE_RC -eq 0 ]; then
+        SERVER_READY=1
+        break
+    fi
+    if [ $PROBE_RC -eq 126 ] || [ $PROBE_RC -eq 127 ]; then
+        echo -e "${YELLOW}  (cannot probe from peer container — no shell there; skipping TCP gate, relying on container state)${NC}"
+        SERVER_PROBE_OK=0
+        break
+    fi
+    sleep 2
+done
+if [ "$SERVER_PROBE_OK" -eq 1 ] && [ "$SERVER_READY" -ne 1 ]; then
+    echo -e "${RED}✗ coffee-chaincode:9999 not reachable from peer0.ecta after ~60s${NC}"
+    echo -e "${RED}  The container is Up but its listener is not answering — the server may still be starting, or it crashed after start.${NC}"
+    echo -e "${RED}  Check: docker logs coffee-chaincode${NC}"
+    docker logs --tail 30 coffee-chaincode 2>&1 || true
+    exit 1
+fi
+echo -e "${GREEN}✓ Chaincode server rebuilt and reachable at coffee-chaincode:9999 with the new package ID${NC}"
 echo ""
 
 # Approve for all organizations
@@ -353,7 +415,7 @@ echo ""
 # Check commit readiness
 echo -e "${YELLOW}Checking commit readiness...${NC}"
 docker exec peer0.ecta.cecbs.et peer lifecycle chaincode checkcommitreadiness \
-    --channelID coffeechannel --name coffee --version ${VERSION} --sequence ${SEQUENCE} --output json | grep -A10 "approvals"
+    --channelID coffeechannel --name coffee --version ${VERSION} --sequence ${SEQUENCE} --signature-policy "$POLICY" --output json | grep -A10 "approvals"
 
 echo ""
 
@@ -400,15 +462,36 @@ if echo "$COMMITTED_INFO" | grep -q "Version: ${VERSION}" && echo "$COMMITTED_IN
     # already deployed and skip the upgrade.
     find "$CHAINCODE_DIR" -name "*.go" -type f -exec md5sum {} \; | sort | md5sum | awk '{print $1}' > "$CHAINCODE_DIR/.last_deployed"
     
-    # Warm up chaincode containers to prevent timeout on first real transaction
+    # Warm up chaincode containers to prevent timeout on first real transaction.
+    # This is the first point in the deploy where a real query CAN succeed
+    # (the new definition is committed, so the peer now expects the new
+    # package ID the server registered under). It is therefore also the
+    # real query-readiness gate: retry for ~90s — the server takes ~25s to
+    # start and register — and FAIL the deploy if the query never succeeds,
+    # instead of swallowing the failure and printing ✓. (The old warm-up
+    # queried -C cecbschannel, which does not exist, so it could never
+    # succeed and its failure was silently ignored.)
     echo ""
-    echo -e "${YELLOW}Warming up chaincode containers...${NC}"
-    docker exec peer0.banks.cecbs.et peer chaincode query \
-        -C cecbschannel -n coffee \
-        -c '{"Args":["QueryAllLCs"]}' \
-        > /dev/null 2>&1 || echo -e "${YELLOW}  (warmup query - container starting)${NC}"
-    sleep 5
-    echo -e "${GREEN}✓ Chaincode containers initialized${NC}"
+    echo -e "${YELLOW}Warming up chaincode containers (query readiness)...${NC}"
+    WARMUP_OK=0
+    for i in $(seq 1 9); do
+        if docker exec peer0.banks.cecbs.et peer chaincode query \
+            -C coffeechannel -n coffee \
+            -c '{"Args":["QueryAllLCs"]}' \
+            > /dev/null 2>&1; then
+            WARMUP_OK=1
+            echo -e "${GREEN}✓ Chaincode containers initialized (warm-up query succeeded on attempt $i/9)${NC}"
+            break
+        fi
+        echo -e "${YELLOW}  Warm-up query attempt $i/9 failed; retrying in 10s...${NC}"
+        [ $i -lt 9 ] && sleep 10
+    done
+    if [ "$WARMUP_OK" -ne 1 ]; then
+        echo -e "${RED}✗ Warm-up query failed after 9 attempts (~90s) — the committed chaincode is not serving queries${NC}"
+        echo -e "${RED}  Check: docker logs coffee-chaincode${NC}"
+        docker logs --tail 30 coffee-chaincode 2>&1 || true
+        exit 1
+    fi
 else
     echo -e "${RED}✗ Deployment verification failed${NC}"
     exit 1
