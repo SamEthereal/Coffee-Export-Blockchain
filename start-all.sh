@@ -77,6 +77,12 @@ BLOCKCHAIN_DIR="$PROJECT_ROOT/blockchain"
 CHAINCODE_DIR="$PROJECT_ROOT/chaincodes/coffee"
 SCRIPTS_DIR="$PROJECT_ROOT/scripts"
 
+# Port definitions
+POSTGRES_PORT=5432
+ORDERER_PORT=7050
+PEER_ECTA_PORT=7051
+CHAINCODE_PORT=9999
+
 # Peer / CouchDB host ports (from docker-compose-fabric.yml — these are
 # the host-mapped ports; the in-container peer ports 7051-7062 in the old
 # BLOCKCHAIN_PORTS list were never reachable from the host).
