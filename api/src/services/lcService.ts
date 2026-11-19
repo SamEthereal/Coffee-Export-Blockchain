@@ -227,9 +227,37 @@ export class LCService {
       // Connect as BanksMSP to issue the LC
       await this.fabricService.connectAsOrg('BanksMSP');
 
+      // F1 (2026-11-19): re-issuing an AMENDED LC must NOT go through
+      // CreateAndIssueLC — it overwrites the LC fresh (Documents [],
+      // Amendments [], AmendmentCount 0), so the amendment history and
+      // any attached documents are wiped from current state. The
+      // AMENDED -> ISSUED edge exists in the chaincode status table
+      // (banking.go:1081) via UpdateLCStatus, which only flips the
+      // status and preserves the whole LC struct. Detect the pre-issue
+      // ledger state first; a missing LC (fresh create) or a failed
+      // read falls through to the create path as before.
+      let isReissue = false;
+      try {
+        const existing = await this.fabricService.getLC(lcData.lcID);
+        if (existing?.success && existing.data) {
+          const preStatus = String(
+            (existing.data as any).status || (existing.data as any).Status || ''
+          ).toUpperCase();
+          isReissue = preStatus === 'AMENDED';
+          if (isReissue) {
+            logger.info(`[LCService] LC ${lcData.lcID} is AMENDED — re-issuing via UpdateLCStatus (preserves documents/amendments)`);
+          }
+        }
+      } catch (readErr: any) {
+        logger.warn(`[LCService] Could not read pre-issue LC ${lcData.lcID} (fresh create assumed):`, readErr?.message);
+      }
+
       // Create and issue LC in one step using CreateAndIssueLC
-      // This is a bank-initiated LC that bypasses the request/approve workflow
-      const result = await this.fabricService.invokeChaincode('CreateAndIssueLC', [
+      // This is a bank-initiated LC that bypasses the request/approve workflow.
+      // F1: an AMENDED LC is re-issued via UpdateLCStatus instead (see above).
+      const result = isReissue
+        ? await this.fabricService.invokeChaincode('UpdateLCStatus', [lcData.lcID, 'ISSUED'], 'BanksMSP')
+        : await this.fabricService.invokeChaincode('CreateAndIssueLC', [
         lcData.lcID,
         lcData.contractID,
         lcData.exporterID,
@@ -299,7 +327,12 @@ export class LCService {
       // /banking/lc/issue route, the E2E scripts) approve/allocate that ID.
       // A freshly generated ID here would point at a forex that does not exist.
       logger.info(`🔥 [LCService] LC issued - triggering forex auto-request for ${lcData.lcID}`);
-      const forexId = await this.triggerForexAutoRequest(lcData.lcID, lc || { contract_id: lcData.contractID, exporter_id: lcData.exporterID, amount: lcData.amount, currency: lcData.currency });
+      const forexOutcome = await this.triggerForexAutoRequest(lcData.lcID, lc || { contract_id: lcData.contractID, exporter_id: lcData.exporterID, amount: lcData.amount, currency: lcData.currency });
+      const forexId = forexOutcome.forexId;
+      const forexReused = forexOutcome.reused;
+      if (forexReused) {
+        logger.info(`🔁 [LCService] Forex request ${forexId} reused from the first issue (AMENDED re-issue)`);
+      }
 
       logger.info(`✅ [LCService] LC issued: ${lcData.lcID}`);
       // Audit: issueLC had no audit call at all (request/approve log
@@ -319,7 +352,7 @@ export class LCService {
           reason: 'LC issued',
           // Shared audit contract: top-level operation txId.
           blockchainTxId: result.txId || undefined,
-          metadata: { contractID: lcData.contractID, exporterID: lcData.exporterID, amount: lcData.amount, currency: lcData.currency, forexID: forexId ?? null, blockchainTxId: result.txId || null },
+          metadata: { contractID: lcData.contractID, exporterID: lcData.exporterID, amount: lcData.amount, currency: lcData.currency, forexID: forexId ?? null, forexReused, reissued: isReissue, blockchainTxId: result.txId || null },
         });
       } catch (auditErr) {
         logger.warn(`[LCService] Could not write issue audit row for ${lcData.lcID}:`, auditErr);
@@ -330,7 +363,12 @@ export class LCService {
         lcID: lcData.lcID,
         blockchainTxId: result.txId,
         forexAutoCreated: forexId !== null,
-        forexID: forexId ?? undefined
+        forexID: forexId ?? undefined,
+        // F1: a reused forex request satisfies the forex leg (no 502),
+        // and a re-issue is reported as such so callers can tell it
+        // apart from a fresh create-and-issue.
+        forexReused,
+        reissued: isReissue,
       };
     } catch (error: any) {
       logger.error(`❌ [LCService] Issue failed: ${error.message}`);
@@ -351,12 +389,42 @@ export class LCService {
    * different ID shapes for the same logical auto-request, and a retry
    * after a partial failure could not find the first request.
    */
-  private async triggerForexAutoRequest(lcID: string, lc: any): Promise<string | null> {
+  private async triggerForexAutoRequest(lcID: string, lc: any): Promise<{ forexId: string | null; reused: boolean }> {
     try {
       const { ForexService } = await import('./forexService');
       const forexService = ForexService.getInstance();
 
       const forexId = `FOREX_${lcID}_REQUEST`;
+
+      // F1 (2026-11-19): a re-issue already has a forex request from the
+      // first issue, and RequestForex rejects duplicates ("forex request
+      // ... already exists", forex.go) — which used to surface as a
+      // misleading 502 FOREX_AUTO_CREATE_FAILED even though the LC was
+      // issued and the forex leg already existed. Ledger first, PG
+      // mirror as fallback: if the request exists, reuse it — no new
+      // chain write, no duplicate PG/audit/signature rows.
+      try {
+        const existing = await this.fabricService.getForex(forexId);
+        if (existing?.success && existing.data) {
+          const fxStatus = String((existing.data as any).Status || (existing.data as any).status || 'UNKNOWN');
+          logger.info(`✅ [LCService] Forex request ${forexId} already on the ledger (status ${fxStatus}) — reusing for LC ${lcID}`);
+          return { forexId, reused: true };
+        }
+      } catch (ledgerErr: any) {
+        logger.warn(`[LCService] Forex ledger read failed for ${forexId}, falling back to PG check:`, ledgerErr?.message);
+      }
+      try {
+        const pgRow = await this.dbService.get(
+          'SELECT forex_id, status FROM forex_allocations WHERE forex_id = $1',
+          [forexId]
+        );
+        if (pgRow) {
+          logger.info(`✅ [LCService] Forex request ${forexId} already in PostgreSQL (status ${pgRow.status}) — reusing for LC ${lcID}`);
+          return { forexId, reused: true };
+        }
+      } catch (pgErr: any) {
+        logger.warn(`[LCService] Forex PG check failed for ${forexId}:`, pgErr?.message);
+      }
 
       const created = await forexService.requestForex({
         forexId,
@@ -372,12 +440,12 @@ export class LCService {
       // Trust the ID the creation call itself reports, not a re-generated one.
       const createdForexId = created?.forexId || forexId;
       logger.info(`✅ [LCService] Auto-requested forex: ${createdForexId} for LC: ${lcID}`);
-      return createdForexId;
+      return { forexId: createdForexId, reused: false };
     } catch (error: any) {
       logger.error(`❌ [LCService] Forex auto-request failed: ${error.message}`);
       // Don't fail the LC issuance if forex request fails — but report the
       // failure honestly (null) instead of a fabricated forex ID.
-      return null;
+      return { forexId: null, reused: false };
     }
   }
 

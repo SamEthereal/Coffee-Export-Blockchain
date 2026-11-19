@@ -1243,8 +1243,11 @@ router.post('/lc/issue',
       logger.info(`✅ [BANKING] LC issued successfully: ${_lcId}, Forex auto-triggered: ${result.forexAutoCreated}`);
       
       // Forex auto-creation handled by LCService - check if successful
+      // F1: on an AMENDED re-issue the forex request is REUSED (it already
+      // exists from the first issue) — no new REQUEST happened in this
+      // call, so no new signature row is recorded against the issue tx.
       try {
-        if (result.forexAutoCreated && result.forexID) {
+        if (result.forexAutoCreated && result.forexID && !result.forexReused) {
           const forexId = result.forexID;
           logger.info(`✅ Forex request auto-created on blockchain: ${forexId} for LC ${_lcId}`);
           
@@ -1326,10 +1329,16 @@ router.post('/lc/issue',
           status: 'ISSUED',
           blockchainTxId: result.blockchainTxId,
           forexAutoCreated: result.forexAutoCreated,
-          forexID: result.forexID
+          forexID: result.forexID,
+          // F1: re-issue of an AMENDED LC reuses the first issue's forex
+          // request instead of failing on the duplicate (no 502).
+          forexReused: !!result.forexReused,
+          reissued: !!result.reissued,
         },
-        message: result.forexAutoCreated 
-          ? `LC issued and forex request ${result.forexID} automatically created` 
+        message: result.forexAutoCreated
+          ? (result.forexReused
+              ? `LC re-issued and existing forex request ${result.forexID} reused`
+              : `LC issued and forex request ${result.forexID} automatically created`)
           : 'LC issued successfully',
         timestamp: new Date().toISOString()
       });
@@ -1613,11 +1622,36 @@ router.post('/lc/:lcID/issue',
         });
       }
 
+      // F1 (2026-11-19): an AMENDED LC can be re-issued. The ledger is the
+      // source of truth for the pre-issue status (PG can lag it); if the
+      // ledger says AMENDED, heal PG first so the validation below — which
+      // reads PG — sees the same state. IssueLC itself only accepts
+      // APPROVED, so a re-issue goes through UpdateLCStatus (AMENDED ->
+      // ISSUED is a legal transition, banking.go:1081) which preserves the
+      // LC's documents, amendments and amendment count on the ledger.
+      // CreateAndIssueLC would overwrite all three with empty values.
+      let preIssueStatus = String(lc.status || '').toUpperCase();
+      try {
+        const ledgerLc = await fabricService.getLC(lcID);
+        if (ledgerLc?.success && ledgerLc.data) {
+          preIssueStatus = String(
+            (ledgerLc.data as any).status || (ledgerLc.data as any).Status || preIssueStatus
+          ).toUpperCase();
+        }
+      } catch (ledgerErr: any) {
+        logger.warn(`[LC ISSUE] Ledger read failed for ${lcID}, using PG status ${preIssueStatus}:`, ledgerErr?.message);
+      }
+      const isReissue = preIssueStatus === 'AMENDED';
+      if (isReissue && String(lc.status || '').toUpperCase() !== 'AMENDED') {
+        await autoHealLCStatus(lcID, 'AMENDED');
+      }
+
       // Check if all requirements for issuance are met
       const issuanceValidation = await lcDocumentValidationService.canIssueLCRequest(
         lcID,
         lc.contract_id,
-        lc.exporter_id
+        lc.exporter_id,
+        isReissue ? ['APPROVED', 'AMENDED'] : ['APPROVED']
       );
       
       if (!issuanceValidation.canIssue) {
@@ -1647,10 +1681,14 @@ router.post('/lc/:lcID/issue',
       await fabricService.connectAsOrg('BanksMSP');
       logger.info(`[LC ISSUE] Connected as BanksMSP for issuing LC ${lcID}`);
 
-      const result = await fabricService.issueLC(lcID, terms, 'BanksMSP');
+      // F1: AMENDED re-issue uses UpdateLCStatus (preserves documents /
+      // amendments); a first issue uses IssueLC (APPROVED -> ISSUED).
+      const result = isReissue
+        ? await fabricService.invokeChaincode('UpdateLCStatus', [lcID, 'ISSUED'], 'BanksMSP')
+        : await fabricService.issueLC(lcID, terms, 'BanksMSP');
 
       if (result.success) {
-        logger.info(`[${user?.org}] ✅ LC issued successfully: ${lcID}`);
+        logger.info(`[${user?.org}] ✅ LC issued successfully: ${lcID}${isReissue ? ' (AMENDED re-issue)' : ''}`);
 
         // Auto-create a forex allocation request after LC issuance.
         // LEG 1 (F6b): the outcome is tracked and reported honestly.
@@ -1660,6 +1698,7 @@ router.post('/lc/:lcID/issue',
         // missing. A failure now returns 502 with the issued LC's
         // status + tx id, so the caller retries the forex leg.
         let forexAutoCreated = false;
+        let forexReused = false;
         let forexError = '';
         // Use LC data from request body (no need to read from blockchain with schema issues)
         try {
@@ -1690,19 +1729,50 @@ router.post('/lc/:lcID/issue',
             // Use LC ID in forex ID for easy matching: FOREX_LC-CONTRACT123-456_REQUEST
             const forexId = `FOREX_${lcID}_REQUEST`;
 
+            // F1 (2026-11-19): on an AMENDED re-issue the forex request
+            // already exists from the first issue, and RequestForex
+            // rejects duplicates ("forex request ... already exists") —
+            // which used to surface as a misleading 502 even though the
+            // LC was issued and the forex leg already existed. Ledger
+            // first, PG mirror as fallback; reuse means no new chain
+            // write and no duplicate PG/audit/signature rows below.
+            let existingForex: any = null;
+            try {
+              const fxRead = await fabricService.getForex(forexId);
+              if (fxRead?.success && fxRead.data) existingForex = fxRead.data;
+            } catch { /* fall through to the PG check */ }
+            if (!existingForex) {
+              try {
+                existingForex = await dbService.get(
+                  'SELECT forex_id, status FROM forex_allocations WHERE forex_id = $1',
+                  [forexId]
+                );
+              } catch { /* treat as not found; the create below decides */ }
+            }
+            if (existingForex) {
+              forexAutoCreated = true;
+              forexReused = true;
+              logger.info(`🔁 [LC ISSUE] Forex request ${forexId} already exists (status ${existingForex.Status || existingForex.status || 'UNKNOWN'}) — reusing for LC ${lcID}`);
+            }
+
             logger.info(`[LC ISSUE] Creating forex request ${forexId} with: contract=${lcContractID}, exporter=${lcExporterID}, amount=${lcAmount}, currency=${lcCurrency}`);
 
             // RequestForex takes 5 parameters: forexID, contractID, exporterID, amount, currency
-            // NOTE: LC ID is NOT part of RequestForex parameters (linked during allocation)
-            const forexResult = await fabricService.invokeChaincode('RequestForex', [
-              forexId,
-              lcContractID,
-              lcExporterID,
-              lcAmount.toString(),
-              lcCurrency,
-            ], 'BanksMSP');
+            // NOTE: LC ID is NOT part of RequestForex parameters (linked during allocation).
+            // Skipped when reusing an existing request (F1, see above).
+            const forexResult = forexReused
+              ? null
+              : await fabricService.invokeChaincode('RequestForex', [
+                forexId,
+                lcContractID,
+                lcExporterID,
+                lcAmount.toString(),
+                lcCurrency,
+              ], 'BanksMSP');
 
-            if (forexResult.success) {
+            if (forexReused) {
+              // Reused — already counted; nothing to create or sync.
+            } else if (forexResult && forexResult.success) {
               logger.info(`✅ Forex request auto-created on blockchain: ${forexId} for LC ${lcID}`);
               forexAutoCreated = true;
 
@@ -1787,7 +1857,7 @@ router.post('/lc/:lcID/issue',
                 logger.warn(`⚠️ Failed to sync forex request to PostgreSQL:`, syncErr);
               }
             } else {
-              forexError = forexResult.error || 'Forex auto-request was rejected by the ledger';
+              forexError = forexResult?.error || 'Forex auto-request was rejected by the ledger';
               logger.warn(`⚠️ Forex auto-request failed for LC ${lcID}: ${forexError}`);
             }
           } else {
@@ -1945,7 +2015,7 @@ router.post('/lc/:lcID/issue',
         }
         res.json({
           success: true,
-          data: { ...result.data, forexAutoCreated: true, mt700AutoCreated, mt700MessageId },
+          data: { ...result.data, forexAutoCreated: true, forexReused, reissued: isReissue, mt700AutoCreated, mt700MessageId },
           txId: result.txId,
           timestamp: new Date().toISOString(),
         });

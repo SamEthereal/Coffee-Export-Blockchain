@@ -104,7 +104,7 @@ export class LCDocumentValidationService {
   /**
    * Check if LC can be issued based on compliance requirements
    */
-  async canIssueLCRequest(lcId: string, contractId: string, exporterId: string): Promise<{
+  async canIssueLCRequest(lcId: string, contractId: string, exporterId: string, allowedStatuses: string[] = ['APPROVED']): Promise<{
     canIssue: boolean;
     reason?: string;
     missingRequirements: string[];
@@ -175,10 +175,14 @@ export class LCDocumentValidationService {
         };
       }
 
-      if (lc.status !== 'APPROVED') {
+      // 4. Check LC status — APPROVED for a first issue; an AMENDED LC is
+      // also issuable (F1 re-issue: the caller passes ['APPROVED',
+      // 'AMENDED']). The default is unchanged, so the document-checklist
+      // endpoint that calls this without the argument keeps its old gate.
+      if (!allowedStatuses.includes(lc.status)) {
         return {
           canIssue: false,
-          reason: `LC must be in APPROVED status before issuance (current: ${lc.status})`,
+          reason: `LC must be in ${allowedStatuses.join(' or ')} status before issuance (current: ${lc.status})`,
           missingRequirements: [`LC approval required (current status: ${lc.status})`],
           validationDetails,
         };
