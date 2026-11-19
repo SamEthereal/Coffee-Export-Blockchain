@@ -1,0 +1,8 @@
+{
+  "index": {
+    "fields": ["paymentId", "repatriationId"]
+  },
+  "ddoc": "indexRepatriationPayment",
+  "name": "indexRepatriationPayment",
+  "type": "json"
+}

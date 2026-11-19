@@ -1,0 +1,8 @@
+{
+  "index": {
+    "fields": ["commodityType", "status"]
+  },
+  "ddoc": "indexRetentionPolicy",
+  "name": "indexRetentionPolicy",
+  "type": "json"
+}

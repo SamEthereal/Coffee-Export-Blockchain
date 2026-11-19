@@ -1,0 +1,8 @@
+{
+  "index": {
+    "fields": ["currency", "status"]
+  },
+  "ddoc": "indexRateCurrencyStatus",
+  "name": "indexRateCurrencyStatus",
+  "type": "json"
+}
