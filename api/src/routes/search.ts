@@ -115,7 +115,10 @@ function hrefFor(
     case 'lc':
       if (role === 'EXPORTER') return '/portals/exporter?tab=5';
       if (role === 'NBE') return '/portals/nbe?tab=1';
-      return '/portals/banks?tab=10';
+      // Tab 10 (All LCs) was removed in the 2026-11-18 merge; Payment
+      // Methods (tab 0) lists all LCs. Pointing here avoids the
+      // "All LCs Tab Removed" warning for a link the system generated.
+      return '/portals/banks?tab=0';
     case 'ecx_lot':
       return '/portals/ecx?tab=0';
     case 'payment':
