@@ -13,6 +13,7 @@ import { logger } from '../utils/logger';
 import { logAuditBestEffort } from '../utils/auditBestEffort';
 import notificationService from '../services/notificationService';
 import { dedupeById, isValidForex } from '../utils/dataFilters';
+import { fetchLedgerForexMap, healForexRow, markForexSyntheticRepatriated } from '../utils/healLedger';
 import { BlockchainSignatureService } from '../services/blockchainSignatureService';
 import { blockchainCache, CacheKeys, CacheInvalidation } from '../services/blockchainCacheService';
 
@@ -170,26 +171,68 @@ router.get(['/', '/allocations'], authMiddleware, async (req, res) => {
       return [];
     });
     
-    const blockchainPromise = fabricService.queryAllForex().catch(err => {
-      logger.warn('[FOREX] Blockchain query failed (graceful):', err);
-      return { success: false, data: [], error: err.message };
-    });
-    
+    // (The ledger read for this list now happens in the D5-style
+    // reconciliation below, awaited — not in a background promise.)
+
     // Wait for PostgreSQL first (instant response)
     const pgForex = await pgPromise;
     logger.info(`[FOREX] ✅ Retrieved ${pgForex.length} forex allocations from PostgreSQL`);
-    
-    // Return PostgreSQL data immediately (even if empty)
-    // Blockchain continues in background (non-blocking)
-    blockchainPromise.then(result => {
-      if (result.success && result.data) {
-        logger.info(`[FOREX] ✅ Background: Retrieved ${result.data.length} forex from blockchain`);
+
+    // D5-style read-time reconciliation (2026-11-19, pg-ledger-equality
+    // fix round): GET /forex is PG-first while GET /banking/forex reads
+    // the ledger, and the audit found 18 rows where the two disagreed
+    // (12 PG-ahead phantom ALLOCATED rows, 3 ledger-ahead missed
+    // allocate mirrors, 3 confirm/reject mismatches). One QueryAllForex
+    // call covers the whole list; a failed/slow ledger read falls back
+    // to the PG statuses above, so the list never breaks on chain
+    // trouble. Rows the ledger does not return (the 2 synthetic
+    // Nov-15 REPAT rows) keep their PG status here — they are corrected
+    // by POST /forex/resync, not by a read-time heal. The old
+    // background-only blockchain fetch is replaced by this awaited
+    // reconciliation: a background log line never fixed the portal view.
+    let statusReconciled = false;
+    let statusHealed = 0;
+    let statusMismatches = 0;
+    const ledgerById = new Map<string, { status: string; allocatedAmount?: number }>();
+    const ledgerMap = await fetchLedgerForexMap();
+    if (ledgerMap) {
+      statusReconciled = true;
+      for (const [id, doc] of ledgerMap) {
+        ledgerById.set(id, {
+          status: String(doc?.status || doc?.Status || '').trim().toUpperCase(),
+          allocatedAmount: typeof doc?.allocatedAmount === 'number' ? doc.allocatedAmount : undefined,
+        });
       }
-    }).catch(err => {
-      logger.warn('[FOREX] ⚠️  Background blockchain query failed:', err.message);
-    });
-    
-    const normalizedForex = pgForex.map((fx: any) => ({
+      const toHeal: Array<{ forexId: string; chainStatus: string; allocatedAmount?: number }> = [];
+      for (const fx of pgForex as any[]) {
+        const key = String(fx?.forex_id || fx?.allocation_id || '');
+        const ledger = ledgerById.get(key);
+        if (ledger && ledger.status && ledger.status !== String(fx?.status || '').toUpperCase()) {
+          statusMismatches++;
+          toHeal.push({ forexId: key, chainStatus: ledger.status, allocatedAmount: ledger.allocatedAmount });
+        }
+      }
+      if (toHeal.length > 0) {
+        const capped = toHeal.slice(0, 50);
+        const healed = await Promise.allSettled(
+          capped.map((h) => healForexRow(h.forexId, h.chainStatus, (req as any).user, h.allocatedAmount)),
+        );
+        statusHealed = healed.filter((r) => r.status === 'fulfilled' && (r as any).value?.healed).length;
+        logger.info(`[FOREX] 🔧 Status reconciliation: ${statusMismatches} mismatched, ${statusHealed} PG rows healed to ledger status`);
+      }
+    }
+
+    const normalizedForex = pgForex.map((fx: any) => {
+      // Show the ledger truth now (same rule as the D5 LC list): a row
+      // whose PG status is stale is displayed with the ledger status,
+      // and the allocated amount follows the ledger too.
+      const ledgerKey = String(fx?.forex_id || fx?.allocation_id || '');
+      const ledgerRow = ledgerById.get(ledgerKey);
+      const shownStatus = ledgerRow && ledgerRow.status ? ledgerRow.status : (fx?.status || 'REQUESTED');
+      const shownAllocated = ledgerRow && typeof ledgerRow.allocatedAmount === 'number'
+        ? ledgerRow.allocatedAmount
+        : (fx?.allocated_amount ?? 0);
+      return {
         forexId: String(fx?.forex_id || fx?.allocation_id || ''),
         contractId: String(fx?.contract_id || ''),
         exporterId: String(fx?.exporter_id || ''),
@@ -198,9 +241,9 @@ router.get(['/', '/allocations'], authMiddleware, async (req, res) => {
         buyerCountry: fx?.buyer_country || '',
         amount: fx?.amount ?? 0,
         currency: fx?.currency || 'USD',
-        status: fx?.status || 'REQUESTED',
+        status: shownStatus,
         requestedAmount: fx?.requested_amount ?? 0,
-        allocatedAmount: fx?.allocated_amount ?? 0,
+        allocatedAmount: shownAllocated,
         exchangeRate: fx?.exchange_rate ?? 0,
         retention: fx?.retention ?? 0,
         retentionRate: fx?.retention_rate ?? 0,
@@ -217,16 +260,20 @@ router.get(['/', '/allocations'], authMiddleware, async (req, res) => {
         verifiedBy: fx?.verified_by || '',
         verifiedByMSP: fx?.verified_by_msp || '',
         comments: fx?.comments || '',
-      }));
-      
+      };
+    });
+
       const uniqueForex = dedupeById(normalizedForex, (fx: any) => String(fx.forexId));
-      
-      return res.json({ 
-        success: true, 
+
+      return res.json({
+        success: true,
         data: uniqueForex,
         source: 'postgresql',
         count: uniqueForex.length,
-        timestamp: new Date().toISOString() 
+        statusReconciled,
+        statusHealed,
+        statusMismatches,
+        timestamp: new Date().toISOString()
       });
 
   } catch (error: any) {
@@ -242,6 +289,82 @@ router.get(['/', '/allocations'], authMiddleware, async (req, res) => {
 });
 
 // ==================== SPECIFIC ROUTES (MUST BE BEFORE :forexId) ====================
+
+/**
+ * POST /api/v1/forex/resync (2026-11-19, pg-ledger-equality fix round)
+ *
+ * Heal forex_allocations from ledger truth, mirroring POST
+ * /banking/lc/resync (ADMIN-only, idempotent). The audit found 20
+ * differing rows: 18 status diffs healed here from QueryAllForex, and
+ * the 2 synthetic Nov-15 rows corrected to REPATRIATED (see
+ * markForexSyntheticRepatriated — kept, never deleted). Nothing is
+ * inserted: every ledger forex doc already has a PG row. A repeat call
+ * heals 0 rows. Unknown ledger statuses are skipped, never written.
+ */
+router.post('/resync', authMiddleware, requireRole(['ADMIN']), async (req, res) => {
+  try {
+    const ledgerMap = await fetchLedgerForexMap();
+    if (!ledgerMap) {
+      return res.status(502).json({
+        success: false,
+        error: { code: 'LEDGER_UNAVAILABLE', message: 'Could not read forex allocations from the ledger (QueryAllForex failed)' },
+        timestamp: new Date().toISOString(),
+      });
+    }
+    const actor = (req as any).user;
+    const healed: Array<{ forexId: string; from: string; to: string }> = [];
+    const skipped: Array<{ forexId: string; reason: string }> = [];
+    for (const [forexId, doc] of ledgerMap) {
+      const chainStatus = String(doc?.status || doc?.Status || '').trim().toUpperCase();
+      const allocatedAmount = typeof doc?.allocatedAmount === 'number' ? doc.allocatedAmount : null;
+      const result = await healForexRow(forexId, chainStatus, actor, allocatedAmount);
+      if (result.healed) {
+        healed.push({ forexId, from: String(result.oldStatus), to: String(result.newStatus) });
+      } else if (result.reason && result.reason !== 'already equal' && result.reason !== 'no PG row') {
+        skipped.push({ forexId, reason: result.reason });
+      }
+    }
+    // The 2 synthetic rows have no ledger doc, so the loop above never
+    // sees them. Their LCs are SETTLED on-ledger with real ALLOCATED
+    // ledger forex docs; the synthetic rows are repatriation-test
+    // artefacts, corrected to REPATRIATED in place (never deleted —
+    // forex_repatriations references them).
+    const syntheticIds = ['FOREX-REPAT-TXID-20261115', 'FOREX-REPAT-TXID-20261115-B'];
+    const synthetics: Array<{ forexId: string; from: string; to: string; note: string }> = [];
+    for (const forexId of syntheticIds) {
+      const result = await markForexSyntheticRepatriated(forexId, actor);
+      if (result.healed) {
+        synthetics.push({
+          forexId,
+          from: String(result.oldStatus),
+          to: String(result.newStatus),
+          note: 'Synthetic Nov-15 repatriation-test row, no ledger doc; kept, corrected ALLOCATED → REPATRIATED',
+        });
+      }
+    }
+    const pgCount = await postgresDb.get(`SELECT COUNT(*)::int AS n FROM forex_allocations`, []);
+    res.json({
+      success: true,
+      data: {
+        ledgerTotal: ledgerMap.size,
+        pgTotal: (pgCount as any)?.n ?? null,
+        healed,
+        healedCount: healed.length,
+        synthetics,
+        syntheticCount: synthetics.length,
+        skipped,
+      },
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error: any) {
+    logger.error('[FOREX] ❌ Resync error:', error);
+    return res.status(500).json({
+      success: false,
+      error: { code: 'SERVER_ERROR', message: error.message },
+      timestamp: new Date().toISOString(),
+    });
+  }
+});
 
 // GET /api/v1/forex/rates — get all exchange rates
 router.get('/rates', authMiddleware, async (req, res) => {

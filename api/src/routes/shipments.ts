@@ -13,6 +13,7 @@ import { body, param, query } from 'express-validator';
 import { dedupeById, isValidShipment } from '../utils/dataFilters';
 import { statusManager } from '../utils/statusManager';
 import { authMiddleware, requireRole } from '../middleware/auth';
+import { fetchLedgerShipmentMap, healShipmentRow, flagShipmentPhantom } from '../utils/healLedger';
 
 const router = express.Router();
 
@@ -3712,6 +3713,92 @@ router.put('/:shipmentID/logistics-status',
           timestamp: new Date().toISOString(),
         });
       }
+    }
+  }
+);
+
+/**
+ * POST /api/v1/shipments/resync (2026-11-19, pg-ledger-equality fix round)
+ *
+ * Heal shipments from ledger truth, mirroring POST /banking/lc/resync
+ * (ADMIN-only, idempotent). The audit found 24 status diffs — 13×
+ * PG LOADED vs ledger FREIGHT_BOOKED (the booking-load mirror wrote
+ * LOADED to PG without a chain write), 1× LOADED vs DELIVERED, 3×
+ * PG-only QUALITY_PENDING, 6× unmirrored inspection transitions, 1×
+ * unmirrored customs rejection — all healed here from
+ * QueryAllShipments. The 13 PG-only Nov-11 phantoms (no ledger doc,
+ * empty blockchain_tx_id) are NOT deleted: their false
+ * blockchain_synced=true flag is corrected to false and an audit row
+ * records it. A repeat call heals 0 rows and flags 0 phantoms.
+ */
+router.post('/resync',
+  authMiddleware,
+  requireRole('ADMIN'),
+  async (req: Request, res: Response) => {
+    try {
+      const ledgerMap = await fetchLedgerShipmentMap();
+      if (!ledgerMap) {
+        return res.status(502).json({
+          success: false,
+          error: { code: 'LEDGER_UNAVAILABLE', message: 'Could not read shipments from the ledger (QueryAllShipments failed)' },
+          timestamp: new Date().toISOString(),
+        });
+      }
+      const actor = (req as any).user;
+      const healed: Array<{ shipmentId: string; from: string; to: string }> = [];
+      const skipped: Array<{ shipmentId: string; reason: string }> = [];
+      const ledgerIds = new Set<string>(ledgerMap.keys());
+      for (const [shipmentId, doc] of ledgerMap) {
+        const chainStatus = String(doc?.status || doc?.Status || '').trim().toUpperCase();
+        const result = await healShipmentRow(shipmentId, chainStatus, actor);
+        if (result.healed) {
+          healed.push({ shipmentId, from: String(result.oldStatus), to: String(result.newStatus) });
+        } else if (result.reason && result.reason !== 'already equal' && result.reason !== 'no PG row') {
+          skipped.push({ shipmentId, reason: result.reason });
+        }
+      }
+      // PG-only rows: no ledger doc. Flag only the true phantoms
+      // (empty blockchain_tx_id); a PG row WITH a tx id but no ledger
+      // doc would be a different, unexamined case and is reported, not
+      // flagged.
+      const pgRows: any[] = await postgresDb.all(
+        `SELECT shipment_id, blockchain_tx_id FROM shipments ORDER BY shipment_id`,
+        [],
+      );
+      const phantomsFlagged: string[] = [];
+      const pgOnlyWithTx: string[] = [];
+      for (const pg of pgRows) {
+        const id = String(pg.shipment_id);
+        if (ledgerIds.has(id)) continue;
+        if (pg.blockchain_tx_id && String(pg.blockchain_tx_id).trim() !== '') {
+          pgOnlyWithTx.push(id);
+          continue;
+        }
+        const result = await flagShipmentPhantom(id, actor);
+        if (result.healed) phantomsFlagged.push(id);
+      }
+      const pgCount = await postgresDb.get(`SELECT COUNT(*)::int AS n FROM shipments`, []);
+      res.json({
+        success: true,
+        data: {
+          ledgerTotal: ledgerMap.size,
+          pgTotal: (pgCount as any)?.n ?? null,
+          healed,
+          healedCount: healed.length,
+          phantomsFlagged,
+          phantomsFlaggedCount: phantomsFlagged.length,
+          pgOnlyWithTx,
+          skipped,
+        },
+        timestamp: new Date().toISOString(),
+      });
+    } catch (error: any) {
+      logger.error('[SHIPMENTS] ❌ Resync error:', error);
+      return res.status(500).json({
+        success: false,
+        error: { code: 'SERVER_ERROR', message: error.message },
+        timestamp: new Date().toISOString(),
+      });
     }
   }
 );

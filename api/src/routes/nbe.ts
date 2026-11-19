@@ -9,6 +9,7 @@ import { DatabaseService } from '../services/databaseService';
 import { FabricService } from '../services/fabricService';
 import { logger } from '../utils/logger';
 import { logAuditBestEffort } from '../utils/auditBestEffort';
+import { backfillRepatriation } from '../utils/healLedger';
 import { validateBankAccount } from '../utils/fieldValidation';
 import notificationService from '../services/notificationService';
 
@@ -555,6 +556,35 @@ router.post('/forex/:forexId/repatriation', authMiddleware, requireRole('NBE'), 
       logger.info(`[NBE] ✅ Repatriation ${chainSync.repatriationId} synced to chain for ${forexId}`);
     } else {
       logger.warn(`[NBE] Repatriation ${forexId} recorded in Postgres only: ${chainSync.warning}`);
+    }
+    // Mirror the synced repatriation into export_proceeds_repatriation
+    // (2026-11-19, pg-ledger-equality fix round). This route used to
+    // write forex_repatriations (with a blank repatriation_id) and sync
+    // to the chain, but never inserted the repatriation row — which is
+    // how REP-FOREX-REPAT-TXID-20261115[-B] ended up ledger-only with
+    // only a forex_repatriations echo. Best-effort: read the ledger doc
+    // back and backfill it (INSERT-only, ON CONFLICT DO NOTHING), then
+    // link this call's forex_repatriations row to it. A failure here
+    // never fails the request — POST /repatriation/resync backfills it.
+    if (chainSync.synced && chainSync.repatriationId) {
+      try {
+        const ledgerRecord = await fabricService.evaluateTransaction('ReadRepatriation', chainSync.repatriationId);
+        if (ledgerRecord.success && ledgerRecord.data) {
+          const backfilled = await backfillRepatriation(ledgerRecord.data, (req as any).user);
+          if (!backfilled.inserted && backfilled.reason !== 'already exists') {
+            logger.warn(`[NBE] Repatriation ${chainSync.repatriationId} synced to chain but the PG backfill was skipped: ${backfilled.reason}`);
+          }
+        } else {
+          logger.warn(`[NBE] Could not read back ${chainSync.repatriationId} from the ledger to backfill Postgres:`, ledgerRecord.error);
+        }
+        await db.run(
+          `UPDATE forex_repatriations SET repatriation_id = $1
+           WHERE forex_allocation_id = $2 AND (repatriation_id IS NULL OR repatriation_id = '')`,
+          [chainSync.repatriationId, forexId],
+        );
+      } catch (mirrorErr: any) {
+        logger.warn(`[NBE] Could not mirror repatriation ${chainSync.repatriationId} to Postgres:`, mirrorErr?.message || mirrorErr);
+      }
     }
     // Audit: this chain move never wrote an audit_trail row.
     // Best-effort — a failed audit write must not fail the move.

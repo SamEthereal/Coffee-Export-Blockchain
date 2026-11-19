@@ -13,6 +13,7 @@ import { body, param } from 'express-validator';
 import { statusManager } from '../utils/statusManager';
 import { authMiddleware } from '../middleware/auth';
 import { requireRole } from '../middleware/rbac';
+import { fetchLedgerPaymentMap, healPaymentRow } from '../utils/healLedger';
 import { blockchainCache, CacheKeys, CacheInvalidation } from '../services/blockchainCacheService';
 import { validateBankAccount, validateBIC } from '../utils/fieldValidation';
 
@@ -2663,6 +2664,85 @@ router.post('/:paymentID/release',
     }
   }
 );
+
+/**
+ * POST /api/v1/payments/resync (2026-11-19, pg-ledger-equality fix round)
+ *
+ * Heal payments from ledger truth, mirroring POST /banking/lc/resync
+ * (ADMIN-only, idempotent). The audit found 7 unmirrored settle/
+ * confirm transitions (4× SETTLED→CONFIRMED, 3× VERIFIED→SETTLED),
+ * healed here from QueryAllPayments — with the repatriation impostors
+ * filtered out (see healLedger.fetchLedgerPaymentMap: the chaincode
+ * selector also matches the 20 repatriation docs, so the raw query
+ * returns 222 for 202 real payments). The 79 ledger-only rows are
+ * NOT backfilled and NOT "fixed": 51 bridge PAY_<LC> rows are
+ * ledger-only by design (ReleaseLCPayment creates no PG row — only 2
+ * of 53 exist in PG), and 28 are historical Nov 11-12 chain-only
+ * payments with no audit trail to reconstruct a PG row from. They are
+ * counted and reported so the residual is explicit. A repeat call
+ * heals 0 rows.
+ */
+router.post('/resync', authMiddleware, requireRole(['ADMIN']), async (req: Request, res: Response) => {
+  try {
+    const ledgerMap = await fetchLedgerPaymentMap();
+    if (!ledgerMap) {
+      return res.status(502).json({
+        success: false,
+        error: { code: 'LEDGER_UNAVAILABLE', message: 'Could not read payments from the ledger (QueryAllPayments failed)' },
+        timestamp: new Date().toISOString(),
+      });
+    }
+    const actor = (req as any).user;
+    const healed: Array<{ paymentId: string; from: string; to: string }> = [];
+    const skipped: Array<{ paymentId: string; reason: string }> = [];
+    const ledgerOnlyBridge: string[] = [];
+    const ledgerOnlyHistorical: string[] = [];
+    const ledgerIds = new Set<string>(ledgerMap.keys());
+    for (const [paymentId, doc] of ledgerMap) {
+      const chainStatus = String(doc?.status || doc?.Status || '').trim().toUpperCase();
+      const result = await healPaymentRow(paymentId, chainStatus, actor);
+      if (result.healed) {
+        healed.push({ paymentId, from: String(result.oldStatus), to: String(result.newStatus) });
+      } else if (result.reason === 'no PG row') {
+        // Ledger-only, by design or historical — counted, never inserted.
+        // Bridge payments are PAY_<LC> (ReleaseLCPayment creates no PG row).
+        if (paymentId.startsWith('PAY_LC')) {
+          ledgerOnlyBridge.push(paymentId);
+        } else {
+          ledgerOnlyHistorical.push(paymentId);
+        }
+      } else if (result.reason && result.reason !== 'already equal') {
+        skipped.push({ paymentId, reason: result.reason });
+      }
+    }
+    const pgRows: any[] = await postgresDb.all(`SELECT payment_id FROM payments`, []);
+    const pgOnly = pgRows.map((r: any) => String(r.payment_id)).filter((id: string) => !ledgerIds.has(id));
+    const pgCount = await postgresDb.get(`SELECT COUNT(*)::int AS n FROM payments`, []);
+    res.json({
+      success: true,
+      data: {
+        ledgerTotal: ledgerMap.size,
+        pgTotal: (pgCount as any)?.n ?? null,
+        healed,
+        healedCount: healed.length,
+        ledgerOnlyBridge,
+        ledgerOnlyBridgeCount: ledgerOnlyBridge.length,
+        ledgerOnlyHistorical,
+        ledgerOnlyHistoricalCount: ledgerOnlyHistorical.length,
+        pgOnly,
+        skipped,
+      },
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error: any) {
+    logger.error('[PAYMENT] ❌ Resync error:', error);
+    return res.status(500).json({
+      success: false,
+      error: { code: 'SERVER_ERROR', message: error.message },
+      timestamp: new Date().toISOString(),
+    });
+  }
+});
 
 export default router;
 

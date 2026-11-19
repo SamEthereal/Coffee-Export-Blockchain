@@ -10,6 +10,7 @@ import { authMiddleware } from '../middleware/auth';
 import { requireRole } from '../middleware/rbac';
 import { logger } from '../utils/logger';
 import { logAuditBestEffort } from '../utils/auditBestEffort';
+import { fetchLedgerRepatriationMap, healRepatriationRow, backfillRepatriation } from '../utils/healLedger';
 import { validateBankAccount, validateBIC } from '../utils/fieldValidation';
 import notificationService from '../services/notificationService';
 
@@ -23,6 +24,37 @@ const bankAccountValidator = (bankField?: string) => (value: unknown, { req }: a
 const router = express.Router();
 const fabricService = FabricService.getInstance();
 const postgresDb = DatabaseService.getInstance();
+
+/**
+ * Ledger-read-back mirror for a repatriation chain move (2026-11-19,
+ * pg-ledger-equality fix round). The initiation route inserts the PG
+ * row and the verify route already mirrors (N4), but record / penalty /
+ * waiver-approve wrote to the chain only — so PG stayed PENDING while
+ * the ledger moved to PARTIAL / COMPLIED / OVERDUE / WAIVED (the 5
+ * status diffs in the audit). After any chain move, read the ledger doc
+ * back and mirror status + amounts + verification/waiver fields into
+ * export_proceeds_repatriation. Best-effort: the chain write already
+ * committed, so a mirror failure is logged, never failed — and a
+ * missing PG row is reported (the resync endpoint backfills it).
+ */
+async function mirrorRepatriationFromLedger(
+  repatriationId: string,
+  actor: { username?: string; email?: string; organization?: string } | undefined | null,
+): Promise<void> {
+  try {
+    const ledgerRecord = await fabricService.evaluateTransaction('ReadRepatriation', repatriationId);
+    if (!ledgerRecord.success || !ledgerRecord.data) {
+      logger.warn(`[REPATRIATION] Could not read back ${repatriationId} from the ledger to mirror:`, ledgerRecord.error);
+      return;
+    }
+    const result = await healRepatriationRow(repatriationId, ledgerRecord.data, actor);
+    if (!result.healed && result.reason === 'no PG row') {
+      logger.warn(`[REPATRIATION] Mirror: no PG row for ${repatriationId} — ledger is ${ledgerRecord.data?.status || ledgerRecord.data?.Status} but Postgres has nothing to update (backfill via POST /repatriation/resync)`);
+    }
+  } catch (mirrorErr: any) {
+    logger.warn(`[REPATRIATION] Could not mirror ${repatriationId} to Postgres:`, mirrorErr?.message || mirrorErr);
+  }
+}
 
 // ==================== EXPORT PROCEEDS REPATRIATION ROUTES ====================
 
@@ -443,6 +475,13 @@ router.post('/:id/record', authMiddleware, requireRole(['BANKS', 'BANK', 'BANK_A
     }, `repatriation ${id} record`);
 
 
+    // Mirror the record into Postgres: RecordRepatriation moves the
+    // ledger to PARTIAL / COMPLIED (READY_FOR_VERIFICATION when the
+    // split is recorded), but this route never mirrored it — PG stayed
+    // PENDING. Ledger-read-back, best-effort (see
+    // mirrorRepatriationFromLedger above).
+    await mirrorRepatriationFromLedger(id, (req as any).user);
+
     // In-app notification (persisted feed + live WS broadcast).
     // Recording a repatriation previously emitted nothing, so another
     // NBE/bank user never heard about it live. Role-only rows: a
@@ -602,6 +641,10 @@ router.post('/:id/penalty', authMiddleware, requireRole(['NBE', 'NBE_ADMIN', 'NB
     }
 
     logger.info(`[REPATRIATION] ✅ Penalty applied: ${id}`);
+    // Mirror the penalty into Postgres: ApplyNonCompliancePenalty can
+    // move the ledger to OVERDUE, but this route never mirrored it.
+    // Ledger-read-back, best-effort (see mirrorRepatriationFromLedger).
+    await mirrorRepatriationFromLedger(id, (req as any).user);
     // Audit: this chain move never wrote an audit_trail row.
     // Best-effort — a failed audit write must not fail the move.
     await logAuditBestEffort(req, {
@@ -663,6 +706,10 @@ router.post('/:id/waiver/request', authMiddleware, requireRole(['EXPORTER']), as
     }
 
     logger.info(`[REPATRIATION] ✅ Waiver requested: ${id}`);
+    // Mirror the waiver request into Postgres (waiver_requested /
+    // waiver_reason on the ledger doc), same read-back rule as the
+    // other chain moves. Best-effort.
+    await mirrorRepatriationFromLedger(id, (req as any).user);
     // Audit: this chain move never wrote an audit_trail row.
     // Best-effort — a failed audit write must not fail the move.
     await logAuditBestEffort(req, {
@@ -713,6 +760,10 @@ router.post('/:id/waiver/approve', authMiddleware, requireRole(['NBE', 'NBE_ADMI
     }
 
     logger.info(`[REPATRIATION] ✅ Waiver ${approved ? 'approved' : 'rejected'}: ${id}`);
+    // Mirror the waiver decision into Postgres: ApproveWaiver moves
+    // the ledger to WAIVED (REP-PROBE-20261115 went COMPLIED → WAIVED
+    // with no PG update). Ledger-read-back, best-effort.
+    await mirrorRepatriationFromLedger(id, (req as any).user);
     // Audit: this chain move never wrote an audit_trail row.
     // Best-effort — a failed audit write must not fail the move.
     await logAuditBestEffort(req, {
@@ -736,6 +787,104 @@ router.post('/:id/waiver/approve', authMiddleware, requireRole(['NBE', 'NBE_ADMI
     res.status(repatFailureStatus(error.message || '') ?? 500).json({ 
       success: false, 
       error: error.message 
+    });
+  }
+});
+
+/**
+ * POST /api/v1/repatriation/resync (2026-11-19, pg-ledger-equality fix round)
+ *
+ * Heal export_proceeds_repatriation from ledger truth, mirroring POST
+ * /banking/lc/resync (ADMIN-only, idempotent). The audit found 5
+ * status diffs (PG written PENDING at initiation, never updated when
+ * the ledger moved to COMPLIED / PARTIAL / WAIVED) — healed here from
+ * QueryAllRepatriations — and 4 ledger-only rows, backfilled here from
+ * the ledger docs (INSERT-only, ON CONFLICT DO NOTHING). Two of the
+ * backfilled rows (REP-FOREX-REPAT-TXID-20261115[-B]) have only a
+ * partial PG echo in the wrong table — forex_repatriations rows with a
+ * blank repatriation_id (the Nov-15 NBE forex-repatriation route wrote
+ * there and synced to the chain but never inserted into
+ * export_proceeds_repatriation). Those echo rows are LINKED to the
+ * backfilled rows (repatriation_id set, no rows duplicated or
+ * deleted): rows 4/5/7 → REP-FOREX-REPAT-TXID-20261115, row 6 → -B.
+ * A repeat call heals 0 rows, backfills 0, links 0.
+ */
+router.post('/resync', authMiddleware, requireRole(['ADMIN']), async (req, res) => {
+  try {
+    const ledgerMap = await fetchLedgerRepatriationMap();
+    if (!ledgerMap) {
+      return res.status(502).json({
+        success: false,
+        error: { code: 'LEDGER_UNAVAILABLE', message: 'Could not read repatriations from the ledger (QueryAllRepatriations failed)' },
+        timestamp: new Date().toISOString(),
+      });
+    }
+    const actor = (req as any).user;
+    const healed: Array<{ repatriationId: string; from: string; to: string }> = [];
+    const backfilled: string[] = [];
+    const skipped: Array<{ repatriationId: string; reason: string }> = [];
+    for (const [repatriationId, doc] of ledgerMap) {
+      const existing: any = await postgresDb.get(
+        `SELECT repatriation_id FROM export_proceeds_repatriation WHERE repatriation_id = $1`,
+        [repatriationId],
+      );
+      if (!existing) {
+        const result = await backfillRepatriation(doc, actor);
+        if (result.inserted) backfilled.push(repatriationId);
+        else skipped.push({ repatriationId, reason: result.reason || 'backfill failed' });
+        continue;
+      }
+      const result = await healRepatriationRow(repatriationId, doc, actor);
+      if (result.healed) {
+        healed.push({ repatriationId, from: String(result.oldStatus), to: String(result.newStatus) });
+      } else if (result.reason && result.reason !== 'already equal' && !result.reason.startsWith('status already equal')) {
+        skipped.push({ repatriationId, reason: result.reason });
+      }
+    }
+    // Link the forex_repatriations echoes to the (now existing)
+    // export_proceeds_repatriation rows: the echo's forex_allocation_id
+    // is the repatriation id without its REP- prefix
+    // (FOREX-REPAT-TXID-20261115 ↔ REP-FOREX-REPAT-TXID-20261115).
+    // Only blank repatriation_id rows are linked; the triplicate rows
+    // for one allocation all point at the same repatriation — that is
+    // the honest shape of the Nov-15 test, not a new duplication.
+    const linked: Array<{ forexRepatriationRow: number; repatriationId: string }> = [];
+    for (const [repatriationId] of ledgerMap) {
+      const forexAllocId = repatriationId.replace(/^REP-/, '');
+      const echoRows: any[] = await postgresDb.all(
+        `SELECT id FROM forex_repatriations WHERE forex_allocation_id = $1 AND (repatriation_id IS NULL OR repatriation_id = '')`,
+        [forexAllocId],
+      );
+      for (const echo of echoRows) {
+        await postgresDb.run(
+          `UPDATE forex_repatriations SET repatriation_id = $1 WHERE id = $2`,
+          [repatriationId, echo.id],
+        );
+        linked.push({ forexRepatriationRow: echo.id, repatriationId });
+      }
+    }
+    const pgCount = await postgresDb.get(`SELECT COUNT(*)::int AS n FROM export_proceeds_repatriation`, []);
+    res.json({
+      success: true,
+      data: {
+        ledgerTotal: ledgerMap.size,
+        pgTotal: (pgCount as any)?.n ?? null,
+        healed,
+        healedCount: healed.length,
+        backfilled,
+        backfilledCount: backfilled.length,
+        linked,
+        linkedCount: linked.length,
+        skipped,
+      },
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error: any) {
+    logger.error('[REPATRIATION] ❌ Resync error:', error);
+    return res.status(500).json({
+      success: false,
+      error: { code: 'SERVER_ERROR', message: error.message },
+      timestamp: new Date().toISOString(),
     });
   }
 });

@@ -35,17 +35,34 @@ const validateRequest = (req: Request, res: Response, next: any) => {
 // The lifecycle handlers below update that booking row, but the real
 // shipment row — the one every other portal reads — must advance too:
 // mirror each lifecycle status onto the real shipment row (resolved
-// via the booking row's shipment_id) and best-effort sync it on-chain
-// the same way booking-create mirrors FREIGHT_BOOKED. Never fails the
-// request: a booking with no linked shipment simply has nothing to
-// mirror. Column names in `extras` are hardcoded by the callers below,
+// via the booking row's shipment_id) and sync it on-chain the same way
+// booking-create mirrors FREIGHT_BOOKED. Never fails the request: a
+// booking with no linked shipment simply has nothing to mirror.
+// Column names in `extras` are hardcoded by the callers below,
 // never user input.
+//
+// CHAIN-FIRST (2026-11-19, pg-ledger-equality fix round): this helper
+// used to write LOADED / IN_TRANSIT / ARRIVED / DELIVERED to Postgres
+// FIRST and only then attempt a best-effort chain write — so whenever
+// the chain write failed or was refused, Postgres kept the new status
+// while the ledger kept the old one. That is exactly the systematic
+// split the audit found: 13× PG LOADED vs ledger FREIGHT_BOOKED (the
+// cargo-load step) and 1× PG LOADED vs ledger DELIVERED (a load that
+// ran after the delivery). The order is now reversed: read the ledger,
+// move the chain, and only then move Postgres. A failed or refused
+// chain write leaves the Postgres row untouched (returns false; the
+// caller still succeeds — the booking row itself is a separate entity
+// and already advanced — but the shipment row can no longer diverge
+// from the ledger). Terminal ledger states (DELIVERED,
+// CUSTOMS_REJECTED, CANCELLED) never move backwards: a late load
+// after delivery is refused outright instead of regressing the
+// shipment. Returns true when the shipment row now matches the chain.
 async function mirrorBookingStatusToShipment(
   bookingId: string,
   status: string,
   extras: Array<[string, any]> = [],
   auditBy?: { username?: string; email?: string; organization?: string },
-): Promise<void> {
+): Promise<boolean> {
   try {
     const booking = await dbService.get(
       'SELECT shipment_id FROM shipping_bookings WHERE booking_id = $1',
@@ -54,8 +71,57 @@ async function mirrorBookingStatusToShipment(
     const shipmentID = (booking as any)?.shipment_id as string | undefined;
     if (!shipmentID) {
       logger.warn(`[SHIPPING] Booking ${bookingId} has no linked shipment; status ${status} mirrored to the booking row only`);
-      return;
+      return false;
     }
+    // 1. Ledger first: the ledger status is the source of truth, and
+    // the chain write below is the gate — no Postgres move happens
+    // before it succeeds.
+    let ledgerStatus: string | null = null;
+    try {
+      const ledgerShipment = await fabricService.getShipment(shipmentID);
+      if (ledgerShipment?.success && ledgerShipment?.data) {
+        ledgerStatus = String(ledgerShipment.data.status || ledgerShipment.data.Status || '');
+      } else {
+        logger.warn(`[SHIPPING] Could not read shipment ${shipmentID} from the ledger: ${ledgerShipment?.error || 'not found'}; Postgres left unchanged`);
+      }
+    } catch (ledgerError: any) {
+      logger.warn(`[SHIPPING] Ledger read failed for shipment ${shipmentID}: ${ledgerError.message}; Postgres left unchanged`);
+    }
+    if (!ledgerStatus) return false;
+
+    let chainTxId: string | null = null;
+    if (ledgerStatus === status) {
+      // Already there on-chain (retry / idempotent re-drive): the
+      // Postgres mirror below is a recovery, not a new move.
+      logger.info(`[SHIPPING] Shipment ${shipmentID} already ${status} on-chain; mirroring to Postgres only (booking ${bookingId})`);
+    } else {
+      // A terminal ledger state never moves backwards. This is the
+      // LOADED-vs-DELIVERED case: a cargo-load that runs after the
+      // delivery must not regress the shipment to LOADED on either side.
+      if (['DELIVERED', 'CUSTOMS_REJECTED', 'CANCELLED'].includes(ledgerStatus)) {
+        logger.warn(`[SHIPPING] Refusing booking ${bookingId} ${status} for shipment ${shipmentID}: ledger is terminally ${ledgerStatus}; Postgres left unchanged`);
+        return false;
+      }
+      if (!statusManager.validateTransition('SHIPMENT', ledgerStatus, status)) {
+        // Outside the API status table (e.g. VESSEL_LOADED →
+        // IN_TRANSIT via the container path). The chaincode setter is
+        // unguarded, so the chain write below is the authority — it is
+        // attempted, and Postgres moves only if it succeeds.
+        logger.warn(`[SHIPPING] Booking ${bookingId} edge ${ledgerStatus} → ${status} is outside the API status table; attempting the chain write, Postgres moves only on success`);
+      }
+      try {
+        const chainResult = await fabricService.updateShipmentStatus(shipmentID, status);
+        if (!chainResult?.success) {
+          logger.error(`[SHIPPING] Chain move of ${shipmentID} -> ${status} failed (${chainResult?.error || 'unknown error'}); Postgres left unchanged (booking ${bookingId})`);
+          return false;
+        }
+        chainTxId = chainResult.txId || null;
+      } catch (chainError: any) {
+        logger.error(`[SHIPPING] Fabric unavailable, shipment ${shipmentID} NOT moved to ${status} in Postgres either: ${chainError.message}`);
+        return false;
+      }
+    }
+    // 2. Postgres mirror, only now that the chain agrees.
     const sets = ['status = $1'];
     const params: any[] = [status];
     extras.forEach(([col, val], i) => {
@@ -76,31 +142,23 @@ async function mirrorBookingStatusToShipment(
       const { CacheInvalidation } = await import('../services/blockchainCacheService');
       CacheInvalidation.shipment(shipmentID);
     } catch { /* best-effort: invalidation never fails the request */ }
-    let chainTxId: string | null = null;
-    try {
-      const chainResult = await fabricService.updateShipmentStatus(shipmentID, status);
-      if (!chainResult?.success) {
-        logger.warn(`[SHIPPING] Chain mirror of ${shipmentID} -> ${status} did not succeed: ${chainResult?.error || 'unknown error'}`);
-      } else {
-        chainTxId = chainResult.txId || null;
-      }
-    } catch (chainError: any) {
-      logger.warn(`[SHIPPING] Fabric unavailable, shipment ${shipmentID} status ${status} mirrored in PostgreSQL only: ${chainError.message}`);
-    }
-    // Audit: the booking lifecycle move (and its best-effort chain
-    // mirror) never wrote an audit_trail row. Carry the chain txId
-    // when the mirror succeeded — honestly without one when Fabric
-    // was unreachable (the PG move still happened).
+    // Audit: the booking lifecycle move (and its chain write) never
+    // wrote an audit_trail row. Carry the chain txId when the move
+    // happened — honestly without one when the shipment was already
+    // at the target status (no new chain write).
     await logAuditBestEffortForUser(auditBy, {
       entityType: 'SHIPMENT',
       entityId: shipmentID,
       action: `BOOKING_${status}`,
+      oldValue: ledgerStatus,
       newValue: status,
       blockchainTxId: chainTxId || undefined,
-      metadata: { bookingId, status, blockchainTxId: chainTxId || null },
+      metadata: { bookingId, status, ledgerStatus, blockchainTxId: chainTxId || null },
     }, `booking ${bookingId} ${status} for shipment ${shipmentID}`);
+    return true;
   } catch (mirrorError: any) {
     logger.warn(`[SHIPPING] Failed to mirror booking ${bookingId} status ${status} to its shipment: ${mirrorError.message}`);
+    return false;
   }
 }
 
