@@ -71,7 +71,10 @@ import {
 import { toast } from 'react-toastify';
 import { useRouter } from 'next/router';
 import api from '@/utils/api';
-import { API_BASE_URL } from '@/config/api.config';
+import { useLiveNotifications } from '@/utils/useLiveNotifications';
+import { normalizeNotificationRole } from '@/services/liveSocket';
+// Re-exported so existing importers of this path keep working.
+export { normalizeNotificationRole };
 import { PortalDialog } from '@/components/shared/portal/PortalDialog';
 import { PortalOrgKey } from '@/components/shared/portal/PortalBrand';
 import { portalSlugFromPath, resolvePortalTabUrl } from '@/utils/portalTabNames';
@@ -95,47 +98,6 @@ export interface FeedNotification {
   userId: number | null;
   read: boolean;
   createdAt: string;
-}
-
-interface JwtIdentity {
-  userId: string;
-  exporterId: string;
-  role: string;
-}
-
-/**
- * Normalise a users.role value to the canonical base role used as the
- * notifications audience — UI mirror of api/src/utils/notificationRoles.ts.
- * ECTA_ADMIN→ECTA, BANK/BANK_ADMIN→BANKS, NBE_ADMIN→NBE,
- * CUSTOMS_ADMIN→CUSTOMS, SHIPPING_ADMIN→SHIPPING, SUPER_ADMIN→ADMIN.
- */
-export function normalizeNotificationRole(role: string | undefined | null): string | null {
-  if (!role) return null;
-  const r = String(role).trim().toUpperCase();
-  if (r === 'BANK' || r === 'BANK_ADMIN' || r === 'BANK OFFICER' || r === 'FOREX OFFICER') return 'BANKS';
-  if (r === 'ECTA_ADMIN') return 'ECTA';
-  if (r === 'ECX_ADMIN') return 'ECX';
-  if (r === 'NBE_ADMIN' || r === 'NBE OFFICER') return 'NBE';
-  if (r === 'CUSTOMS_ADMIN') return 'CUSTOMS';
-  if (r === 'SHIPPING_ADMIN') return 'SHIPPING';
-  if (r === 'SUPER_ADMIN') return 'ADMIN';
-  if (r.endsWith('_ADMIN') || r.endsWith('_OFFICER')) return r.replace(/_(ADMIN|OFFICER)$/, '');
-  return r;
-}
-
-function decodeJwtIdentity(): JwtIdentity | null {
-  try {
-    const token = localStorage.getItem('authToken');
-    if (!token) return null;
-    const payload = JSON.parse(atob(token.split('.')[1]));
-    return {
-      userId: String(payload.userId ?? payload.sub ?? ''),
-      exporterId: String(payload.exporterId ?? payload.username ?? payload.sub ?? ''),
-      role: String(payload.role ?? ''),
-    };
-  } catch {
-    return null;
-  }
 }
 
 /**
@@ -369,7 +331,6 @@ async function fetchEntityStatus(row: FeedNotification): Promise<string | null> 
 
 const FEED_PAGE_SIZE = 20;
 const POLL_FALLBACK_MS = 30000;
-const WS_BASE = API_BASE_URL.replace(/^http/, 'ws').replace(/\/api\/v1\/?$/, '');
 
 const NotificationCenter: React.FC<NotificationCenterProps> = ({ userRole }) => {
   const router = useRouter();
@@ -378,7 +339,6 @@ const NotificationCenter: React.FC<NotificationCenterProps> = ({ userRole }) => 
   const [items, setItems] = useState<FeedNotification[]>([]);
   const [unreadCount, setUnreadCount] = useState(0);
   const [loading, setLoading] = useState(false);
-  const [socketConnected, setSocketConnected] = useState(false);
   const [detail, setDetail] = useState<FeedNotification | null>(null);
   const [allOpen, setAllOpen] = useState(false);
   const [allItems, setAllItems] = useState<FeedNotification[]>([]);
@@ -388,9 +348,6 @@ const NotificationCenter: React.FC<NotificationCenterProps> = ({ userRole }) => 
   /** Per-row actionability override: id -> false once the entity check proves it moved on. */
   const [notActionable, setNotActionable] = useState<Record<number, boolean>>({});
 
-  const wsRef = useRef<WebSocket | null>(null);
-  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const reconnectAttemptRef = useRef(0);
   const mountedRef = useRef(true);
   const itemsRef = useRef<FeedNotification[]>([]);
   itemsRef.current = items;
@@ -488,115 +445,42 @@ const NotificationCenter: React.FC<NotificationCenterProps> = ({ userRole }) => 
     setUnreadCount(0);
   }, []);
 
-  // --- WebSocket ------------------------------------------------------------
+  // --- WebSocket (shared live socket) ---------------------------------------
+  // The single UI-wide connection lives in services/liveSocket.ts and is
+  // shared with all eight portals — this component only subscribes its
+  // feed/toast handler to it. Same channels, same reconnect, same
+  // socketConnected meaning as the old inline socket; behaviour of the
+  // bell itself is unchanged.
 
-  const connectSocket = useCallback(() => {
-    if (typeof window === 'undefined') return;
-    const identity = decodeJwtIdentity();
-    const token = localStorage.getItem('authToken');
-    if (!token || !identity || !identity.userId) return;
+  const handleLiveRow = useCallback((row: FeedNotification) => {
+    setItems((prev) => {
+      if (prev.some((r) => r.id === row.id)) {
+        return prev.map((r) => (r.id === row.id ? { ...row } : r));
+      }
+      return [{ ...row }, ...prev];
+    });
+    if (!row.read) setUnreadCount((c) => c + 1);
+    toast.info(
+      <Box onClick={() => setDetail({ ...row })} sx={{ cursor: 'pointer' }}>
+        <Typography variant="body2" fontWeight={700}>{row.title || 'New notification'}</Typography>
+        {row.message ? (
+          <Typography variant="body2" color="text.secondary">{row.message}</Typography>
+        ) : null}
+      </Box>,
+      { toastId: `notif-${row.id}`, autoClose: 6000 },
+    );
+  }, []);
 
-    const role = normalizeNotificationRole(identity.role || userRole) || 'ECTA';
-    const channels: string[] = [];
-    if (role === 'ADMIN') {
-      // ADMIN may subscribe to any role channel; the feed shows it
-      // every row, so subscribe to every role broadcast except the
-      // EXPORTER channel (never — it would leak all exporter rows).
-      for (const r of ['ECTA', 'ECX', 'NBE', 'BANKS', 'CUSTOMS', 'SHIPPING']) {
-        channels.push(`notifications:${r}`);
-      }
-    } else if (role !== 'EXPORTER') {
-      channels.push(`notifications:${role}`);
-    }
-    // Exporter rows are addressed to the exporter's own channels only.
-    channels.push(`notifications:user:${identity.userId}`);
-    if (identity.exporterId) channels.push(`notifications:exporter:${identity.exporterId}`);
+  const { socketConnected } = useLiveNotifications(handleLiveRow);
 
-    let ws: WebSocket;
-    try {
-      ws = new WebSocket(`${WS_BASE}/?token=${encodeURIComponent(token)}`);
-    } catch (err) {
-      // Socket construction itself failed (e.g. WS blocked): stay in
-      // polling-fallback mode rather than crashing the effect.
-      console.warn('WebSocket unavailable, using polling fallback:', err);
-      setSocketConnected(false);
-      return;
-    }
-    wsRef.current = ws;
-
-    ws.onopen = () => {
-      reconnectAttemptRef.current = 0;
-      ws.send(JSON.stringify({ type: 'subscribe', channels }));
-    };
-    ws.onmessage = (event) => {
-      let msg: any;
-      try {
-        msg = JSON.parse(event.data);
-      } catch {
-        return;
-      }
-      if (msg.type === 'subscription_confirmed') {
-        setSocketConnected(true);
-        return;
-      }
-      if (msg.type === 'connection') {
-        // Welcome message; connected once the subscription confirms.
-        return;
-      }
-      if (msg.type === 'notification') {
-        // Live shape: { type:'notification', data: <row> }; accept
-        // `notification:` defensively.
-        const row: FeedNotification | undefined = msg.data ?? msg.notification;
-        if (!row || typeof row.id !== 'number') return;
-        setItems((prev) => {
-          if (prev.some((r) => r.id === row.id)) {
-            return prev.map((r) => (r.id === row.id ? { ...row } : r));
-          }
-          return [{ ...row }, ...prev];
-        });
-        if (!row.read) setUnreadCount((c) => c + 1);
-        toast.info(
-          <Box onClick={() => setDetail({ ...row })} sx={{ cursor: 'pointer' }}>
-            <Typography variant="body2" fontWeight={700}>{row.title || 'New notification'}</Typography>
-            {row.message ? (
-              <Typography variant="body2" color="text.secondary">{row.message}</Typography>
-            ) : null}
-          </Box>,
-          { toastId: `notif-${row.id}`, autoClose: 6000 },
-        );
-      }
-    };
-    ws.onclose = (event) => {
-      setSocketConnected(false);
-      if (wsRef.current === ws) wsRef.current = null;
-      // 4401 = unauthenticated (bad/expired token): do not retry.
-      if (!mountedRef.current || event.code === 4401) return;
-      const delay = Math.min(30000, 1000 * 2 ** reconnectAttemptRef.current);
-      reconnectAttemptRef.current += 1;
-      reconnectTimerRef.current = setTimeout(connectSocket, delay);
-    };
-    ws.onerror = () => {
-      // onclose follows and schedules the reconnect.
-    };
-  }, [userRole]);
-
-  // Mount-time: initial feed (badge) + live socket. The component
-  // mounts with NavigationBar in _app.tsx, so this covers all portals.
+  // Mount-time: initial feed (badge). The live socket connects via the
+  // shared module's subscription above. The component mounts with
+  // NavigationBar in _app.tsx, so this covers all portals.
   useEffect(() => {
     mountedRef.current = true;
     loadFeed();
-    connectSocket();
     return () => {
       mountedRef.current = false;
-      if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
-      if (wsRef.current) {
-        try {
-          wsRef.current.close();
-        } catch {
-          // Already closed.
-        }
-        wsRef.current = null;
-      }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
