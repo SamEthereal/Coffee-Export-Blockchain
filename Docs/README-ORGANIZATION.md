@@ -31,7 +31,7 @@ scripts/
 ## Quick Access from Root
 
 Convenience symlinks in the project root:
-- `./start.sh` → `scripts/operations/start-all.sh`
+- `./start-all.sh` (repo root — the live startup script)
 - `./stop.sh` → `scripts/operations/stop-api.sh`
 - `./status.sh` → `scripts/monitoring/status.sh`
 
@@ -39,7 +39,7 @@ Convenience symlinks in the project root:
 
 ### Start Services
 ```bash
-./start.sh                              # Start all services
+./start-all.sh                          # Start all services
 ./scripts/operations/start-api.sh       # Start API only
 ./scripts/operations/start-ui.sh        # Start UI only
 ```

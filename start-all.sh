@@ -8,7 +8,10 @@
 # 1. Checks all system prerequisites (incl. a strong JWT_SECRET in api/.env —
 #    the API refuses to start without one since the auth fixes)
 # 2. Validates environment configuration
-# 3. **AUTOMATICALLY DETECTS AND KILLS PROCESSES ON REQUIRED PORTS**
+# 3. **DETECTS PROCESSES ON REQUIRED PORTS — but never kills a healthy
+#    API/UI it will not restart** (cleanup_ports skips ports 3000/3001
+#    when the live API answers /health with "healthy" or the UI answers;
+#    API/UI startup stays manual — see main())
 # 4. Starts Hyperledger Fabric blockchain network (WITHOUT wiping data:
 #    volumes are preserved unless --clean is passed)
 # 5. Packages + deploys the chaincode at the CURRENT code version
@@ -16,21 +19,54 @@
 #    seq 21 -> v2.3 seq 22; it also rebuilds the chaincode server image and
 #    updates its package ID in the compose file, so invocations keep working)
 # 6. Verifies the database is reachable (the API runs the tracked
-#    migrations itself on startup — this script does not re-apply them)
-# 7. Prints manual startup instructions for the API and UI servers.
+#    migrations itself on startup — this script does not re-apply them,
+#    and the final banner says SKIPPED when no migrations ran here)
+# 7. Sets NBE data ONLY if the API is already healthy (Phase 7 runs
+#    scripts/set-nbe-initial-data.sh and fails loudly on failure);
+#    otherwise prints the exact manual command — the API never runs it
+#    automatically, and this script never claims otherwise.
+# 8. Checks IPFS (reports plainly that no IPFS service is defined) and
+#    the Let's Encrypt certificate for nginx (check only — never starts
+#    or configures nginx; cert-first step is printed when missing).
+# 9. Prints manual startup instructions for the API and UI servers.
 #    The auto-start calls are commented out in main() below — start
 #    API/UI by hand in their own terminals.
-# 8. (With the calls uncommented: starts API/UI and runs health checks)
+# 10. (With the calls uncommented: starts API/UI and runs health checks)
 #
 # Port Cleanup Feature:
-# - Automatically scans all required ports (3000, 3001, 5432, 7050-7062, etc.)
-# - Identifies processes using these ports
-# - Terminates conflicting processes without prompting
-# - Cleans up orphaned PID files
+# - Scans the API/UI ports (3000, 3001) and the blockchain ports
+# - NEVER kills a healthy API/UI: if port 3001 answers /health with
+#   "healthy", or port 3000 answers as the UI, that process is left
+#   running (this script does not auto-start API/UI, so a re-run must
+#   not take down a live stack it cannot bring back up)
+# - Terminates only stale/unhealthy processes on those ports
+# - Cleans up orphaned PID files (except for a healthy live service)
 # - Ensures clean startup every time
 ################################################################################
 
 set -e  # Exit on error
+# NOTE: no `set -o pipefail` at top level — deliberately. Phase 2 runs
+# `npm run build 2>&1 | tail -5` and then checks ${PIPESTATUS[0]} so a
+# failed build is only a warning ("API build had issues"); with pipefail
+# the failing pipeline would abort the script under `set -e` before the
+# PIPESTATUS check ever ran. The `grep -c` pipelines below are safe
+# either way (they end in `|| true`), but that one build pipeline is
+# not, so pipefail stays out. See audit gap 9.
+
+# Step outcomes, set by the phases that actually run and read by
+# show_manual_startup_instructions() so the final banner only claims
+# steps that really ran and passed (audit gap 6/9). A step that was
+# skipped (flag, missing file, container not running, API not up) leaves
+# its flag false and the banner prints SKIPPED, never a checkmark.
+BLOCKCHAIN_STARTED=false   # Phase 3: peers up AND count gate passed
+CHAINCODE_DEPLOYED=false   # Phase 5: deploy + committed check + smoke test all passed
+DATABASE_REACHABLE=false   # Phase 6: psql SELECT 1 succeeded
+DATABASE_MIGRATED=false    # Phase 6: migrations actually ran in the API container
+NBE_STATUS="not attempted" # Phase 7: applied | api-not-running | failed | script-missing
+API_ALREADY_RUNNING=false  # Phase 1.5: healthy API found on 3001, left running
+UI_ALREADY_RUNNING=false   # Phase 1.5: live UI found on 3000, left running
+IPFS_STATUS="not checked"  # Phase 8 (IPFS/nginx check): no-service | healthy | unreachable
+NGINX_CERT_STATUS="not checked" # Phase 8: present | missing
 
 # Configuration
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -41,13 +77,24 @@ BLOCKCHAIN_DIR="$PROJECT_ROOT/blockchain"
 CHAINCODE_DIR="$PROJECT_ROOT/chaincodes/coffee"
 SCRIPTS_DIR="$PROJECT_ROOT/scripts"
 
-# Ports
-API_PORT=3001
-UI_PORT=3000
-POSTGRES_PORT=5432
-ORDERER_PORT=7050
-PEER_ECTA_PORT=7051
-CHAINCODE_PORT=9999
+# Peer / CouchDB host ports (from docker-compose-fabric.yml — these are
+# the host-mapped ports; the in-container peer ports 7051-7062 in the old
+# BLOCKCHAIN_PORTS list were never reachable from the host).
+# Peers: ECTA 7051, ECX 8051, Banks 9051, NBE 10051, Customs 11051, Shipping 12051.
+PEER_PORTS=(7051 8051 9051 10051 11051 12051)
+# CouchDBs (each maps to :5984 in its container; /_up answers {"status":"ok"}):
+# ECTA 5985, ECX 6984, Banks 7984, NBE 8984, Customs 9984, Shipping 10984.
+COUCHDB_PORTS=(5985 6984 7984 8984 9984 10984)
+# Every port Phase 3 probes for readiness (iterated in
+# start_blockchain_network(); previously defined inside cleanup_ports
+# and never iterated anywhere).
+BLOCKCHAIN_PORTS=(
+    "$POSTGRES_PORT"     # 5432 - PostgreSQL
+    "$ORDERER_PORT"      # 7050 - Orderer
+    7051 8051 9051 10051 11051 12051  # all 6 peers (host-mapped)
+    5985 6984 7984 8984 9984 10984   # all 6 CouchDBs (host-mapped)
+    "$CHAINCODE_PORT"    # 9999 - Chaincode server
+)
 
 # Colors for output
 COLOR_RESET='\033[0m'
@@ -243,6 +290,40 @@ wait_for_http() {
     
     echo ""
     write_error "$service failed to respond at $url after ${timeout}s"
+    return 1
+}
+
+# Is the live API healthy? True only when /health answers with
+# status "healthy" — any other response (including a bare TCP connect
+# or a shutting_down body) is NOT healthy. Used by cleanup_ports (never
+# kill a healthy API) and by Phase 7 (only run the NBE script when the
+# API is really up). /health body (api/src/server.ts): {"status":
+# "healthy", "services": {"database": bool, "blockchain": bool, ...}}.
+is_api_healthy() {
+    local body
+    body=$(curl -s --max-time 2 "http://localhost:${API_PORT}/health" 2>/dev/null) || return 1
+    printf '%s' "$body" | grep -q '"status"[[:space:]]*:[[:space:]]*"healthy"'
+}
+
+# Is the live UI answering? True when port 3000 returns an HTTP
+# response carrying the Next.js marker (same check start_ui_server
+# uses). Used by cleanup_ports only — never kill a live UI.
+is_ui_running() {
+    curl -s --max-time 2 -I "http://localhost:${UI_PORT}" 2>/dev/null | grep -qi "Next.js\|x-powered-by"
+}
+
+# CouchDB readiness: GET /_up must answer {"status":"ok"}. Retries
+# briefly (CouchDB takes a few seconds after container start); returns
+# non-zero when it never answers, so the caller can warn honestly.
+check_couchdb() {
+    local port=$1
+    local attempt
+    for attempt in $(seq 1 15); do
+        if curl -s --max-time 2 "http://localhost:${port}/_up" 2>/dev/null | grep -q '"status"[[:space:]]*:[[:space:]]*"ok"'; then
+            return 0
+        fi
+        sleep 2
+    done
     return 1
 }
 
@@ -602,90 +683,107 @@ cleanup_ports() {
         $UI_PORT           # 3000 - UI Server
     )
     
-    # Additional blockchain ports
-    local BLOCKCHAIN_PORTS=(
-        $POSTGRES_PORT     # 5432 - PostgreSQL
-        $ORDERER_PORT      # 7050 - Orderer
-        $PEER_ECTA_PORT    # 7051 - ECTA Peer
-        7052               # ECTA Peer CouchDB
-        7053               # ECX Peer
-        7054               # ECX Peer CouchDB
-        7055               # Banks Peer
-        7056               # Banks Peer CouchDB
-        7057               # NBE Peer
-        7058               # NBE Peer CouchDB
-        7059               # Customs Peer
-        7060               # Customs Peer CouchDB
-        7061               # Shipping Peer
-        7062               # Shipping Peer CouchDB
-        8080               # API (alternative)
-        9092               # Kafka
-        2181               # Zookeeper
-        6379               # Redis
-        5984               # CouchDB (main)
-        9443               # Peer Operations
-        $CHAINCODE_PORT    # 9999 - Chaincode
-    )
+    # Blockchain ports are NOT killed here — only probed for readiness in
+    # Phase 3. The port list lives at the top level as BLOCKCHAIN_PORTS
+    # (with PEER_PORTS / COUCHDB_PORTS) and start_blockchain_network()
+    # iterates it; cleanup_ports touches only the API/UI ports above.
     
     local ports_cleaned=0
     local ports_already_free=0
-    
-    write_step "Cleaning critical ports (API & UI) for manual startup..."
-    
-    # Clean critical ports first (API and UI)
+    local ports_left_running=0
+
+    write_step "Checking critical ports (API & UI)..."
+    write_info "A healthy API/UI is NEVER killed here: this script does not auto-start"
+    write_info "API/UI (see main()), so a re-run must not take down a live stack."
+
+    # Clean critical ports first (API and UI) — but skip a port whose
+    # occupant is the healthy live service. Anything else on the port
+    # (stale dev server, leftover process) is still killed.
     for port in "${CRITICAL_PORTS[@]}"; do
         local pids=$(lsof -ti:$port 2>/dev/null || true)
-        
-        if [ -n "$pids" ]; then
-            write_step "Port $port is in use by PID(s): $pids"
-            
-            # Get process names for information
-            for pid in $pids; do
-                local process_name=$(ps -p $pid -o comm= 2>/dev/null || echo "unknown")
-                write_info "  └─ PID $pid: $process_name"
-            done
-            
-            # Kill the processes (ts-node-dev API server, Next.js UI server)
-            write_step "  └─ Terminating processes on port $port..."
-            echo "$pids" | xargs kill -9 2>/dev/null || true
 
-            # Also kill known API/UI dev processes (narrow patterns only, so
-            # unrelated node processes are not touched)
-            pkill -9 -f "ts-node.*server.ts" 2>/dev/null || true
-            pkill -9 -f "node dist/server.js" 2>/dev/null || true
-            pkill -9 -f "next-server" 2>/dev/null || true
-            
-            # Verify port is now free
-            sleep 1
-            if ! lsof -ti:$port &>/dev/null; then
-                write_success "  └─ Port $port is now FREE and ready for manual startup"
-                ports_cleaned=$((ports_cleaned + 1))
-            else
-                write_warning "  └─ Port $port may still be in use - trying force kill..."
-                sudo fuser -k ${port}/tcp 2>/dev/null || true
-                sleep 1
-                if ! lsof -ti:$port &>/dev/null; then
-                    write_success "  └─ Port $port is now FREE"
-                    ports_cleaned=$((ports_cleaned + 1))
-                fi
-            fi
-        else
+        if [ -z "$pids" ]; then
             write_success "Port $port is already free"
             ports_already_free=$((ports_already_free + 1))
+            continue
+        fi
+
+        # Healthy live service on this port? Leave it alone.
+        if [ "$port" -eq "$API_PORT" ] && is_api_healthy; then
+            write_warning "Port $port is in use by the HEALTHY live API (PID(s): $pids) — leaving it running"
+            write_info "  └─ Re-run will NOT restart it; the API stays up. (API/UI startup is manual.)"
+            API_ALREADY_RUNNING=true
+            ports_left_running=$((ports_left_running + 1))
+            continue
+        fi
+        if [ "$port" -eq "$UI_PORT" ] && is_ui_running; then
+            write_warning "Port $port is in use by the live UI (PID(s): $pids) — leaving it running"
+            write_info "  └─ Re-run will NOT restart it; the UI stays up. (API/UI startup is manual.)"
+            UI_ALREADY_RUNNING=true
+            ports_left_running=$((ports_left_running + 1))
+            continue
+        fi
+
+        write_step "Port $port is in use by PID(s): $pids (not the healthy live service — terminating)"
+
+        # Get process names for information
+        for pid in $pids; do
+            local process_name=$(ps -p $pid -o comm= 2>/dev/null || echo "unknown")
+            write_info "  └─ PID $pid: $process_name"
+        done
+
+        # Kill the processes (stale ts-node-dev API server, Next.js UI server)
+        write_step "  └─ Terminating processes on port $port..."
+        echo "$pids" | xargs kill -9 2>/dev/null || true
+
+        # Also kill known API/UI dev processes (narrow patterns only, so
+        # unrelated node processes are not touched). These run ONLY on
+        # the kill path above — never when a healthy service was skipped.
+        pkill -9 -f "ts-node.*server.ts" 2>/dev/null || true
+        pkill -9 -f "node dist/server.js" 2>/dev/null || true
+        pkill -9 -f "next-server" 2>/dev/null || true
+
+        # Verify port is now free
+        sleep 1
+        if ! lsof -ti:$port &>/dev/null; then
+            write_success "  └─ Port $port is now FREE and ready for manual startup"
+            ports_cleaned=$((ports_cleaned + 1))
+        else
+            write_warning "  └─ Port $port may still be in use - trying force kill..."
+            sudo fuser -k ${port}/tcp 2>/dev/null || true
+            sleep 1
+            if ! lsof -ti:$port &>/dev/null; then
+                write_success "  └─ Port $port is now FREE"
+                ports_cleaned=$((ports_cleaned + 1))
+            fi
         fi
     done
-    
+
     echo ""
-    write_success "Critical ports (API: $API_PORT, UI: $UI_PORT) are ready"
+    if [ "$ports_left_running" -gt 0 ]; then
+        write_success "Critical ports checked: $ports_left_running live service(s) left running, $ports_cleaned cleaned, $ports_already_free already free"
+    else
+        write_success "Critical ports (API: $API_PORT, UI: $UI_PORT) are ready"
+    fi
     
-    # Clean up any orphaned PID files
+    # Clean up any orphaned PID files — but never kill the PID of a
+    # healthy live service (that PID file may simply be its own record).
     write_step "Cleaning up orphaned PID files..."
     local pid_files=("$PROJECT_ROOT/.api.pid" "$PROJECT_ROOT/.ui.pid")
     for pid_file in "${pid_files[@]}"; do
         if [ -f "$pid_file" ]; then
             local old_pid=$(cat "$pid_file" 2>/dev/null)
             if [ -n "$old_pid" ]; then
-                if ps -p "$old_pid" &>/dev/null; then
+                # .api.pid belongs to the API, .ui.pid to the UI: skip the
+                # kill when that service is healthy and running.
+                local pid_is_live_service=false
+                case "$pid_file" in
+                    *.api.pid) is_api_healthy && pid_is_live_service=true ;;
+                    *.ui.pid)  is_ui_running && pid_is_live_service=true ;;
+                esac
+                if [ "$pid_is_live_service" = true ]; then
+                    write_info "PID file $pid_file points at the healthy live service (PID $old_pid) — leaving the process running, removing only the stale file"
+                elif ps -p "$old_pid" &>/dev/null; then
                     write_step "Killing orphaned process (PID: $old_pid)..."
                     kill -9 "$old_pid" 2>/dev/null || true
                 fi
@@ -758,10 +856,8 @@ start_blockchain_network() {
     write_header "Phase 3: Starting Hyperledger Fabric Blockchain"
     
     # CRITICAL: Create configuration files BEFORE starting containers
-    ensure_peer_configuration
-    setup_external_builders
-    
-    # CRITICAL: Create configuration files BEFORE starting containers
+    # (called once — an earlier duplicate second call was removed;
+    # both functions are idempotent, so the extra call only wasted time)
     ensure_peer_configuration
     setup_external_builders
     
@@ -782,15 +878,33 @@ start_blockchain_network() {
         write_warning "⚠️  RESTARTING all peer containers to ensure latest external builders are loaded..."
         cd "$PROJECT_ROOT"
         
-        # Restart all 6 peer containers in parallel for speed
+        # Restart all 6 peer containers in parallel for speed. A failed
+        # restart is fatal — it used to be masked by `|| true` and then
+        # reported as "✅ All 6 peer containers restarted and ready".
         write_step "Restarting all 6 peer containers..."
-        docker restart peer0.ecta.cecbs.et peer0.ecx.cecbs.et peer0.banks.cecbs.et \
+        if ! docker restart peer0.ecta.cecbs.et peer0.ecx.cecbs.et peer0.banks.cecbs.et \
                       peer0.nbe.cecbs.et peer0.customs.cecbs.et peer0.shipping.cecbs.et \
-                      >/dev/null 2>&1 || true
-        
+                      >/dev/null 2>&1; then
+            write_error "Failed to restart peer containers — check: docker ps -a | grep peer0"
+            return 1
+        fi
+
         write_info "⏳ Waiting for peers to fully restart (20 seconds)..."
         sleep 20
-        write_success "✅ All 6 peer containers restarted and ready"
+        # Verify the restart actually brought the peers back before
+        # claiming they are ready (TCP probe on every peer port).
+        local restarted_ok=true
+        for peer_port in "${PEER_PORTS[@]}"; do
+            if ! test_port "$peer_port"; then
+                write_error "Peer port $peer_port is not listening after restart"
+                restarted_ok=false
+            fi
+        done
+        if [ "$restarted_ok" = false ]; then
+            write_info "Check: docker logs peer0.ecta.cecbs.et (and the other peers)"
+            return 1
+        fi
+        write_success "✅ All 6 peer containers restarted and responding"
         
         # Verify external builders are accessible after restart
         write_step "Verifying external builders after restart..."
@@ -812,11 +926,11 @@ start_blockchain_network() {
         fi
         sleep 2
 
-        # Start Fabric network
+        # Start Fabric network. The failure check tests the command
+        # directly: the old `if [ $? -ne 0 ]` after this line could never
+        # run, because `set -e` exits at the failing command first.
         write_step "Starting Fabric network containers..."
-        $COMPOSE -f docker-compose-fabric.yml up -d
-
-        if [ $? -ne 0 ]; then
+        if ! $COMPOSE -f docker-compose-fabric.yml up -d; then
             write_error "Failed to start Fabric network containers"
             write_info "Check: $COMPOSE -f docker-compose-fabric.yml logs"
             exit 1
@@ -832,23 +946,57 @@ start_blockchain_network() {
     wait_for_port $POSTGRES_PORT "PostgreSQL" 45 || write_warning "PostgreSQL may not be ready"
     wait_for_port $ORDERER_PORT "Orderer" 60 || write_warning "Orderer may not be ready"
     wait_for_port $PEER_ECTA_PORT "ECTA Peer" 60 || write_warning "ECTA Peer may not be ready"
-    
+
+    # Readiness is not just the ECTA peer: probe ALL 6 peers (host ports
+    # 7051/8051/9051/10051/11051/12051) and ALL 6 CouchDBs (/_up must
+    # answer {"status":"ok"}). A peer/CouchDB that never answers is a
+    # warning here, not a silent pass — the container-count gate below
+    # is still the hard gate.
+    write_step "Probing all 6 peer ports..."
+    for peer_port in "${PEER_PORTS[@]}"; do
+        wait_for_port "$peer_port" "Peer on port $peer_port" 30 || write_warning "Peer on port $peer_port may not be ready"
+    done
+    write_step "Checking all 6 CouchDBs (/_up)..."
+    local couchdb_names=(ECTA ECX Banks NBE Customs Shipping)
+    local couchdb_idx=0
+    for couchdb_port in "${COUCHDB_PORTS[@]}"; do
+        if check_couchdb "$couchdb_port"; then
+            write_success "CouchDB ${couchdb_names[$couchdb_idx]} is up on port $couchdb_port"
+        else
+            write_warning "CouchDB ${couchdb_names[$couchdb_idx]} on port $couchdb_port did not answer /_up"
+        fi
+        couchdb_idx=$((couchdb_idx + 1))
+    done
+    # Actually iterate BLOCKCHAIN_PORTS (it used to be defined in
+    # cleanup_ports and never used anywhere): every listed port must be
+    # listening now that the waits above have run.
+    write_step "Verifying every blockchain port is listening..."
+    for blockchain_port in "${BLOCKCHAIN_PORTS[@]}"; do
+        if ! test_port "$blockchain_port"; then
+            write_warning "Blockchain port $blockchain_port is not listening"
+        fi
+    done
+
     # Verify containers
     write_step "Verifying container health..."
-    PEER_COUNT=$(docker ps 2>/dev/null | grep -c "peer0\." || echo "0")
-    ORDERER_COUNT=$(docker ps 2>/dev/null | grep -c "orderer\." || echo "0")
-    
+    # NOTE: `grep -c` already prints 0 when nothing matches — the old
+    # `|| echo "0"` appended a SECOND 0, so PEER_COUNT became "0\n0"
+    # and the -lt test below died with "integer expression expected".
+    PEER_COUNT=$(docker ps 2>/dev/null | grep -c "peer0\." || true)
+    ORDERER_COUNT=$(docker ps 2>/dev/null | grep -c "orderer\." || true)
+
     echo ""
     write_info "Running containers:"
     echo "  • Peers: $PEER_COUNT/6"
     echo "  • Orderer: $ORDERER_COUNT/1"
-    
+
     if [ "$PEER_COUNT" -lt 6 ] || [ "$ORDERER_COUNT" -lt 1 ]; then
         write_error "Not all required containers are running!"
         write_info "Check logs: $COMPOSE -f docker-compose-fabric.yml logs"
         exit 1
     fi
-    
+
+    BLOCKCHAIN_STARTED=true
     write_success "Blockchain network is operational"
     
     # Verify external builders are accessible inside containers
@@ -1193,8 +1341,10 @@ initialize_chaincode() {
     # keep working after an upgrade (the server registers by package ID).
     if [ -f "$PROJECT_ROOT/deploy-chaincode.sh" ]; then
         write_step "Running chaincode deploy (detects changes, upgrades if needed)..."
-        bash "$PROJECT_ROOT/deploy-chaincode.sh"
-        if [ $? -eq 0 ]; then
+        # Test the command directly: the old `bash ...; if [ $? -eq 0 ]`
+        # could never take its failure branch, because `set -e` exits at
+        # the failing command first.
+        if bash "$PROJECT_ROOT/deploy-chaincode.sh"; then
             write_success "Chaincode deploy step completed"
         else
             write_error "Chaincode deployment failed"
@@ -1236,6 +1386,7 @@ initialize_chaincode() {
     fi
 
     test_chaincode_basic
+    CHAINCODE_DEPLOYED=true
 }
 
 # Smoke test: a real read-only query against the committed chaincode. This
@@ -1307,6 +1458,7 @@ test_chaincode_basic() {
     write_info "Last 50 lines of docker logs coffee-chaincode:"
     docker logs --tail 50 coffee-chaincode 2>&1 | while IFS= read -r line; do log_verbose "  $line"; done
     write_info "Check: docker logs coffee-chaincode"
+    write_info "Diagnose further with: ./diagnose-chaincode.sh  (committed definition, installed package ID per peer, server package ID, DNS/TCP probes, log tails)"
     return 1
 }
 
@@ -1319,24 +1471,34 @@ initialize_database() {
     
     # Check if database is accessible
     write_step "Checking database connection..."
-    
+
+    # Honesty note (audit gap 4): on the normal manual path there is no
+    # cecbs-api container, so this script applies ZERO migrations — the
+    # API itself runs them on startup (api/src/server.ts:509-517 calls
+    # runMigrations() and refuses to start on failure). Every skip path
+    # below says so plainly, and DATABASE_MIGRATED stays false so the
+    # final banner prints SKIPPED instead of "Database is initialized".
     if [ ! -f "$API_DIR/.env" ]; then
         write_warning "No .env file found, skipping database initialization"
+        write_info "Migrations were NOT applied: they run when the API starts (api/src/server.ts runMigrations)"
+        write_info "Start the API for migrations to apply — the API refuses to start on migration failure"
         return 0
     fi
-    
+
     # Extract DATABASE_URL
     DATABASE_URL=$(grep "^DATABASE_URL=" "$API_DIR/.env" 2>/dev/null | cut -d'=' -f2- | tr -d '"' | tr -d "'")
-    
+
     if [ -z "$DATABASE_URL" ]; then
         write_warning "DATABASE_URL not configured in .env"
+        write_info "Migrations were NOT applied: they run when the API starts — start the API for migrations to apply"
         return 0
     fi
-    
+
     # Test database connection
     if command -v psql &> /dev/null; then
         if psql "$DATABASE_URL" -c "SELECT 1;" &>/dev/null; then
             write_success "Database connection successful"
+            DATABASE_REACHABLE=true
 
             # Run migrations using Node.js migration runner
             write_step "Running database migrations..."
@@ -1451,6 +1613,7 @@ MIGRATION_EOF
                 
                 if [ $migration_result -eq 0 ]; then
                     write_success "All migrations completed successfully"
+                    DATABASE_MIGRATED=true
                 else
                     write_error "Migration failed! Check the output above"
                     write_info "You may need to fix migration files and re-run"
@@ -1458,7 +1621,9 @@ MIGRATION_EOF
                 fi
             else
                 write_warning "API container not running, skipping database migrations"
-                write_info "Migrations will run when API starts"
+                write_info "Migrations were NOT applied by this script: they run when the API starts"
+                write_info "(api/src/server.ts runMigrations — the API refuses to start on migration failure)"
+                write_info "Start the API for migrations to apply; the final banner will show this step as SKIPPED"
             fi
             cd "$PROJECT_ROOT"
 
@@ -1517,11 +1682,12 @@ MIGRATION_EOF
             fi
         else
             write_warning "Cannot connect to database (it may not be ready yet)"
-            write_info "Database will be initialized when API starts"
+            write_info "Database was NOT initialized and migrations were NOT applied by this script"
+            write_info "They run when the API starts (api/src/server.ts runMigrations) — start the API for migrations to apply"
         fi
     else
         write_info "psql not installed, skipping database check"
-        write_info "Database will be initialized when API starts"
+        write_info "Migrations were NOT applied by this script: they run when the API starts — start the API for migrations to apply"
     fi
 }
 
@@ -1703,13 +1869,15 @@ run_health_checks() {
     
     local all_healthy=true
     
-    # Check API health
+    # Check API health — "healthy" only. The old code also accepted any
+    # body containing "status" as a success, so a degraded API passed.
     write_step "Testing API health endpoint..."
     API_HEALTH=$(curl -s --max-time 5 "http://localhost:$API_PORT/health" 2>/dev/null)
     if echo "$API_HEALTH" | jq -e '.status == "healthy"' &>/dev/null 2>&1; then
         write_success "API is healthy"
     elif echo "$API_HEALTH" | grep -q '"status"'; then
-        write_success "API is responding"
+        write_warning "API is responding but NOT healthy: $API_HEALTH"
+        all_healthy=false
     else
         write_warning "API health check returned unexpected response"
         all_healthy=false
@@ -1729,9 +1897,10 @@ run_health_checks() {
         all_healthy=false
     fi
     
-    # Check UI
+    # Check UI — require the Next.js marker (same check is_ui_running
+    # uses), not just any HTTP response on the port.
     write_step "Testing UI server..."
-    if curl -s --max-time 5 -I "http://localhost:$UI_PORT" >/dev/null 2>&1; then
+    if is_ui_running; then
         write_success "UI server is responding"
     else
         write_warning "UI server is not responding"
@@ -1753,9 +1922,15 @@ run_health_checks() {
     echo ""
     if [ "$all_healthy" = true ]; then
         write_success "All health checks passed!"
+        return 0
     else
+        # This function used to ALWAYS return 0 (success) even when
+        # checks failed, so a caller could never fail on it. It now
+        # returns 1 on failure. It stays UNCALLED from main() (manual
+        # startup discipline) — run it by hand after starting API/UI.
         write_warning "Some health checks failed - system may still be initializing"
         write_info "Check logs for details"
+        return 1
     fi
 }
 
@@ -1763,65 +1938,15 @@ run_health_checks() {
 # PHASE 9: Display System Status
 ################################################################################
 
-show_final_status() {
-    write_header "GoCBC System Successfully Started!"
-    
-    echo ""
-    echo -e "${COLOR_GREEN}${COLOR_BOLD}✓ System Status:${COLOR_RESET}"
-    echo ""
-    
-    # Blockchain status
-    if [ "$SKIP_BLOCKCHAIN" = false ]; then
-        echo -e "${COLOR_CYAN}Blockchain Network:${COLOR_RESET}"
-        PEER_COUNT=$(docker ps 2>/dev/null | grep -c "peer0\." || echo "0")
-        ORDERER_COUNT=$(docker ps 2>/dev/null | grep -c "orderer\." || echo "0")
-        COMMITTED=$(docker exec peer0.ecta.cecbs.et peer lifecycle chaincode querycommitted \
-            --channelID coffeechannel --name coffee 2>/dev/null | grep -oP 'Version: [0-9.]+, Sequence: [0-9]+' || echo "")
-        echo "  • Peers:     $PEER_COUNT running"
-        echo "  • Orderer:   $ORDERER_COUNT running"
-        echo "  • Chaincode: $([ -n "$COMMITTED" ] && echo "coffee ($COMMITTED)" || echo 'not committed')"
-        echo ""
-    fi
-    
-    # Application status
-    echo -e "${COLOR_CYAN}Application Servers:${COLOR_RESET}"
-    echo "  • API Server: http://localhost:$API_PORT"
-    echo "  • UI Server:  http://localhost:$UI_PORT"
-    echo ""
-    
-    # Database status
-    if [ -f "$API_DIR/.env" ] && grep -q "DATABASE_URL" "$API_DIR/.env" 2>/dev/null; then
-        echo -e "${COLOR_CYAN}Database:${COLOR_RESET}"
-        echo "  • PostgreSQL: Running on port $POSTGRES_PORT"
-        echo ""
-    fi
-    
-    # Test credentials
-    echo -e "${COLOR_CYAN}Test Credentials:${COLOR_RESET}"
-    echo "  • Admin:      admin / admin123"
-    echo "  • Exporter:   exporter1 / password123"
-    echo "  • ECTA:       ecta_admin / password123"
-    echo ""
-    
-    # Next steps
-    echo -e "${COLOR_YELLOW}${COLOR_BOLD}Next Steps:${COLOR_RESET}"
-    echo "  1. Open browser: http://localhost:$UI_PORT"
-    echo "  2. Login with test credentials above"
-    echo "  3. Explore the system features"
-    echo ""
-    
-    # Useful commands
-    echo -e "${COLOR_BLUE}${COLOR_BOLD}Useful Commands:${COLOR_RESET}"
-    echo "  • View API logs:        tail -f logs/api.log"
-    echo "  • View UI logs:         tail -f logs/ui.log"
-    echo "  • View blockchain logs: $COMPOSE -f docker-compose-fabric.yml logs -f"
-    echo "  • Check system status:  ./status.sh"
-    echo "  • Stop system:          ./stop-all.sh"
-    echo ""
-    
-    echo -e "${COLOR_GREEN}═══════════════════════════════════════════════════════════════════════${COLOR_RESET}"
-    echo ""
-}
+# NOTE (audit gap 6/9): show_final_status() lived here and was deleted.
+# It was dead code — defined but never called — and its "GoCBC System
+# Successfully Started!" banner competed with the real final output,
+# show_manual_startup_instructions(). The honest banner is now that one
+# function, which prints a checkmark only for steps that actually ran
+# and passed (see the BLOCKCHAIN_STARTED / CHAINCODE_DEPLOYED /
+# DATABASE_* / NBE_STATUS flags) and SKIPPED for the rest.
+# The closing line in main() still says "System preparation completed",
+# not "System up" — that wording is deliberately unchanged.
 
 ################################################################################
 # PHASE 7: Initialize NBE Data (If API is Running)
@@ -1829,33 +1954,112 @@ show_final_status() {
 
 initialize_nbe_data() {
     write_header "Phase 7: Initializing NBE Exchange Rate & Retention Policy"
-    
-    write_info "NBE data (exchange rate & retention policy) will be set automatically"
-    write_info "when the API starts, using scripts/set-nbe-initial-data.sh"
+
+    # One source of truth (audit gap 1): NBE data is set ONLY by running
+    # scripts/set-nbe-initial-data.sh, and ONLY this phase runs it — and
+    # only when the API is already up and healthy. The API does NOT run
+    # it on startup: there is no startup hook for it anywhere in
+    # api/src, and initializeDefaultRates() has no callers. The old
+    # wording ("The API will run ... on first startup") was false and
+    # is deleted here and in the final instructions below.
+    write_info "NBE data is set by scripts/set-nbe-initial-data.sh — run by this phase"
+    write_info "only when the API is already healthy, otherwise by hand after the API starts."
     echo ""
-    
-    write_step "Checking if API is already running..."
-    
-    # Check if API is accessible
-    if curl -s --max-time 2 http://localhost:${API_PORT}/health >/dev/null 2>&1; then
-        write_success "API is running - setting NBE data now..."
-        
-        # Run the NBE initialization script
+
+    write_step "Checking if API is already running and healthy..."
+
+    # Healthy only: is_api_healthy() requires /health to answer
+    # {"status":"healthy"} — a bare TCP connect is not enough.
+    if is_api_healthy; then
+        write_success "API is running and healthy - setting NBE data now..."
+
+        # Run the NBE initialization script and report its REAL result.
+        # A failure is a failure: it is never swallowed as "already
+        # configured" (the old code did that for every failure, including
+        # login/API errors). Fail loudly so a bad rate/policy cannot hide.
         if [ -f "$SCRIPTS_DIR/set-nbe-initial-data.sh" ]; then
-            bash "$SCRIPTS_DIR/set-nbe-initial-data.sh" || {
-                write_warning "NBE data may already be configured (this is normal on restart)"
-            }
+            if bash "$SCRIPTS_DIR/set-nbe-initial-data.sh"; then
+                write_success "NBE data set successfully"
+                NBE_STATUS="applied"
+            else
+                local nbe_rc=$?
+                write_error "NBE initialization FAILED (exit $nbe_rc) — NBE data was NOT set"
+                write_info "Fix the cause and re-run: bash scripts/set-nbe-initial-data.sh"
+                write_info "(Do not assume the data is already set — verify the NBE rates in the portal/API.)"
+                NBE_STATUS="failed"
+                return 1
+            fi
         else
-            write_warning "NBE initialization script not found"
+            write_error "NBE initialization script not found at $SCRIPTS_DIR/set-nbe-initial-data.sh — NBE data was NOT set"
+            NBE_STATUS="script-missing"
+            return 1
         fi
     else
-        write_info "API not yet running - NBE data will be set when you start the API"
-        write_info "The API will run scripts/set-nbe-initial-data.sh on first startup"
+        NBE_STATUS="api-not-running"
+        write_warning "API is not running (or not healthy) — NBE data was NOT set by this phase"
+        write_info "Nothing will set it automatically: the API has no startup hook for it."
         echo ""
-        write_step "To manually initialize NBE data after starting the API:"
+        write_step "REQUIRED manual step — run AFTER starting the API:"
         echo "  cd $PROJECT_ROOT"
         echo "  bash scripts/set-nbe-initial-data.sh"
         echo ""
+        write_info "Required for banks to allocate forex. Skipping it causes forex-allocation failures later."
+    fi
+}
+
+################################################################################
+# PHASE 8: IPFS + nginx/certificate check (checks and instructions ONLY)
+################################################################################
+
+check_ipfs_and_nginx() {
+    write_header "Phase 8: Checking IPFS + nginx / Certificate"
+
+    # --- IPFS (audit gap 7) ---
+    # There is NO IPFS service in docker-compose-fabric.yml (grep ipfs
+    # returns nothing) and none is started by this script. Say so
+    # plainly instead of silently passing: document/IPFS features will
+    # not work until an IPFS service exists. If one is ever added to the
+    # compose file, health-check its gateway (8080) and API (5001).
+    if grep -qi "ipfs" "$PROJECT_ROOT/docker-compose-fabric.yml" 2>/dev/null; then
+        write_info "An IPFS service is defined in docker-compose-fabric.yml — checking it..."
+        local ipfs_ok=true
+        test_port 8080 || { write_warning "IPFS gateway (8080) is not listening"; ipfs_ok=false; }
+        test_port 5001 || { write_warning "IPFS API (5001) is not listening"; ipfs_ok=false; }
+        if [ "$ipfs_ok" = true ]; then
+            write_success "IPFS gateway (8080) and API (5001) are listening"
+            IPFS_STATUS="healthy"
+        else
+            write_warning "IPFS is defined but not fully reachable — document/IPFS features may fail"
+            IPFS_STATUS="unreachable"
+        fi
+    else
+        write_warning "No IPFS service is defined in docker-compose-fabric.yml — IPFS is NOT part of this stack"
+        write_info "Document/IPFS features (gateway 8080, API 5001) will not work until an IPFS service is added"
+        IPFS_STATUS="no-service"
+    fi
+
+    # --- nginx + Let's Encrypt certificate (audit gap 8) ---
+    # Check ONLY: this script never starts, reloads, or configures
+    # nginx. HTTPS on 443 needs a certificate first, so verify the
+    # Let's Encrypt cert exists and tell the operator the exact step
+    # when it does not.
+    echo ""
+    write_step "Checking nginx certificate..."
+    local cert_file="/etc/letsencrypt/live/coffeex.cbe.com.et/fullchain.pem"
+    if [ -f "$cert_file" ]; then
+        write_success "Let's Encrypt certificate present: $cert_file"
+        if command -v openssl &>/dev/null; then
+            local cert_expiry
+            cert_expiry=$(openssl x509 -in "$cert_file" -noout -enddate 2>/dev/null | cut -d= -f2- || echo "unknown")
+            write_info "Certificate expires: ${cert_expiry:-unknown}"
+        fi
+        NGINX_CERT_STATUS="present"
+    else
+        write_warning "No Let's Encrypt certificate at $cert_file — nginx HTTPS (443) will NOT start"
+        write_info "Get the certificate first (run from the repo root, on the host):"
+        echo "  nginx-configs/deploy-cecbs-nginx.sh --ssl letsencrypt"
+        write_info "This script does not start or configure nginx itself."
+        NGINX_CERT_STATUS="missing"
     fi
 }
 
@@ -1894,6 +2098,7 @@ main() {
     initialize_chaincode
     initialize_database
     initialize_nbe_data
+    check_ipfs_and_nginx
 
     # SKIP AUTOMATIC API AND UI STARTUP - start them manually
     # start_api_server    # COMMENTED OUT - Manual startup
@@ -1916,16 +2121,87 @@ main() {
 
 show_manual_startup_instructions() {
     write_header "Manual Startup Instructions"
-    
+
+    # Honest banner (audit gap 6/9): a checkmark ONLY for a step that
+    # actually ran and passed in this run. Anything skipped prints
+    # SKIPPED, never a checkmark. The flags are set by the phases above.
     echo ""
-    write_success "✅ Blockchain network is running"
-    write_success "✅ Chaincode is deployed and responding to queries"
-    write_success "✅ Database is initialized"
-    write_success "✅ Ports ${API_PORT} and ${UI_PORT} are FREE and ready"
+    if [ "$SKIP_BLOCKCHAIN" = true ]; then
+        write_info "⏭ SKIPPED: Blockchain network (--skip-blockchain flag)"
+    elif [ "$BLOCKCHAIN_STARTED" = true ]; then
+        write_success "✅ Blockchain network is running (6 peers + orderer verified)"
+    else
+        write_warning "⚠ Blockchain network status NOT confirmed by this run"
+    fi
+    if [ "$SKIP_BLOCKCHAIN" = true ]; then
+        write_info "⏭ SKIPPED: Chaincode (--skip-blockchain flag)"
+    elif [ "$CHAINCODE_DEPLOYED" = true ]; then
+        write_success "✅ Chaincode is deployed and responding to queries"
+    else
+        write_warning "⚠ Chaincode deployment NOT confirmed by this run"
+    fi
+    if [ "$DATABASE_MIGRATED" = true ]; then
+        write_success "✅ Database migrations applied (in the API container)"
+    elif [ "$DATABASE_REACHABLE" = true ]; then
+        write_warning "⚠ Database is reachable but migrations were NOT applied by this script"
+        write_info "    Migrations run when the API starts (api/src/server.ts runMigrations) — start the API"
+    else
+        write_info "⏭ SKIPPED: Database migrations not verified (see Phase 6 output — the API applies them on startup)"
+    fi
+    if [ "$API_ALREADY_RUNNING" = true ] && [ "$UI_ALREADY_RUNNING" = true ]; then
+        write_success "✅ API (port $API_PORT) and UI (port $UI_PORT) were already running — left untouched, still up"
+    elif [ "$API_ALREADY_RUNNING" = true ]; then
+        write_success "✅ API (port $API_PORT) was already running — left untouched, still up"
+        write_success "✅ Port $UI_PORT is FREE and ready"
+    elif [ "$UI_ALREADY_RUNNING" = true ]; then
+        write_success "✅ UI (port $UI_PORT) was already running — left untouched, still up"
+        write_success "✅ Port $API_PORT is FREE and ready"
+    else
+        write_success "✅ Ports ${API_PORT} and ${UI_PORT} are FREE and ready"
+    fi
+    case "$NBE_STATUS" in
+        applied)
+            write_success "✅ NBE data set by Phase 7"
+            ;;
+        api-not-running)
+            write_info "⏭ SKIPPED: NBE data NOT set — run this AFTER starting the API (required for forex): bash scripts/set-nbe-initial-data.sh"
+            ;;
+        failed|script-missing)
+            write_error "✗ NBE data NOT set (Phase 7 status: $NBE_STATUS) — re-run bash scripts/set-nbe-initial-data.sh after fixing the cause"
+            ;;
+        *)
+            write_info "⏭ SKIPPED: NBE data status unknown ($NBE_STATUS)"
+            ;;
+    esac
+    case "$IPFS_STATUS" in
+        healthy)
+            write_success "✅ IPFS gateway (8080) and API (5001) are listening"
+            ;;
+        no-service)
+            write_info "⏭ SKIPPED: No IPFS service in docker-compose-fabric.yml — IPFS features will not work"
+            ;;
+        unreachable)
+            write_warning "⚠ IPFS is defined but not fully reachable"
+            ;;
+        *)
+            write_info "⏭ SKIPPED: IPFS not checked ($IPFS_STATUS)"
+            ;;
+    esac
+    case "$NGINX_CERT_STATUS" in
+        present)
+            write_success "✅ Let's Encrypt certificate present for coffeex.cbe.com.et"
+            ;;
+        missing)
+            write_info "⏭ SKIPPED: No Let's Encrypt certificate — run nginx-configs/deploy-cecbs-nginx.sh --ssl letsencrypt before nginx HTTPS will work"
+            ;;
+        *)
+            write_info "⏭ SKIPPED: nginx certificate not checked ($NGINX_CERT_STATUS)"
+            ;;
+    esac
     echo ""
-    
+
     # Show what version was deployed
-    if [ "$SKIP_BLOCKCHAIN" = false ]; then
+    if [ "$SKIP_BLOCKCHAIN" = false ] && [ "$CHAINCODE_DEPLOYED" = true ]; then
         DEPLOYED_VERSION=$(docker exec peer0.ecta.cecbs.et peer lifecycle chaincode querycommitted \
             --channelID coffeechannel --name coffee 2>/dev/null | grep -oP 'Version: \K[0-9.]+' || echo "unknown")
         DEPLOYED_SEQUENCE=$(docker exec peer0.ecta.cecbs.et peer lifecycle chaincode querycommitted \
@@ -1963,10 +2239,21 @@ show_manual_startup_instructions() {
     echo -e "  ${COLOR_BLUE}API Docs:${COLOR_RESET}        http://localhost:${API_PORT}/api-docs"
     echo ""
     
-    echo -e "${COLOR_CYAN}${COLOR_BOLD}After API starts - Initialize NBE Data (First time only):${COLOR_RESET}"
-    echo -e "  ${COLOR_YELLOW}bash scripts/set-nbe-initial-data.sh${COLOR_RESET}"
+    # NBE step — one source of truth with Phase 7 (audit gap 1): if
+    # Phase 7 already applied it (API was up), say so; otherwise the
+    # manual command below is REQUIRED, not optional, and nothing
+    # applies it automatically. The old text implied it was a
+    # first-time-only nicety; it is required for banks to allocate forex.
+    if [ "$NBE_STATUS" = "applied" ]; then
+        echo -e "${COLOR_CYAN}${COLOR_BOLD}NBE Data: already set by Phase 7 (API was running):${COLOR_RESET}"
+        echo -e "  ${COLOR_GREEN}No action needed — re-run only to re-initialize:${COLOR_RESET} bash scripts/set-nbe-initial-data.sh"
+    else
+        echo -e "${COLOR_CYAN}${COLOR_BOLD}After API starts - Initialize NBE Data (REQUIRED, not automatic):${COLOR_RESET}"
+        echo -e "  ${COLOR_YELLOW}bash scripts/set-nbe-initial-data.sh${COLOR_RESET}"
+        echo -e "  ${COLOR_MAGENTA}The API does NOT run this on startup — run it by hand once the API is healthy.${COLOR_RESET}"
+    fi
     echo -e "  ${COLOR_MAGENTA}This sets:${COLOR_RESET}"
-    echo -e "    • Exchange Rate: ~119 ETB/USD"
+    echo -e "    • Exchange Rate: ~57.25 ETB/USD (buying 57.00 / selling 57.50)"
     echo -e "    • Retention Policy: 40% USD, 60% ETB"
     echo -e "  ${COLOR_MAGENTA}Required for banks to allocate forex${COLOR_RESET}"
     echo ""
