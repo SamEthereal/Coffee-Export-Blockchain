@@ -2080,6 +2080,18 @@ router.post('/:paymentID/forex-repatriation',
           metadata: { blockchainTxId: result.txId || null },
         }, `payment ${paymentID} forex-repatriation`);
 
+        // In-app notification (persisted feed + live WS broadcast).
+        // Recording a forex repatriation previously emitted nothing.
+        await notificationService.emitWorkflowEvent({
+          type: 'repatriation_recorded',
+          title: `Forex repatriation recorded for payment ${paymentID}`,
+          message: `Forex repatriation of ${repatriationAmount} ${repatriationCurrency} was recorded for payment ${paymentID}.`,
+          entityType: 'payment', entityId: paymentID, severity: 'success',
+          roles: ['BANKS', 'NBE'], paymentId: paymentID,
+          actionUrl: '/portals/exporter?tab=payments',
+          actionUrls: { BANKS: '/portals/banks?tab=contracts', NBE: '/portals/nbe?tab=contracts' },
+        });
+
         res.json({
           success: true,
           message: 'Forex repatriation recorded successfully',
@@ -2565,14 +2577,18 @@ router.post('/:paymentID/release',
 
       logger.info(`✅ Payment ${paymentID} released: ${result.releaseAmount} USD to exporter ${exporterID}`);
       // In-app notification (persisted feed + live WS broadcast).
+      // payment_released used to go to NBE only — a bank user never
+      // heard about it on the socket, so the Banks portal could only
+      // learn of a release via its own actions. BANKS joins the
+      // audience (same roles as payment_received / payment_settled).
       await notificationService.emitWorkflowEvent({
         type: 'payment_released',
         title: `Payment ${paymentID} released`,
         message: `Payment ${paymentID} was released: ${result.releaseAmount} USD to exporter ${exporterID} (60% NBE release).`,
         entityType: 'payment', entityId: paymentID, severity: 'success',
-        roles: ['NBE'], exporterId: exporterID,
+        roles: ['BANKS', 'NBE'], exporterId: exporterID,
         actionUrl: '/portals/exporter?tab=payments',
-        actionUrls: { NBE: '/portals/nbe?tab=contracts' },
+        actionUrls: { BANKS: '/portals/banks?tab=contracts', NBE: '/portals/nbe?tab=contracts' },
       });
 
       res.json({

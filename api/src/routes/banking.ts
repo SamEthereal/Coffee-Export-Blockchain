@@ -894,6 +894,19 @@ router.post('/lc/:lcID/approve',
           logger.warn(`⚠️  Failed to mark approval documents verified for LC ${lcID}:`, markErr);
         }
 
+        // In-app notification (persisted feed + live WS broadcast).
+        // LC approval previously emitted nothing, so another bank user
+        // (or the exporter) never heard about it live.
+        await notificationService.emitWorkflowEvent({
+          type: 'lc_approved',
+          title: `Letter of Credit ${lcID} approved`,
+          message: `Letter of Credit ${lcID} has been approved.`,
+          entityType: 'lc', entityId: lcID, severity: 'success',
+          roles: ['BANKS'], exporterId: lc.exporter_id, lcId: lcID,
+          actionUrl: '/portals/exporter?tab=contracts',
+          actionUrls: { BANKS: '/portals/banks?tab=contracts' },
+        });
+
         res.json({
           success: true,
           data: result.data,
@@ -991,6 +1004,19 @@ router.post('/lc/:lcID/reject',
           // even if the query-optimized PostgreSQL mirror needs reconciliation.
           logger.warn(`Failed to sync rejected LC ${lcID} to PostgreSQL`, syncError);
         }
+        // In-app notification (persisted feed + live WS broadcast).
+        // LC rejection previously emitted nothing, so another bank user
+        // (or the exporter) never heard about it live.
+        await notificationService.emitWorkflowEvent({
+          type: 'lc_rejected',
+          title: `Letter of Credit ${lcID} rejected`,
+          message: `Letter of Credit ${lcID} was rejected: ${rejectionReason}`,
+          entityType: 'lc', entityId: lcID, severity: 'warning',
+          roles: ['BANKS'], lcId: lcID,
+          actionUrl: '/portals/exporter?tab=contracts',
+          actionUrls: { BANKS: '/portals/banks?tab=contracts' },
+        });
+
         res.json({
           success: true,
           data: result.data,
@@ -2378,6 +2404,21 @@ router.post('/lc/:lcID/amend',
           blockchainTxId: result.txId || undefined,
           metadata: { blockchainTxId: result.txId || null },
         }, `lc ${lcID} amend`);
+
+        // In-app notification (persisted feed + live WS broadcast).
+        // LC amendment previously emitted nothing, so another bank user
+        // (or the exporter) never heard about it live. A re-issue of
+        // an AMENDED LC goes through the issue route, whose lc_issued
+        // emit already covers it — no second emit here.
+        await notificationService.emitWorkflowEvent({
+          type: 'lc_amended',
+          title: `Letter of Credit ${lcID} amended`,
+          message: `Letter of Credit ${lcID} was amended: ${amendmentReason}`,
+          entityType: 'lc', entityId: lcID, severity: 'info',
+          roles: ['BANKS'], lcId: lcID,
+          actionUrl: '/portals/exporter?tab=contracts',
+          actionUrls: { BANKS: '/portals/banks?tab=contracts' },
+        });
 
         res.json({
           success: true,
@@ -5363,6 +5404,22 @@ router.post('/lc/:lcID/examine-documents',
           ip: req.ip,
         });
 
+        // In-app notification (persisted feed + live WS broadcast).
+        // Document examination previously emitted nothing, so another
+        // bank user never heard about it live. Utilisation is covered
+        // by the forex_utilised emit on POST /forex/utilize.
+        await notificationService.emitWorkflowEvent({
+          type: 'lc_examined',
+          title: `Letter of Credit ${lcID} documents examined`,
+          message: compliant
+            ? `Letter of Credit ${lcID} documents comply with the LC terms.`
+            : `Letter of Credit ${lcID} documents have discrepancies: ${discrepancies || 'see examination record'}.`,
+          entityType: 'lc', entityId: lcID, severity: compliant ? 'success' : 'warning',
+          roles: ['BANKS'], lcId: lcID,
+          actionUrl: '/portals/exporter?tab=contracts',
+          actionUrls: { BANKS: '/portals/banks?tab=contracts' },
+        });
+
         res.json({
           success: true,
           data: result.data,
@@ -6066,6 +6123,18 @@ router.post('/lc/:lcId/documents/reject', authMiddleware, requireRole(['BANKS', 
     } catch (syncError) {
       logger.warn(`Failed to sync document rejection for LC ${lcId} to PostgreSQL`, syncError);
     }
+
+    // In-app notification (persisted feed + live WS broadcast).
+    // LC document rejection previously emitted nothing.
+    await notificationService.emitWorkflowEvent({
+      type: 'lc_documents_rejected',
+      title: `Letter of Credit ${lcId} documents rejected`,
+      message: `Letter of Credit ${lcId} documents were rejected: ${rejectionReason}`,
+      entityType: 'lc', entityId: lcId, severity: 'warning',
+      roles: ['BANKS'], lcId,
+      actionUrl: '/portals/exporter?tab=contracts',
+      actionUrls: { BANKS: '/portals/banks?tab=contracts' },
+    });
 
     res.json({
       success: true,

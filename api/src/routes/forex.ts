@@ -798,6 +798,20 @@ router.post('/request', authMiddleware, requireRole(['BANKS', 'BANK_ADMIN', 'BAN
             logger.error(`Failed to store blockchain metadata for ${forexId}:`, dbError);
           }
           
+          // In-app notification (persisted feed + live WS broadcast).
+          // A forex request previously emitted nothing (only the later
+          // allocate did), so another bank/NBE user never heard about
+          // it live. Audience mirrors forex_allocated.
+          await notificationService.emitWorkflowEvent({
+            type: 'forex_requested',
+            title: `Forex requested for contract ${contractId}`,
+            message: `Forex ${forexId} was requested for contract ${contractId} (${finalCurrency} ${Number(finalAmount || 0).toLocaleString()}).`,
+            entityType: 'forex', entityId: forexId, severity: 'info',
+            roles: ['BANKS', 'NBE'], exporterId: finalExporterId || undefined, lcId: requestLcId || undefined,
+            actionUrl: '/portals/exporter?tab=contracts',
+            actionUrls: { BANKS: '/portals/banks?tab=contracts', NBE: '/portals/nbe?tab=contracts' },
+          });
+
           return res.status(201).json({
             success: true,
             data: { forexId, lcId: requestLcId || null },
@@ -1381,6 +1395,19 @@ router.post('/utilize', authMiddleware, requireRole(['BANKS', 'BANK_ADMIN', 'BAN
         blockchainTxId: result.txId || undefined,
         metadata: { utilizedAmount, blockchainTxId: result.txId || null },
       }, `forex ${forexId} utilize`);
+      // In-app notification (persisted feed + live WS broadcast).
+      // Forex utilisation previously emitted nothing, so another
+      // bank/NBE user never heard about it live. The exporter audience
+      // resolves from the forex_allocations row (entityType 'forex').
+      await notificationService.emitWorkflowEvent({
+        type: 'forex_utilised',
+        title: `Forex ${forexId} utilised`,
+        message: `Forex ${forexId} was utilised (${utilizedAmount}).`,
+        entityType: 'forex', entityId: forexId, severity: 'success',
+        roles: ['BANKS', 'NBE'],
+        actionUrl: '/portals/exporter?tab=contracts',
+        actionUrls: { BANKS: '/portals/banks?tab=contracts', NBE: '/portals/nbe?tab=contracts' },
+      });
       res.json({ success: true, txId: result.txId, timestamp: new Date().toISOString() });
     } else {
       res.status(400).json({ success: false, error: { code: 'UTILIZE_FAILED', message: result.error }, timestamp: new Date().toISOString() });

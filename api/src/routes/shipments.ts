@@ -1802,6 +1802,20 @@ router.post('/:shipmentID/bill-of-lading',
       }, `shipment ${shipmentID} bill-of-lading`);
 
 
+      // In-app notification (persisted feed + live WS broadcast).
+      // Recording a bill of lading previously emitted nothing. Same
+      // type and audience shape as the generic shipment_status_updated
+      // emit, plus ECTA (see the book-freight emit above).
+      await notificationService.emitWorkflowEvent({
+        type: 'shipment_status_updated',
+        title: `Bill of Lading recorded for shipment ${shipmentID}`,
+        message: `Bill of Lading ${billOfLadingNo} recorded for shipment ${shipmentID} (status LOADED).`,
+        entityType: 'shipment', entityId: shipmentID, severity: 'info',
+        roles: ['SHIPPING', 'ECTA'],
+        actionUrl: '/portals/exporter?tab=shipments',
+        actionUrls: { SHIPPING: '/portals/shipping?tab=shipments' },
+      });
+
       res.json({
         success: true,
         message: 'Bill of Lading recorded successfully',
@@ -2121,6 +2135,21 @@ router.post('/:shipmentID/book-freight',
         }, `shipment ${shipmentID} book-freight`);
 
         
+        // In-app notification (persisted feed + live WS broadcast).
+        // Freight booking previously emitted nothing. Same type and
+        // audience shape as the generic shipment_status_updated emit
+        // (PUT /:shipmentID/status), plus ECTA, which loads the
+        // shipment list and already receives shipment_created.
+        await notificationService.emitWorkflowEvent({
+          type: 'shipment_status_updated',
+          title: `Freight booked for shipment ${shipmentID}`,
+          message: `Freight booked for shipment ${shipmentID} via ${freightForwarder} (status FREIGHT_BOOKED).`,
+          entityType: 'shipment', entityId: shipmentID, severity: 'info',
+          roles: ['SHIPPING', 'ECTA'],
+          actionUrl: '/portals/exporter?tab=shipments',
+          actionUrls: { SHIPPING: '/portals/shipping?tab=shipments' },
+        });
+
         res.json({
           success: true,
           message: 'Freight booked successfully',

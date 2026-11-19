@@ -10,6 +10,7 @@ import { FabricService } from '../services/fabricService';
 import { logger } from '../utils/logger';
 import { logAuditBestEffort } from '../utils/auditBestEffort';
 import { validateBankAccount } from '../utils/fieldValidation';
+import notificationService from '../services/notificationService';
 
 const router = Router();
 const postgresDb = DatabaseService.getInstance();
@@ -573,6 +574,20 @@ router.post('/forex/:forexId/repatriation', authMiddleware, requireRole('NBE'), 
       metadata: { forexId, repatriationAmount, bankCertificate: bankCertificate || null, blockchainSynced: chainSync.synced, blockchainTxId: primaryTxId || null, initiateTxId: chainSync.initiateTxId || null, recordTxId: chainSync.recordTxId || null },
     }, `forex ${forexId} repatriation`);
 
+
+    // In-app notification (persisted feed + live WS broadcast).
+    // Recording a forex repatriation previously emitted nothing, so
+    // another NBE/bank user never heard about it live. The exporter
+    // audience resolves from the allocation row.
+    await notificationService.emitWorkflowEvent({
+      type: 'repatriation_recorded',
+      title: `Forex repatriation recorded for ${forexId}`,
+      message: `Forex repatriation of ${repatriationAmount} was recorded for ${forexId}${bankReference ? ` (ref ${bankReference})` : ''}.`,
+      entityType: 'forex', entityId: forexId, severity: 'success',
+      roles: ['NBE', 'BANKS'], exporterId: (allocation as any)?.exporter_id || undefined,
+      actionUrl: '/portals/exporter?tab=contracts',
+      actionUrls: { BANKS: '/portals/banks?tab=contracts', NBE: '/portals/nbe?tab=contracts' },
+    });
 
     res.json({
       success: true,

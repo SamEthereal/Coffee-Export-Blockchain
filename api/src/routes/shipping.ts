@@ -10,6 +10,7 @@ import { ShipmentService } from '../services/shipmentService';
 import { logger } from '../utils/logger';
 import { logAuditBestEffort, logAuditBestEffortForUser } from '../utils/auditBestEffort';
 import { statusManager } from '../utils/statusManager';
+import notificationService from '../services/notificationService';
 
 const router = Router();
 const dbService = DatabaseService.getInstance();
@@ -100,6 +101,43 @@ async function mirrorBookingStatusToShipment(
     }, `booking ${bookingId} ${status} for shipment ${shipmentID}`);
   } catch (mirrorError: any) {
     logger.warn(`[SHIPPING] Failed to mirror booking ${bookingId} status ${status} to its shipment: ${mirrorError.message}`);
+  }
+}
+
+/**
+ * Live-refresh emit for a booking lifecycle move (2026-11-19).
+ * Booking create / load / depart / arrive / deliver / bill-of-lading
+ * previously emitted nothing, so another Shipping (or ECTA) user never
+ * heard about them live. Same type and audience shape as the generic
+ * shipment_status_updated emit (PUT /shipments/:shipmentID/status),
+ * plus ECTA, which loads the shipment list and already receives
+ * shipment_created. Best-effort: a booking with no linked shipment
+ * simply has nothing to emit about, and a failed lookup never fails
+ * the request (emitWorkflowEvent itself never throws either).
+ */
+async function emitBookingShipmentStatus(
+  bookingId: string,
+  status: string,
+  actionLabel: string,
+): Promise<void> {
+  try {
+    const booking = await dbService.get(
+      'SELECT shipment_id FROM shipping_bookings WHERE booking_id = $1',
+      [bookingId],
+    );
+    const shipmentID = (booking as any)?.shipment_id as string | undefined;
+    if (!shipmentID) return;
+    await notificationService.emitWorkflowEvent({
+      type: 'shipment_status_updated',
+      title: `Shipment ${shipmentID} is now ${status}`,
+      message: `${actionLabel} for shipment ${shipmentID} (booking ${bookingId}, status ${status}).`,
+      entityType: 'shipment', entityId: shipmentID, severity: 'info',
+      roles: ['SHIPPING', 'ECTA'],
+      actionUrl: '/portals/exporter?tab=shipments',
+      actionUrls: { SHIPPING: '/portals/shipping?tab=shipments' },
+    });
+  } catch (emitError: any) {
+    logger.warn(`[SHIPPING] Failed to emit live-refresh event for booking ${bookingId} -> ${status}: ${emitError.message}`);
   }
 }
 
@@ -663,6 +701,23 @@ router.post('/bookings', authMiddleware,
     }, `booking ${bookingID} create`);
 
 
+    // In-app notification (persisted feed + live WS broadcast).
+    // Booking creation previously emitted nothing. The linked
+    // shipment's status moves to FREIGHT_BOOKED, so this is a
+    // shipment_status_updated for that shipment (same audience shape
+    // as the generic status emit, plus ECTA).
+    if (shipmentID) {
+      await notificationService.emitWorkflowEvent({
+        type: 'shipment_status_updated',
+        title: `Freight booked for shipment ${shipmentID}`,
+        message: `Freight booked for shipment ${shipmentID} (booking ${bookingID}, status FREIGHT_BOOKED).`,
+        entityType: 'shipment', entityId: shipmentID, severity: 'info',
+        roles: ['SHIPPING', 'ECTA'],
+        actionUrl: '/portals/exporter?tab=shipments',
+        actionUrls: { SHIPPING: '/portals/shipping?tab=shipments' },
+      });
+    }
+
     res.json({
       success: true,
       data: {
@@ -743,6 +798,7 @@ router.post('/bookings/:bookingId/load', authMiddleware,
     ], (req as any).user);
 
     logger.info(`[SHIPPING] ✅ Cargo loaded for booking: ${bookingId}`);
+    await emitBookingShipmentStatus(bookingId, 'LOADED', 'Cargo loaded');
 
     res.json({
       success: true,
@@ -811,6 +867,7 @@ router.post('/bookings/:bookingId/depart', authMiddleware,
     ], (req as any).user);
 
     logger.info(`[SHIPPING] ✅ Vessel departed for booking: ${bookingId}`);
+    await emitBookingShipmentStatus(bookingId, 'IN_TRANSIT', 'Vessel departed');
 
     res.json({
       success: true,
@@ -878,6 +935,7 @@ router.post('/bookings/:bookingId/arrive', authMiddleware,
     ], (req as any).user);
 
     logger.info(`[SHIPPING] ✅ Vessel arrived for booking: ${bookingId}`);
+    await emitBookingShipmentStatus(bookingId, 'ARRIVED', 'Vessel arrived');
 
     res.json({
       success: true,
@@ -945,6 +1003,7 @@ router.post('/bookings/:bookingId/deliver', authMiddleware,
     ], (req as any).user);
 
     logger.info(`[SHIPPING] ✅ Cargo delivered for booking: ${bookingId}`);
+    await emitBookingShipmentStatus(bookingId, 'DELIVERED', 'Cargo delivered');
 
     res.json({
       success: true,
@@ -1159,6 +1218,20 @@ router.post('/bookings/:bookingId/bill-of-lading/issue',
       } catch (mirrorErr: any) {
         logger.warn(`[SHIPPING] Could not mirror shipment ${shipmentId} to LOADED in Postgres:`, mirrorErr);
       }
+
+      // In-app notification (persisted feed + live WS broadcast).
+      // Issuing a bill of lading previously emitted nothing. Same
+      // type and audience shape as the generic shipment_status_updated
+      // emit, plus ECTA (see emitBookingShipmentStatus above).
+      await notificationService.emitWorkflowEvent({
+        type: 'shipment_status_updated',
+        title: `Bill of Lading issued for shipment ${shipmentId}`,
+        message: `Bill of Lading ${blNumber} issued for shipment ${shipmentId} (booking ${bookingId}, status LOADED).`,
+        entityType: 'shipment', entityId: shipmentId, severity: 'info',
+        roles: ['SHIPPING', 'ECTA'],
+        actionUrl: '/portals/exporter?tab=shipments',
+        actionUrls: { SHIPPING: '/portals/shipping?tab=shipments' },
+      });
 
       res.status(201).json({
         success: true,

@@ -11,6 +11,7 @@ import { requireRole } from '../middleware/rbac';
 import { logger } from '../utils/logger';
 import { logAuditBestEffort } from '../utils/auditBestEffort';
 import { validateBankAccount, validateBIC } from '../utils/fieldValidation';
+import notificationService from '../services/notificationService';
 
 /** Field validation 2026-11-16: account must fit the named bank (CBE: 13 digits, 1000…). */
 const bankAccountValidator = (bankField?: string) => (value: unknown, { req }: any) => {
@@ -441,6 +442,20 @@ router.post('/:id/record', authMiddleware, requireRole(['BANKS', 'BANK', 'BANK_A
       metadata: { repatriatedAmount, convertedAmount, exchangeRate, swiftReference, blockchainTxId: result.transactionId || null },
     }, `repatriation ${id} record`);
 
+
+    // In-app notification (persisted feed + live WS broadcast).
+    // Recording a repatriation previously emitted nothing, so another
+    // NBE/bank user never heard about it live. Role-only rows: a
+    // repatriation id resolves to no exporter on its own.
+    await notificationService.emitWorkflowEvent({
+      type: 'repatriation_recorded',
+      title: `Repatriation ${id} recorded`,
+      message: `Repatriation ${id} was recorded (repatriated ${repatriatedAmount}, converted ${convertedAmount}).`,
+      entityType: 'repatriation', entityId: id, severity: 'success',
+      roles: ['BANKS', 'NBE'],
+      actionUrl: '/portals/exporter?tab=payments',
+      actionUrls: { BANKS: '/portals/banks?tab=contracts', NBE: '/portals/nbe?tab=contracts' },
+    });
 
     res.json({
       success: true,

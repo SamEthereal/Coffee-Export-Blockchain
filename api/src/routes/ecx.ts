@@ -9,6 +9,7 @@ import { logger } from '../utils/logger';
 import { logAuditBestEffort } from '../utils/auditBestEffort';
 import { body, param } from 'express-validator';
 import { validateRequest } from '../middleware/validation';
+import notificationService from '../services/notificationService';
 
 const router = express.Router();
 const fabricService = FabricService.getInstance();
@@ -353,6 +354,19 @@ router.post('/lots', authMiddleware, requireRole('ECX', 'ECX_ADMIN'),
           blockchainTxId: result.txId || undefined,
           metadata: { ecxLotNumber: lotNumber, exporterId, blockchainTxId: result.txId || null },
         }, `ecx lot ${lotId} register`);
+        // In-app notification (persisted feed + live WS broadcast).
+        // ECX lot actions previously emitted nothing at all, so another
+        // ECX user never heard about them live. Role-only rows (ECX is
+        // the only portal that loads lots; 'ecx_lot' has no exporter
+        // resolution in notificationService).
+        await notificationService.emitWorkflowEvent({
+          type: 'ecx_lot_created',
+          title: `ECX lot ${lotNumber} registered`,
+          message: `ECX lot ${lotNumber} was registered for exporter ${exporterId}.`,
+          entityType: 'ecx_lot', entityId: lotId, severity: 'info',
+          roles: ['ECX'],
+          actionUrl: '/portals/ecx?tab=lots',
+        });
         res.status(201).json({ success: true, data: { lotId, ecxLotNumber: lotNumber }, txId: result.txId, timestamp: new Date().toISOString() });
       } else if (isPendingDeploy(result.error)) {
         res.status(503).json({ success: false, error: { code: 'CHAINCODE_UPGRADING', message: 'ECX chaincode functions are being deployed. Run scripts/run-upgrade-seq2.bat and retry in a few minutes.' }, timestamp: new Date().toISOString() });
@@ -411,6 +425,16 @@ router.post('/lots/:lotId/grade', authMiddleware, requireRole('ECX', 'ECX_ADMIN'
             blockchainTxId: result.txId || undefined,
             metadata: { moistureContent, defectCount, qualityScore, blockchainTxId: result.txId || null },
           }, `ecx lot ${lotId} grade-rejected`);
+          // In-app notification (persisted feed + live WS broadcast).
+          // Moisture rejection via grading previously emitted nothing.
+          await notificationService.emitWorkflowEvent({
+            type: 'ecx_lot_rejected',
+            title: `ECX lot ${lotId} rejected`,
+            message: `ECX lot ${lotId} was rejected: ${rejectionReason}`,
+            entityType: 'ecx_lot', entityId: lotId, severity: 'warning',
+            roles: ['ECX'],
+            actionUrl: '/portals/ecx?tab=lots',
+          });
           return res.json({ success: true, data: { lotId, status: 'REJECTED', rejectionReason, moistureContent: Number(moistureContent), defectCount: Number(defectCount) }, txId: result.txId, timestamp: new Date().toISOString() });
         }
         await mirrorLotStatusPG(lotId, 'GRADED', { grade, quality_score: qualityScore != null ? Number(qualityScore) : null });
@@ -424,6 +448,16 @@ router.post('/lots/:lotId/grade', authMiddleware, requireRole('ECX', 'ECX_ADMIN'
           blockchainTxId: result.txId || undefined,
           metadata: { grade, qualityScore, moistureContent, defectCount, blockchainTxId: result.txId || null },
         }, `ecx lot ${lotId} grade`);
+        // In-app notification (persisted feed + live WS broadcast).
+        // Grading previously emitted nothing.
+        await notificationService.emitWorkflowEvent({
+          type: 'ecx_lot_graded',
+          title: `ECX lot ${lotId} graded ${grade}`,
+          message: `ECX lot ${lotId} was graded ${grade} (score ${Number(qualityScore || 0)}, moisture ${moistureContent}%).`,
+          entityType: 'ecx_lot', entityId: lotId, severity: 'success',
+          roles: ['ECX'],
+          actionUrl: '/portals/ecx?tab=lots',
+        });
         res.json({ success: true, data: { lotId, status: 'GRADED', grade, qualityScore: Number(qualityScore || 0), moistureContent: Number(moistureContent), defectCount: Number(defectCount) }, txId: result.txId, timestamp: new Date().toISOString() });
       } else if (isPendingDeploy(result.error)) {
         res.status(503).json({ success: false, error: { code: 'CHAINCODE_UPGRADING', message: 'ECX chaincode functions are being deployed. Run scripts/run-upgrade-seq2.bat and retry.' }, timestamp: new Date().toISOString() });
@@ -471,6 +505,16 @@ router.post('/lots/:lotId/reject', authMiddleware,
           blockchainTxId: result.txId || undefined,
           metadata: { rejectionReason, blockchainTxId: result.txId || null },
         }, `ecx lot ${lotId} reject`);
+        // In-app notification (persisted feed + live WS broadcast).
+        // Explicit lot rejection previously emitted nothing.
+        await notificationService.emitWorkflowEvent({
+          type: 'ecx_lot_rejected',
+          title: `ECX lot ${lotId} rejected`,
+          message: `ECX lot ${lotId} was rejected: ${rejectionReason}`,
+          entityType: 'ecx_lot', entityId: lotId, severity: 'warning',
+          roles: ['ECX'],
+          actionUrl: '/portals/ecx?tab=lots',
+        });
         res.json({ success: true, data: { lotId, status: 'REJECTED', rejectionReason }, txId: result.txId, timestamp: new Date().toISOString() });
       } else if (isPendingDeploy(result.error)) {
         res.status(503).json({ success: false, error: { code: 'CHAINCODE_UPGRADING', message: 'ECX chaincode functions are being deployed. Run scripts/run-upgrade-seq2.bat and retry.' }, timestamp: new Date().toISOString() });
@@ -509,6 +553,16 @@ router.post('/lots/:lotId/assign', authMiddleware, requireRole('ECX', 'ECX_ADMIN
           blockchainTxId: result.txId || undefined,
           metadata: { contractId, blockchainTxId: result.txId || null },
         }, `ecx lot ${lotId} assign`);
+        // In-app notification (persisted feed + live WS broadcast).
+        // Lot assignment previously emitted nothing.
+        await notificationService.emitWorkflowEvent({
+          type: 'ecx_lot_assigned',
+          title: `ECX lot ${lotId} assigned`,
+          message: `ECX lot ${lotId} was assigned to contract ${contractId}.`,
+          entityType: 'ecx_lot', entityId: lotId, severity: 'info',
+          roles: ['ECX'],
+          actionUrl: '/portals/ecx?tab=lots',
+        });
         res.json({ success: true, data: { lotId, contractId }, txId: result.txId, timestamp: new Date().toISOString() });
       } else if (isPendingDeploy(result.error)) {
         res.status(503).json({ success: false, error: { code: 'CHAINCODE_UPGRADING', message: 'ECX chaincode functions are being deployed. Run scripts/run-upgrade-seq2.bat and retry.' }, timestamp: new Date().toISOString() });
@@ -544,6 +598,16 @@ router.post('/lots/:lotId/release', authMiddleware, requireRole('ECX', 'ECX_ADMI
           blockchainTxId: result.txId || undefined,
           metadata: { blockchainTxId: result.txId || null },
         }, `ecx lot ${lotId} release`);
+        // In-app notification (persisted feed + live WS broadcast).
+        // Lot release previously emitted nothing.
+        await notificationService.emitWorkflowEvent({
+          type: 'ecx_lot_released',
+          title: `ECX lot ${lotId} released`,
+          message: `ECX lot ${lotId} was released.`,
+          entityType: 'ecx_lot', entityId: lotId, severity: 'success',
+          roles: ['ECX'],
+          actionUrl: '/portals/ecx?tab=lots',
+        });
         res.json({ success: true, data: { lotId }, txId: result.txId, timestamp: new Date().toISOString() });
       } else if (isPendingDeploy(result.error)) {
         res.status(503).json({ success: false, error: { code: 'CHAINCODE_UPGRADING', message: 'ECX chaincode functions are being deployed. Run scripts/run-upgrade-seq2.bat and retry.' }, timestamp: new Date().toISOString() });
@@ -609,6 +673,16 @@ router.post('/lots/:lotId/auto-release', authMiddleware, requireRole('ECX', 'ECX
         blockchainTxId: result.txId || undefined,
         metadata: { ecxLotNumber, shipmentID, blockchainTxId: result.txId || null },
       }, `ecx lot ${lotId} auto-release`);
+      // In-app notification (persisted feed + live WS broadcast).
+      // Auto-release previously emitted nothing.
+      await notificationService.emitWorkflowEvent({
+        type: 'ecx_lot_released',
+        title: `ECX lot ${lotId} auto-released`,
+        message: `ECX lot ${lotId} was auto-released for shipment ${shipmentID}.`,
+        entityType: 'ecx_lot', entityId: lotId, severity: 'success',
+        roles: ['ECX'],
+        actionUrl: '/portals/ecx?tab=lots',
+      });
       return res.json({
         success: true,
         data: { lotId, ecxLotNumber, shipmentID },

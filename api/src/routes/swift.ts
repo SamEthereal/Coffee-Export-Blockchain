@@ -695,6 +695,23 @@ router.post('/messages/:messageID/approve',
           metadata: { approvedBy, blockchainTxId: result.txId || null },
         }, `swift message ${messageID} approve`);
 
+        // In-app notification (persisted feed + live WS broadcast).
+        // SWIFT lifecycle moves previously emitted nothing (only
+        // receive did), so another bank/NBE user never heard about
+        // them live. Role-only rows, like swift_message_created:
+        // SWIFT messages have no PG mirror, so without a linked LC /
+        // payment id there is no exporter to resolve — and the
+        // exporter portal loads no SWIFT list.
+        await notificationService.emitWorkflowEvent({
+          type: 'swift_approved',
+          title: `SWIFT message ${messageID} approved`,
+          message: `SWIFT message ${messageID} was approved.`,
+          entityType: 'swift', entityId: messageID, severity: 'success',
+          roles: ['BANKS', 'NBE'],
+          actionUrl: '/portals/banks?tab=swift-messages',
+          actionUrls: { BANKS: '/portals/banks?tab=swift-messages', NBE: '/portals/nbe?tab=contracts' },
+        });
+
         res.json({
           success: true,
           data: { messageID, status: 'APPROVED' },
@@ -855,6 +872,19 @@ router.post('/messages/:messageID/nbe-approve',
           metadata: { approvedBy, amlCheck, sanctionScreening, blockchainTxId: result.txId || null },
         }, `swift message ${messageID} nbe-approve`);
 
+        // In-app notification (persisted feed + live WS broadcast).
+        // NBE approval previously emitted nothing (only receive did).
+        // Role-only, like the other SWIFT lifecycle emits above.
+        await notificationService.emitWorkflowEvent({
+          type: 'swift_nbe_approved',
+          title: `SWIFT message ${messageID} NBE-approved`,
+          message: `SWIFT message ${messageID} was approved by NBE after compliance review.`,
+          entityType: 'swift', entityId: messageID, severity: 'success',
+          roles: ['BANKS', 'NBE'],
+          actionUrl: '/portals/banks?tab=swift-messages',
+          actionUrls: { BANKS: '/portals/banks?tab=swift-messages', NBE: '/portals/nbe?tab=contracts' },
+        });
+
         res.json({
           success: true,
           data: { 
@@ -917,6 +947,19 @@ router.post('/messages/:messageID/send',
           blockchainTxId: result.txId || undefined,
           metadata: { sentBy, blockchainTxId: result.txId || null },
         }, `swift message ${messageID} send`);
+
+        // In-app notification (persisted feed + live WS broadcast).
+        // SWIFT send previously emitted nothing (only receive did).
+        // Role-only, like the other SWIFT lifecycle emits.
+        await notificationService.emitWorkflowEvent({
+          type: 'swift_sent',
+          title: `SWIFT message ${messageID} sent`,
+          message: `SWIFT message ${messageID} was sent.`,
+          entityType: 'swift', entityId: messageID, severity: 'success',
+          roles: ['BANKS', 'NBE'],
+          actionUrl: '/portals/banks?tab=swift-messages',
+          actionUrls: { BANKS: '/portals/banks?tab=swift-messages', NBE: '/portals/nbe?tab=contracts' },
+        });
 
         res.json({
           success: true,
@@ -1058,6 +1101,19 @@ router.post('/messages/:messageID/process',
           metadata: { processedBy, blockchainTxId: result.txId || null },
         }, `swift message ${messageID} process`);
 
+        // In-app notification (persisted feed + live WS broadcast).
+        // SWIFT processing previously emitted nothing (only receive
+        // did). Role-only, like the other SWIFT lifecycle emits.
+        await notificationService.emitWorkflowEvent({
+          type: 'swift_processed',
+          title: `SWIFT message ${messageID} processing`,
+          message: `SWIFT message ${messageID} moved to processing.`,
+          entityType: 'swift', entityId: messageID, severity: 'info',
+          roles: ['BANKS', 'NBE'],
+          actionUrl: '/portals/banks?tab=swift-messages',
+          actionUrls: { BANKS: '/portals/banks?tab=swift-messages', NBE: '/portals/nbe?tab=contracts' },
+        });
+
         res.json({
           success: true,
           data: { messageID, status: 'PROCESSING' },
@@ -1107,6 +1163,19 @@ router.post('/messages/:messageID/settle',
           blockchainTxId: result.txId || undefined,
           metadata: { blockchainTxId: result.txId || null },
         }, `swift message ${messageID} settle`);
+
+        // In-app notification (persisted feed + live WS broadcast).
+        // SWIFT settlement previously emitted nothing (only receive
+        // did). Role-only, like the other SWIFT lifecycle emits.
+        await notificationService.emitWorkflowEvent({
+          type: 'swift_settled',
+          title: `SWIFT message ${messageID} settled`,
+          message: `SWIFT message ${messageID} was settled.`,
+          entityType: 'swift', entityId: messageID, severity: 'success',
+          roles: ['BANKS', 'NBE'],
+          actionUrl: '/portals/banks?tab=swift-messages',
+          actionUrls: { BANKS: '/portals/banks?tab=swift-messages', NBE: '/portals/nbe?tab=contracts' },
+        });
 
         res.json({
           success: true,
@@ -1165,6 +1234,19 @@ router.post('/messages/:messageID/reject',
           blockchainTxId: result.txId || undefined,
           metadata: { reason, errorCode, blockchainTxId: result.txId || null },
         }, `swift message ${messageID} reject`);
+
+        // In-app notification (persisted feed + live WS broadcast).
+        // SWIFT rejection previously emitted nothing (only receive
+        // did). Role-only, like the other SWIFT lifecycle emits.
+        await notificationService.emitWorkflowEvent({
+          type: 'swift_rejected',
+          title: `SWIFT message ${messageID} rejected`,
+          message: `SWIFT message ${messageID} was rejected: ${reason}`,
+          entityType: 'swift', entityId: messageID, severity: 'warning',
+          roles: ['BANKS', 'NBE'],
+          actionUrl: '/portals/banks?tab=swift-messages',
+          actionUrls: { BANKS: '/portals/banks?tab=swift-messages', NBE: '/portals/nbe?tab=contracts' },
+        });
 
         res.json({
           success: true,
