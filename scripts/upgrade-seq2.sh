@@ -29,8 +29,12 @@ px() {
 }
 
 echo "=== Step 1: Build package ==="
+# NOTE: this legacy path writes its own connection.json here and deletes
+# it after packaging; it is NOT the file deploy-chaincode.sh packages
+# (that is chaincodes/coffee/connection.json). dial_timeout is kept at
+# 60s to match the packaged file, so no path can regenerate a 10s copy.
 printf '{"type":"ccaas","label":"%s"}' "$CC_LABEL" > "/c/goCBC/blockchain/channel-artifacts/metadata.json"
-printf '{"address":"coffee-chaincode:9999","dial_timeout":"10s","tls_required":false}' > "/c/goCBC/blockchain/channel-artifacts/connection.json"
+printf '{"address":"coffee-chaincode:9999","dial_timeout":"60s","tls_required":false}' > "/c/goCBC/blockchain/channel-artifacts/connection.json"
 (cd "/c/goCBC/blockchain/channel-artifacts" && tar czf code.tar.gz connection.json && tar czf "${CC_LABEL}.tar.gz" metadata.json code.tar.gz && rm -f metadata.json connection.json code.tar.gz)
 echo "Package: ${STAGE}/${CC_LABEL}.tar.gz"
 

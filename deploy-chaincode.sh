@@ -24,6 +24,33 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CHAINCODE_DIR="$REPO_ROOT/chaincodes/coffee"
 COMPOSE_FILE="$REPO_ROOT/docker-compose-fabric.yml"
 
+# Source hash for the change check below and the .last_deployed write at
+# the end of a verified deploy. It covers the Go sources AND the two
+# packaging inputs, connection.json and metadata.json. The old hash
+# covered *.go only, so a connection.json-only change was silently
+# skipped with "No chaincode changes detected": on the host the
+# 172.18.0.17 -> coffee-chaincode:9999 revert (e696d79e) would have
+# deployed nothing, the peer kept dialing the stale Docker-bridge IP,
+# and registration failed at TCP connect — misread as a "TLS mismatch"
+# (2026-11-19). metadata.json is included so a label-only change is
+# not skipped either. .last_deployed is written only after a verified
+# deploy, so a failed deploy never marks the tree as deployed.
+chaincode_source_hash() {
+    { find "$CHAINCODE_DIR" -name "*.go" -type f -exec md5sum {} \;
+      md5sum "$CHAINCODE_DIR/connection.json" "$CHAINCODE_DIR/metadata.json" 2>/dev/null
+    } | sort | md5sum | awk '{print $1}'
+}
+
+# The connection.json this run is about to package (chaincodes/coffee/),
+# parsed once for the fail-fast checks below and the post-install
+# read-back. This is the file deploy-chaincode.sh packages
+# (deploy-chaincode.sh:158 `cp connection.json code-temp/` after
+# cd $CHAINCODE_DIR) — NOT blockchain/channel-artifacts/connection.json.
+PKG_CONN_ADDR=$(grep -oP '"address":\s*"\K[^"]+' "$CHAINCODE_DIR/connection.json" 2>/dev/null || echo "")
+PKG_CONN_HOST="${PKG_CONN_ADDR%%:*}"
+PKG_CONN_PORT="${PKG_CONN_ADDR##*:}"
+PKG_CONN_TLS=$(grep -oP '"tls_required":\s*\K(true|false)' "$CHAINCODE_DIR/connection.json" 2>/dev/null || echo "unknown")
+
 # Endorsement policy for the readiness check (F5 follow-up): the native
 # deploy.sh evaluates readiness against AND(all 6 MSPs), and without the
 # flag the check once reported all-6-false with 5/6 approvals genuinely
@@ -69,7 +96,7 @@ if docker exec peer0.ecta.cecbs.et peer lifecycle chaincode querycommitted \
     # Check if chaincode source has changed
     if [ -f "$CHAINCODE_DIR/.last_deployed" ]; then
         LAST_HASH=$(cat "$CHAINCODE_DIR/.last_deployed" 2>/dev/null || echo "")
-        CURRENT_HASH=$(find "$CHAINCODE_DIR" -name "*.go" -type f -exec md5sum {} \; | sort | md5sum | awk '{print $1}')
+        CURRENT_HASH=$(chaincode_source_hash)
         
         if [ "$LAST_HASH" == "$CURRENT_HASH" ]; then
             echo -e "${GREEN}✓ No chaincode changes detected - skipping redeployment${NC}"
@@ -93,6 +120,49 @@ if docker exec peer0.ecta.cecbs.et peer lifecycle chaincode querycommitted \
     echo -e "${BLUE}➜ Upgrading to v${VERSION}, sequence ${SEQUENCE}${NC}"
 else
     echo -e "${YELLOW}⚠ Chaincode not yet deployed - performing initial deployment${NC}"
+fi
+
+# ── Fail fast on the packaged connection.json (TLS-mismatch trap, 2026-11-19) ──
+# The peer dials the address in the INSTALLED package's connection.json —
+# a repo edit alone reaches no peer. If the address about to be packaged
+# is a bare Docker-bridge IP (e.g. 172.18.0.17:9999 from merge a3130932)
+# or does not resolve from a peer, the deploy must abort HERE with the
+# exact cause, not later at the warm-up query with a generic timeout.
+# Checks: (a) bare-IP address — always wrong (container IPs are
+# ephemeral; the name coffee-chaincode is what Docker resolves);
+# (b) on an upgrade (a definition is already committed, so a server is
+# expected to be listening) the name must resolve from peer0.ecta.
+# TCP reachability is NOT a hard gate here — the server may legitimately
+# be down before this deploy recreates it; the post-recreate probe below
+# (which uses this same packaged address) is the hard TCP gate.
+if [ -z "$PKG_CONN_ADDR" ] || [ -z "$PKG_CONN_HOST" ] || [ -z "$PKG_CONN_PORT" ]; then
+    echo -e "${RED}✗ FAIL: chaincodes/coffee/connection.json has no usable address (parsed: '${PKG_CONN_ADDR}')${NC}"
+    echo -e "${RED}  The peer dials this address from the installed package; without it registration cannot succeed.${NC}"
+    echo -e "${RED}  Fix: set \"address\" to \"coffee-chaincode:9999\" in chaincodes/coffee/connection.json and re-run.${NC}"
+    exit 1
+fi
+if [[ "$PKG_CONN_HOST" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    echo -e "${RED}✗ FAIL: packaged connection.json address is a bare IP (${PKG_CONN_ADDR}) — a stale Docker-bridge IP no peer can rely on${NC}"
+    echo -e "${RED}  The peer dials this address from the installed package; a bridge IP changes on every container recreate, so registration fails at TCP connect (before any TLS question arises).${NC}"
+    echo -e "${RED}  Fix: set \"address\" to \"coffee-chaincode:9999\" in chaincodes/coffee/connection.json, then re-run this script — the change hash now covers connection.json, so the fix is detected and rebuilt (deleting chaincodes/coffee/.last_deployed is no longer needed).${NC}"
+    exit 1
+fi
+if [ -n "$CURRENT_SEQUENCE" ]; then
+    echo -e "${YELLOW}  Resolving packaged address ${PKG_CONN_HOST} from peer0.ecta...${NC}"
+    PKG_DNS_OUT=$(docker exec peer0.ecta.cecbs.et getent hosts "$PKG_CONN_HOST" 2>&1)
+    PKG_DNS_RC=$?
+    if [ $PKG_DNS_RC -eq 0 ]; then
+        echo -e "${GREEN}✓ Packaged address resolves from peer: ${PKG_DNS_OUT}${NC}"
+    elif [ $PKG_DNS_RC -eq 126 ] || [ $PKG_DNS_RC -eq 127 ]; then
+        echo -e "${YELLOW}  (cannot run getent in the peer container — no getent/shell there; skipping DNS pre-check, the post-recreate probe still gates)${NC}"
+    else
+        echo -e "${RED}✗ FAIL: packaged address ${PKG_CONN_HOST} does not resolve from peer0.ecta (rc=${PKG_DNS_RC}): ${PKG_DNS_OUT}${NC}"
+        echo -e "${RED}  The peer will dial an unresolvable address from the installed package and registration will fail at TCP connect.${NC}"
+        echo -e "${RED}  Fix: the address must be a name the peers resolve (coffee-chaincode on the cecbs network) — check chaincodes/coffee/connection.json and that peer + coffee-chaincode share the network, then re-run.${NC}"
+        exit 1
+    fi
+else
+    echo -e "${YELLOW}  (fresh install: no server expected yet — skipping the DNS pre-check; the post-recreate probe still gates)${NC}"
 fi
 
 echo ""
@@ -262,6 +332,33 @@ fi
 echo -e "${GREEN}✓ Package ID: $PACKAGE_ID${NC}"
 echo ""
 
+# Read back the connection.json the peer actually installed for this
+# package and compare it with the file just packaged. The peer dials
+# the installed copy — not the repo file — so a mismatch here is the
+# stale-address failure itself, caught before approve/commit. The
+# installed copy lives at
+# /var/hyperledger/production/externalbuilder/builds/<label>-<hash>/
+# release/chaincode/server/connection.json (peer-normalised; it carries
+# extra client_auth_required/root_cert/client_key/client_cert fields).
+# Unreadable (unexpected builder layout) is a warning only — a concrete
+# address mismatch is a hard fail.
+PKG_HASH="${PACKAGE_ID##*:}"
+PKG_BUILD_DIR="/var/hyperledger/production/externalbuilder/builds/coffee_${VERSION}-${PKG_HASH}"
+INSTALLED_CONN=$(docker exec peer0.ecta.cecbs.et cat "$PKG_BUILD_DIR/release/chaincode/server/connection.json" 2>/dev/null || echo "")
+INSTALLED_ADDR=$(echo "$INSTALLED_CONN" | grep -oP '"address":\s*"\K[^"]+' || echo "")
+if [ -n "$INSTALLED_ADDR" ]; then
+    echo -e "${YELLOW}  Installed connection.json address (ECTA peer): ${INSTALLED_ADDR}${NC}"
+    if [ "$INSTALLED_ADDR" != "$PKG_CONN_ADDR" ]; then
+        echo -e "${RED}✗ FAIL: installed connection.json address (${INSTALLED_ADDR}) != packaged address (${PKG_CONN_ADDR})${NC}"
+        echo -e "${RED}  The peer will dial the installed address, not the repo file. Fix: rebuild the package from chaincodes/coffee/connection.json and reinstall — do not approve/commit this package.${NC}"
+        exit 1
+    fi
+    echo -e "${GREEN}✓ Installed connection.json matches the packaged address${NC}"
+else
+    echo -e "${YELLOW}  (could not read back the installed connection.json from $PKG_BUILD_DIR — skipping the read-back check; the warm-up query still gates)${NC}"
+fi
+echo ""
+
 # ── Update the chaincode server for the new package ID ──────────────────────
 # CCAAS peers route invocations to the chaincode server registered under the
 # package ID of the committed definition. The server (coffee-chaincode
@@ -353,8 +450,12 @@ fi
 # warm-up loop below.
 SERVER_READY=0
 SERVER_PROBE_OK=1
+# The probe dials the PACKAGED address (PKG_CONN_HOST:PKG_CONN_PORT),
+# not a hardcoded name: the peer dials the installed connection.json,
+# so the smoke test must verify that address, or a stale address would
+# pass this gate and only die later at the warm-up query.
 for i in $(seq 1 30); do
-    docker exec peer0.ecta.cecbs.et sh -c 'echo > /dev/tcp/coffee-chaincode/9999' 2>/dev/null
+    docker exec peer0.ecta.cecbs.et sh -c "echo > /dev/tcp/${PKG_CONN_HOST}/${PKG_CONN_PORT}" 2>/dev/null
     PROBE_RC=$?
     if [ $PROBE_RC -eq 0 ]; then
         SERVER_READY=1
@@ -368,13 +469,13 @@ for i in $(seq 1 30); do
     sleep 2
 done
 if [ "$SERVER_PROBE_OK" -eq 1 ] && [ "$SERVER_READY" -ne 1 ]; then
-    echo -e "${RED}✗ coffee-chaincode:9999 not reachable from peer0.ecta after ~60s${NC}"
-    echo -e "${RED}  The container is Up but its listener is not answering — the server may still be starting, or it crashed after start.${NC}"
-    echo -e "${RED}  Check: docker logs coffee-chaincode${NC}"
+    echo -e "${RED}✗ ${PKG_CONN_ADDR} (packaged connection.json address) not reachable from peer0.ecta after ~60s${NC}"
+    echo -e "${RED}  The container is Up but its listener is not answering at the address the peer will dial — the server may still be starting, or it crashed after start.${NC}"
+    echo -e "${RED}  Check: docker logs coffee-chaincode; ./diagnose-chaincode.sh${NC}"
     docker logs --tail 30 coffee-chaincode 2>&1 || true
     exit 1
 fi
-echo -e "${GREEN}✓ Chaincode server rebuilt and reachable at coffee-chaincode:9999 with the new package ID${NC}"
+echo -e "${GREEN}✓ Chaincode server rebuilt and reachable at ${PKG_CONN_ADDR} with the new package ID${NC}"
 echo ""
 
 # Approve for all organizations
@@ -497,7 +598,7 @@ if echo "$COMMITTED_INFO" | grep -q "Version: ${VERSION}" && echo "$COMMITTED_IN
     # Record the source hash ONLY now that the deploy verified: writing it
     # before a failed deploy would make the next run think the code was
     # already deployed and skip the upgrade.
-    find "$CHAINCODE_DIR" -name "*.go" -type f -exec md5sum {} \; | sort | md5sum | awk '{print $1}' > "$CHAINCODE_DIR/.last_deployed"
+    chaincode_source_hash > "$CHAINCODE_DIR/.last_deployed"
     
     # Warm up chaincode containers to prevent timeout on first real transaction.
     # This is the first point in the deploy where a real query CAN succeed

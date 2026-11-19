@@ -69,8 +69,12 @@ ok "TLS CA distributed to all peers"
 info "[2/5] Building chaincode package..."
 PKG_DIR="$PROJECT_ROOT/blockchain/channel-artifacts"
 mkdir -p "$PKG_DIR"
+# NOTE: this legacy path writes its own connection.json here and deletes
+# it after packaging; it is NOT the file deploy-chaincode.sh packages
+# (that is chaincodes/coffee/connection.json). dial_timeout is kept at
+# 60s to match the packaged file, so no path can regenerate a 10s copy.
 printf '{"type":"ccaas","label":"%s"}' "$CC_LABEL" > "$PKG_DIR/metadata.json"
-printf '{"address":"coffee-chaincode:9999","dial_timeout":"10s","tls_required":false}' > "$PKG_DIR/connection.json"
+printf '{"address":"coffee-chaincode:9999","dial_timeout":"60s","tls_required":false}' > "$PKG_DIR/connection.json"
 (cd "$PKG_DIR" \
   && tar czf code.tar.gz connection.json \
   && tar czf "${CC_LABEL}.tar.gz" metadata.json code.tar.gz \

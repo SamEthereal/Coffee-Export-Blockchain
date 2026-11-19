@@ -3343,11 +3343,11 @@ func main() {
 
 	// If both CCID and address are set, use CCAAS server mode
 	if ccid != "" && address != "" {
-		// IMPORTANT: For Fabric 2.5 CCAAS with external builders,
-		// the address should be the peer's address (where to connect TO),
-		// NOT where the chaincode should listen.
-		// The connection.json in the package tells peers where to find us,
-		// but the chaincode must also actively connect to each peer.
+		// IMPORTANT: In Fabric 2.5 CCAAS server mode the chaincode only
+		// listens: CHAINCODE_SERVER_ADDRESS is the address this process
+		// binds (e.g. 0.0.0.0:9999). The peer dials us at the address in
+		// the installed package's connection.json; the chaincode never
+		// connects to any peer.
 		
 		log.Printf("Starting Coffee Chaincode (CCAAS Mode) - CCID: %s, Address: %s", ccid, address)
 		

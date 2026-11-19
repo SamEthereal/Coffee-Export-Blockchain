@@ -1339,11 +1339,12 @@ initialize_chaincode() {
     # Do NOT short-circuit here when a version is already committed: the
     # code in chaincodes/coffee may be newer than what is on the channel
     # (e.g. v2.2 seq 21 committed, source now carries the v2.3 fixes).
-    # deploy-chaincode.sh hashes the Go sources, skips the redeploy when
-    # nothing changed, and upgrades (minor version +1, sequence +1) when it
-    # did. It also rebuilds the chaincode server image and updates its
-    # package ID in the compose file, which is required for invocations to
-    # keep working after an upgrade (the server registers by package ID).
+    # deploy-chaincode.sh hashes the Go sources plus connection.json and
+    # metadata.json, skips the redeploy when nothing changed, and upgrades
+    # (minor version +1, sequence +1) when it did. It also rebuilds the
+    # chaincode server image and updates its package ID in the compose
+    # file, which is required for invocations to keep working after an
+    # upgrade (the server registers by package ID).
     if [ -f "$PROJECT_ROOT/deploy-chaincode.sh" ]; then
         write_step "Running chaincode deploy (detects changes, upgrades if needed)..."
         # Test the command directly: the old `bash ...; if [ $? -eq 0 ]`
