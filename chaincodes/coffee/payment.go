@@ -1365,8 +1365,17 @@ func (c *CoffeeContract) QueryPaymentsByExporter(ctx contractapi.TransactionCont
 
 // QueryAllPayments - Get all payment settlements in the system
 func (c *CoffeeContract) QueryAllPayments(ctx contractapi.TransactionContextInterface) ([]*PaymentSettlement, error) {
-
-	queryString := `{"selector":{"paymentId":{"$exists":true}}}`
+	// NOTE: repatriation docs also carry paymentId (they link to a payment),
+	// so a bare {"paymentId": {"$exists": true}} selector matched all 20 of
+	// them and returned 222 rows for 202 real payments. Repatriation docs
+	// are the only docs with repatriationId (verified live: 20/20 repat docs
+	// carry it, 0/202 payment docs do — the same discriminator
+	// QueryRepatriationsByPayment already uses in repatriation.go), so
+	// exclude them explicitly. (lcId would also separate the two sets —
+	// 202/202 payments carry it, 0/20 repatriations do — but the
+	// repatriationId exclusion states the intent directly and does not
+	// depend on every future payment carrying lcId.)
+	queryString := `{"selector":{"$and":[{"paymentId":{"$exists":true}},{"repatriationId":{"$exists":false}}]}}`
 
 	resultsIterator, err := ctx.GetStub().GetQueryResult(queryString)
 	if err != nil {

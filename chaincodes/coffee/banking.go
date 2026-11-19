@@ -1344,11 +1344,15 @@ func (c *CoffeeContract) QueryLCsByExporter(ctx contractapi.TransactionContextIn
 func (c *CoffeeContract) QueryAllLCs(ctx contractapi.TransactionContextInterface) ([]*LetterOfCredit, error) {
 	// Use CouchDB rich query to filter only actual LC documents (not audit logs)
 	// This is much faster than GetStateByRange which iterates through all keys
+	// NOTE: the _id scope is ^LC_ (every LC key is "LC_"+lcID), NOT ^LC_LC:
+	// LC keys are "LC_"+lcID and lcIDs do not all start with "LC-" (e.g.
+	// key LC_REMFIX-LC-1794473995447, lcId REMFIX-LC-1794473995447), so
+	// ^LC_LC silently dropped that LC. Same widening as queryLCs below.
 	queryString := `{
 		"selector": {
 			"$and": [
 				{"lcId": {"$exists": true}},
-				{"_id": {"$regex": "^LC_LC"}}
+				{"_id": {"$regex": "^LC_"}}
 			]
 		},
 		"limit": 1000
@@ -1394,8 +1398,10 @@ func (c *CoffeeContract) QueryAllLCs(ctx contractapi.TransactionContextInterface
 }
 
 // queryLCsByRange - Fallback method using GetStateByRange
+// Range is "LC_".."LC_~" (all LC keys), matching the ^LC_ selector above —
+// the old "LC_LC".."LC_LC~" range dropped LCs whose lcId lacks the "LC-" prefix.
 func (c *CoffeeContract) queryLCsByRange(ctx contractapi.TransactionContextInterface) ([]*LetterOfCredit, error) {
-	resultsIterator, err := ctx.GetStub().GetStateByRange("LC_LC", "LC_LC~")
+	resultsIterator, err := ctx.GetStub().GetStateByRange("LC_", "LC_~")
 	if err != nil {
 		return nil, fmt.Errorf("failed to query all LCs: %v", err)
 	}
