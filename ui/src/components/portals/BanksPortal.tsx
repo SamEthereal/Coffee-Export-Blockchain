@@ -1,7 +1,7 @@
 // Ethiopian Coffee Export Consortium Blockchain System (CECBS)
 // Banks Portal - Letter of Credit, Forex & Export Permit Management
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useRouter } from 'next/router';
 import {
   Box,
@@ -47,6 +47,7 @@ import { createOrganizationTheme } from '@/theme/organizationThemes';
 import { apiFetch, API_BASE_URL, API_ENDPOINTS, getAuthHeaders } from '@/config/api.config';
 import api from '@/utils/api';
 import { resolvePortalTabIndex } from '@/utils/portalTabNames';
+import { usePortalLiveRefresh, type LiveNotificationRow } from '@/utils/useLiveNotifications';
 import { validateBIC } from '@/utils/fieldValidation';
 import { couchDBService } from '@/services/couchdbService';
 import {
@@ -291,6 +292,26 @@ const mergeEntityDocuments = (existing: any[], rawRows: any[]): any[] => {
   }
   return merged;
 };
+
+/**
+ * Live-refresh relevance (2026-11-19): notification types whose
+ * payload feeds a Banks list. Covers the DIAGNOSIS §5.3 map plus the
+ * emit gaps closed in the same round (lc_approved / lc_examined /
+ * lc_rejected / lc_amended, swift_approved / swift_sent /
+ * swift_processed / swift_settled / swift_rejected /
+ * swift_nbe_approved, forex_requested / forex_utilised,
+ * payment_released — now also addressed to BANKS).
+ */
+const BANKS_LIVE_TYPES = new Set([
+  'lc_issued', 'lc_approved', 'lc_rejected', 'lc_amended', 'lc_examined', 'lc_documents_rejected',
+  'contract_approved',
+  'forex_allocated', 'forex_requested', 'forex_utilised',
+  'swift_message_created', 'swift_received', 'swift_approved', 'swift_nbe_approved',
+  'swift_sent', 'swift_processed', 'swift_settled', 'swift_rejected',
+  'payment_received', 'payment_settled', 'payment_released',
+  'shipment_delivered', 'customs_cleared', 'permit_issued',
+  'repatriation_recorded',
+]);
 
 const BanksPortal: React.FC = () => {
   // 🔇 Logging Control - Set to true to enable verbose logs
@@ -2819,6 +2840,50 @@ const BanksPortal: React.FC = () => {
     }
     return false;
   };
+
+  // --- Live refresh (2026-11-19) -------------------------------------------
+  // The bell's socket is shared — no second WebSocket. SWIFT
+  // notifications re-fetch just the SWIFT list until it converges on
+  // the notified message (same "until" guard as
+  // refreshSwiftMessagesUntil, but the expected status is NOT in the
+  // row, so convergence = the row for entityId differs from the
+  // last-seen snapshot, or the list length moved); a stale list is
+  // never applied. Every other relevant notification reloads the
+  // whole portal (debounced + mirror-lag-delayed by the hook). While
+  // the socket is down the hook polls loadBankingData every 30 s.
+  const swiftMessagesRef = useRef<any[]>([]);
+  swiftMessagesRef.current = swiftMessages;
+  const refreshSwiftMessagesUntilChanged = async (messageId: string): Promise<boolean> => {
+    const snapshot = swiftMessagesRef.current;
+    const snapRow = messageId
+      ? snapshot.find((m: any) => (m.messageId || m.messageID || m.MessageID) === messageId)
+      : undefined;
+    for (let attempt = 0; attempt < 6; attempt++) {
+      const rows = await fetchSwiftMessages();
+      const row = messageId
+        ? rows.find((m: any) => (m.messageId || m.messageID || m.MessageID) === messageId)
+        : undefined;
+      const changed =
+        rows.length !== snapshot.length ||
+        JSON.stringify(row ?? null) !== JSON.stringify(snapRow ?? null);
+      if (changed) {
+        setSwiftMessages(rows);
+        return true;
+      }
+      if (attempt < 5) {
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+      }
+    }
+    return false;
+  };
+  usePortalLiveRefresh({
+    refetch: () => { void loadBankingData(); },
+    isRelevant: (row: LiveNotificationRow) => BANKS_LIVE_TYPES.has(row.type),
+    resolveRefetch: (row: LiveNotificationRow) =>
+      row.type.startsWith('swift_')
+        ? { key: 'swift', run: () => refreshSwiftMessagesUntilChanged(row.entityId || '') }
+        : null,
+  });
 
   // SWIFT lifecycle on an EXISTING message — chaincode swift.go:
   // DRAFT → APPROVED → SENT → RECEIVED → PROCESSING → SETTLED, and any

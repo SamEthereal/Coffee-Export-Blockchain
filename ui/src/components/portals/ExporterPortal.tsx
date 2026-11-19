@@ -114,6 +114,7 @@ import { NotificationDialog } from '@/components/common/NotificationDialog';
 import { useNotification } from '@/hooks/useNotification';
 import { extractTxId } from '@/utils/txId';
 import { useTabFromQuery } from '@/hooks/useTabFromQuery';
+import { usePortalLiveRefresh, type LiveNotificationRow } from '@/utils/useLiveNotifications';
 import AuditTrailViewer from './AuditTrailViewer';
 import { DocumentValidationDialog } from './DocumentValidationDialog';
 import SWIFTMessagesViewWrapper from '@/components/exporter/SWIFTMessagesViewWrapper';
@@ -340,6 +341,25 @@ interface PaymentStatus {
   paymentTrackingStatus?: 'PENDING' | 'DOCUMENTS_SUBMITTED' | 'VERIFIED' | 'SWIFT_INITIATED' | 'SWIFT_RECEIVED' | 'SETTLED' | 'CONFIRMED';
   swiftReference?: string;
 }
+
+/**
+ * Live-refresh relevance (2026-11-19): the exporter loads contracts,
+ * LCs, forex, shipments, payments, permits and customs declarations,
+ * so every workflow type that feeds one of those lists is relevant
+ * (SWIFT rows are excluded — the exporter loads no SWIFT list).
+ */
+const EXPORTER_LIVE_TYPES = new Set([
+  'contract_registered', 'contract_approved', 'contract_rejected', 'contract_resubmitted',
+  'application_approved', 'application_rejected',
+  'lc_issued', 'lc_approved', 'lc_rejected', 'lc_amended', 'lc_examined', 'lc_documents_rejected',
+  'forex_allocated', 'forex_requested', 'forex_utilised',
+  'shipment_created', 'shipment_status_updated', 'shipment_delivered',
+  'inspection_passed', 'inspection_failed', 'inspection_required', 'inspection_completed',
+  'customs_submitted', 'customs_inspection_started', 'customs_rejected', 'customs_cleared',
+  'permit_issued',
+  'payment_received', 'payment_settled', 'payment_released',
+  'repatriation_recorded',
+]);
 
 const ExporterPortal: React.FC = () => {
   // Professional Brand Colors - Matching Login Page Theme
@@ -1152,6 +1172,16 @@ const ExporterPortal: React.FC = () => {
     // Note: Forex, LC, Shipments, and Payments are loaded from blockchain above
     // If no data exists yet, these arrays remain empty (not using mock data)
   };
+
+  // --- Live refresh (2026-11-19) -------------------------------------------
+  // Shared socket (the bell's connection — no second WebSocket).
+  // Relevant notifications reload the portal (debounced +
+  // mirror-lag-delayed by the hook); while the socket is down the hook
+  // polls loadExporterData every 30 s.
+  usePortalLiveRefresh({
+    refetch: () => { void loadExporterData(); },
+    isRelevant: (row: LiveNotificationRow) => EXPORTER_LIVE_TYPES.has(row.type),
+  });
   
   const handleTabChange = (event: React.SyntheticEvent, newValue: number) => {
     setTabValue(newValue);

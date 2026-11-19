@@ -51,6 +51,7 @@ import { DocumentValidationDialog } from './DocumentValidationDialog';
 import { apiFetch } from '@/config/api.config';
 import SWIFTMonitoringWrapper from '@/components/nbe/SWIFTMonitoringWrapper';
 import { useTabFromQuery } from '@/hooks/useTabFromQuery';
+import { usePortalLiveRefresh, type LiveNotificationRow } from '@/utils/useLiveNotifications';
 import AuditTrailViewer from './AuditTrailViewer';
 import { useAuth } from '@/contexts/AuthContext';
 import AnalyticsDashboard from '@/components/analytics/AnalyticsDashboard';
@@ -129,6 +130,22 @@ interface ExchangeRate {
   effectiveDate: string;
   status: 'ACTIVE' | 'INACTIVE' | 'SUPERSEDED';
 }
+
+/**
+ * Live-refresh relevance (2026-11-19): notification types whose
+ * payload feeds an NBE list (contracts, forex, LC monitoring,
+ * pending release, repatriation). SWIFT nbe-approve is included —
+ * NBE approves SWIFT messages from its own tab.
+ */
+const NBE_LIVE_TYPES = new Set([
+  'contract_registered', 'contract_approved', 'contract_rejected', 'contract_resubmitted',
+  'forex_allocated', 'forex_requested', 'forex_utilised',
+  'repatriation_recorded',
+  'lc_issued', 'lc_approved', 'lc_rejected', 'lc_amended', 'lc_examined',
+  'payment_received', 'payment_settled', 'payment_released',
+  'swift_message_created', 'swift_received', 'swift_nbe_approved', 'swift_approved', 'swift_sent',
+  'shipment_delivered',
+]);
 
 const NBEPortal: React.FC = () => {
   const { user } = useAuth();
@@ -595,6 +612,21 @@ const NBEPortal: React.FC = () => {
       setLoading(false);
     }
   };
+
+  // --- Live refresh (2026-11-19) -------------------------------------------
+  // Shared socket (the bell's connection — no second WebSocket).
+  // Relevant notifications reload the portal (debounced +
+  // mirror-lag-delayed by the hook), including the pending-release
+  // list, which loadData alone does not fetch (it otherwise loads
+  // only on tab switch). While the socket is down the hook polls the
+  // loaders every 30 s.
+  usePortalLiveRefresh({
+    refetch: () => {
+      void loadData();
+      void loadPendingRelease();
+    },
+    isRelevant: (row: LiveNotificationRow) => NBE_LIVE_TYPES.has(row.type),
+  });
 
   // Pagination Helper Functions
   const getPaginatedData = (data: any[]) => {

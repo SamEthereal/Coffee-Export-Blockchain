@@ -91,6 +91,7 @@ import {
   Area,
 } from 'recharts';
 import { useAuth } from '@/contexts/AuthContext';
+import { usePortalLiveRefresh } from '@/utils/useLiveNotifications';
 import UserManagement from './UserManagement';
 import api from '@/utils/api';
 import SystemOverview from '../portals/SystemOverview';
@@ -441,6 +442,24 @@ const AdminPortal: React.FC = () => {
       console.error('Failed to load traceability stats:', error);
     }
   };
+
+  // --- Live refresh (2026-11-19) -------------------------------------------
+  // Shared socket (the bell's connection — no second WebSocket). ADMIN
+  // subscribes to every role channel, so every workflow notification
+  // is relevant: reload all six loaders (debounced +
+  // mirror-lag-delayed by the hook). While the socket is down the hook
+  // polls the loaders every 30 s. This is independent of the opt-in
+  // autoRefresh toggle below, which is left exactly as it was.
+  usePortalLiveRefresh({
+    refetch: () => {
+      void loadSystemStats();
+      void loadOrganizationStats();
+      void loadRecentActivities();
+      void loadExpiringCertificates();
+      void loadBlockchainHealth();
+      void loadTraceabilityStats();
+    },
+  });
 
   // Handle KPI card clicks - navigate to appropriate tab and apply filters
   const handleKPICardClick = (tabIndex: number, cardIndex: number) => {

@@ -56,6 +56,7 @@ import api, { formatDate, formatCurrency, getStatusColor } from '@/utils/api';
 import { apiFetch, getAuthHeaders } from '@/config/api.config';
 import AuditTrailViewer from './AuditTrailViewer';
 import { useTabFromQuery } from '@/hooks/useTabFromQuery';
+import { usePortalLiveRefresh, type LiveNotificationRow } from '@/utils/useLiveNotifications';
 
 // Modern Components - 2026 Design
 import {
@@ -126,6 +127,18 @@ const normalizeShipmentId = (id: string): string => {
   if (!id) return '';
   return id.replace(/[_\s-]/g, '').toUpperCase().trim();
 };
+
+/**
+ * Live-refresh relevance (2026-11-19): notification types whose
+ * payload feeds a Customs list (declarations, shipments, officers,
+ * border-crossing stats).
+ */
+const CUSTOMS_LIVE_TYPES = new Set([
+  'customs_submitted', 'customs_inspection_started', 'customs_rejected', 'customs_cleared',
+  'shipment_created', 'shipment_status_updated', 'shipment_delivered',
+  'permit_issued',
+  'inspection_passed', 'inspection_failed', 'inspection_required', 'inspection_completed',
+]);
 
 const CustomsPortal: React.FC = () => {
   const [tabValue, setTabValue] = useState(0);
@@ -1403,6 +1416,20 @@ Once fixed, refresh this page and try creating the declaration again.`;
       setLoading(false);
     }
   };
+
+  // --- Live refresh (2026-11-19) -------------------------------------------
+  // Shared socket (the bell's connection — no second WebSocket).
+  // Relevant notifications reload the portal (debounced +
+  // mirror-lag-delayed by the hook); while the socket is down the hook
+  // polls the loaders every 30 s.
+  usePortalLiveRefresh({
+    refetch: () => {
+      void loadData();
+      void loadCustomsOfficers();
+      void loadBorderCrossingStats();
+    },
+    isRelevant: (row: LiveNotificationRow) => CUSTOMS_LIVE_TYPES.has(row.type),
+  });
 
   const handleScheduleInspection = async (declarationId: string) => {
     const token = localStorage.getItem('authToken');

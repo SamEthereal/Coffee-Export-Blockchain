@@ -23,6 +23,7 @@ import {
   PrimaryButton, GhostButton, PortalDialog, PortalField, StatusChip, getPortalBrand,
 } from '@/components/shared/portal';
 import { useNotification } from '@/hooks/useNotification';
+import { usePortalLiveRefresh, type LiveNotificationRow } from '@/utils/useLiveNotifications';
 import { extractTxId } from '@/utils/txId';
 import { useTabFromQuery } from '@/hooks/useTabFromQuery';
 import { NotificationDialog } from '@/components/common/NotificationDialog';
@@ -59,6 +60,18 @@ interface CoffeeLot {
   releaseDate?: string;
   rejectionReason?: string;
 }
+
+/**
+ * Live-refresh relevance (2026-11-19): notification types whose
+ * payload feeds an ECX list (lots + grading/inspection state).
+ * The ECX lot actions themselves now emit ecx_lot_* (same round, API
+ * side); market data / grading standards still load on tab switch.
+ */
+const ECX_LIVE_TYPES = new Set([
+  'ecx_lot_created', 'ecx_lot_graded', 'ecx_lot_rejected', 'ecx_lot_assigned', 'ecx_lot_released',
+  'inspection_passed', 'inspection_failed', 'inspection_required', 'inspection_completed',
+  'contract_approved', 'shipment_created', 'shipment_status_updated',
+]);
 
 const ECXPortal: React.FC = () => {
   const { user } = useAuth();
@@ -252,6 +265,16 @@ const ECXPortal: React.FC = () => {
       setLoading(false);
     }
   };
+
+  // --- Live refresh (2026-11-19) -------------------------------------------
+  // Shared socket (the bell's connection — no second WebSocket).
+  // Relevant notifications reload the lots list (debounced +
+  // mirror-lag-delayed by the hook); while the socket is down the hook
+  // polls loadData every 30 s.
+  usePortalLiveRefresh({
+    refetch: () => { void loadData(); },
+    isRelevant: (row: LiveNotificationRow) => ECX_LIVE_TYPES.has(row.type),
+  });
 
   const genLotNumber = (origin: string) => {
     const code = origin.substring(0, 3).toUpperCase();

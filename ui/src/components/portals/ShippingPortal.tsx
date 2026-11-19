@@ -59,6 +59,7 @@ import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartsToolti
 import api, { formatDate, formatCurrency, getStatusColor } from '@/utils/api';
 import { apiFetch, getAuthHeaders, API_BASE_URL } from '@/config/api.config';
 import { useTabFromQuery } from '@/hooks/useTabFromQuery';
+import { usePortalLiveRefresh, type LiveNotificationRow } from '@/utils/useLiveNotifications';
 import AuditTrailViewer from './AuditTrailViewer';
 import { DocumentValidationDialog } from './DocumentValidationDialog';
 import { DocumentManagementPanel } from '@/components/documents';
@@ -170,6 +171,17 @@ interface ActionInputs {
   trackingNumber: string;
   deliveryNotes: string;
 }
+
+/**
+ * Live-refresh relevance (2026-11-19): notification types whose
+ * payload feeds a Shipping list (shipments, clearances). Booking /
+ * bill-of-lading moves emit shipment_status_updated (same round, API
+ * side), as do the booking lifecycle moves.
+ */
+const SHIPPING_LIVE_TYPES = new Set([
+  'shipment_created', 'shipment_status_updated', 'shipment_delivered',
+  'customs_cleared', 'permit_issued',
+]);
 
 const ShippingPortal: React.FC = () => {
   const [tabValue, setTabValue] = useState(0);
@@ -772,6 +784,16 @@ const ShippingPortal: React.FC = () => {
       setLoading(false);
     }
   };
+
+  // --- Live refresh (2026-11-19) -------------------------------------------
+  // Shared socket (the bell's connection — no second WebSocket).
+  // Relevant notifications reload the portal (debounced +
+  // mirror-lag-delayed by the hook); while the socket is down the hook
+  // polls loadData every 30 s.
+  usePortalLiveRefresh({
+    refetch: () => { void loadData(); },
+    isRelevant: (row: LiveNotificationRow) => SHIPPING_LIVE_TYPES.has(row.type),
+  });
 
   // Fetch complete verification data before action
   const fetchVerificationData = async (shipmentId: string, actionType: string): Promise<WorkflowVerificationData | null> => {

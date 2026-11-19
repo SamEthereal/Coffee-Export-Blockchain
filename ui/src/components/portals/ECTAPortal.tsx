@@ -122,6 +122,7 @@ import { NotificationDialog } from '@/components/common/NotificationDialog';
 import { useNotification } from '@/hooks/useNotification';
 import { extractTxId } from '@/utils/txId';
 import { useTabFromQuery } from '@/hooks/useTabFromQuery';
+import { usePortalLiveRefresh, type LiveNotificationRow } from '@/utils/useLiveNotifications';
 import { DocumentManagementPanel } from '@/components/documents';
 import BlockchainSignatureVerification from '@/components/documents/BlockchainSignatureVerification';
 import { BlockchainStatusIcon, BlockchainTxChip, BlockchainBadge } from '@/components/blockchain';
@@ -223,6 +224,21 @@ interface ExporterApplication {
   license_expiry_date?: string;
   documents?: string | any[];  // JSON string or parsed array of document metadata
 }
+
+/**
+ * Live-refresh relevance (2026-11-19): notification types whose
+ * payload feeds an ECTA list (applications, contracts, exporters,
+ * shipments, inspections, post-delivery). LC/forex/SWIFT/payment
+ * types are excluded — ECTA loads none of those lists.
+ */
+const ECTA_LIVE_TYPES = new Set([
+  'contract_registered', 'contract_approved', 'contract_rejected', 'contract_resubmitted',
+  'application_approved', 'application_rejected',
+  'inspection_passed', 'inspection_failed', 'inspection_required', 'inspection_completed',
+  'shipment_created', 'shipment_status_updated', 'shipment_delivered',
+  'customs_submitted', 'customs_inspection_started', 'customs_rejected', 'customs_cleared',
+  'permit_issued',
+]);
 
 const ECTAPortal: React.FC = () => {
   // Get user context for role-based access
@@ -807,6 +823,16 @@ const ECTAPortal: React.FC = () => {
     console.log('[ECTA] ⚡ All 6 parallel requests fired! Data will appear as each completes.');
     console.timeEnd('[ECTA] Total load time');
   };
+
+  // --- Live refresh (2026-11-19) -------------------------------------------
+  // Shared socket (the bell's connection — no second WebSocket).
+  // Relevant notifications reload the portal (debounced +
+  // mirror-lag-delayed by the hook); while the socket is down the hook
+  // polls loadData every 30 s.
+  usePortalLiveRefresh({
+    refetch: () => { void loadData(); },
+    isRelevant: (row: LiveNotificationRow) => ECTA_LIVE_TYPES.has(row.type),
+  });
 
   // View a document URL (e.g. `/api/v1/documents/:id/download`) through the
   // API with the JWT attached (apiFetch resolves against API_BASE_URL and
