@@ -633,17 +633,37 @@ const ECTAPortal: React.FC = () => {
     return contracts;
   };
 
-  // Merge one status page of applications into allApplications, deduped by
-  // application_id. loadData fires the pending/approved/rejected queries in
-  // parallel, so a plain setAllApplications(rows) from whichever resolves
+  // Merge one status page of applications into allApplications, reconciled
+  // by application_id. loadData fires the pending/approved/rejected queries
+  // in parallel, so a plain setAllApplications(rows) from whichever resolves
   // last would drop the other statuses — which is why the Approved/Rejected
   // KPI cards were always 0 (only the pending page was ever loaded).
+  // UPSERT, not append-only (fix 2026-11-19): an application that moves
+  // pending -> approved arrives again on the approved page with a new
+  // status; the old append-only merge kept the stale pending row (it only
+  // added unseen ids), so the Pending KPI never dropped after an approval.
+  // Replacing the stored row keeps all three statuses present (the pages
+  // are disjoint by status) and lets a status change move the row.
   const mergeApplications = (rows: ExporterApplication[]) => {
     if (!Array.isArray(rows)) return;
     setAllApplications((prev) => {
-      const seen = new Set(prev.map((a) => a.application_id));
-      const fresh = rows.filter((a) => a.application_id && !seen.has(a.application_id));
-      return fresh.length ? [...prev, ...fresh] : prev;
+      const byId = new Map(prev.map((a) => [a.application_id, a]));
+      let changed = false;
+      for (const row of rows) {
+        if (!row.application_id) continue;
+        const existing = byId.get(row.application_id);
+        if (!existing) {
+          byId.set(row.application_id, row);
+          changed = true;
+        } else if (JSON.stringify(existing) !== JSON.stringify(row)) {
+          // Same id, new content (e.g. status pending -> approved):
+          // replace in place so the row moves buckets. Map.set keeps
+          // the original insertion order, so list order is stable.
+          byId.set(row.application_id, row);
+          changed = true;
+        }
+      }
+      return changed ? Array.from(byId.values()) : prev;
     });
   };
 
