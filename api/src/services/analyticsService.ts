@@ -148,17 +148,21 @@ export class AnalyticsService {
   // ==================== BANKS ANALYTICS ====================
 
   private async getBanksKPIs(whereClause: string) {
-    // LC statistics
+    // LC statistics — count real LC rows in letters_of_credit, NOT
+    // audit_trail events: one LC produces many LC audit rows (468
+    // events vs 448 LCs on 2026-11-19), and metadata->>'status' is not
+    // populated on those rows, so the old query also read 0/0/0 for
+    // requested/approved/issued. letters_of_credit has status, amount
+    // and created_at, so the shared date filter still applies.
     const lcs = await this.db.get(`
       SELECT 
         COUNT(*) as total,
-        SUM(CASE WHEN metadata->>'status' = 'REQUESTED' THEN 1 ELSE 0 END) as requested,
-        SUM(CASE WHEN metadata->>'status' = 'APPROVED' THEN 1 ELSE 0 END) as approved,
-        SUM(CASE WHEN metadata->>'status' = 'ISSUED' THEN 1 ELSE 0 END) as issued,
-        SUM(CAST(metadata->>'amount' AS NUMERIC)) as total_amount
-      FROM audit_trail
-      WHERE entity_type = 'LC'
-      ${whereClause.replace('WHERE', 'AND')}
+        SUM(CASE WHEN status = 'REQUESTED' THEN 1 ELSE 0 END) as requested,
+        SUM(CASE WHEN status = 'APPROVED' THEN 1 ELSE 0 END) as approved,
+        SUM(CASE WHEN status = 'ISSUED' THEN 1 ELSE 0 END) as issued,
+        SUM(CAST(amount AS NUMERIC)) as total_amount
+      FROM letters_of_credit
+      ${whereClause}
     `);
 
     // Forex statistics
