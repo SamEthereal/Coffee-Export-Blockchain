@@ -498,7 +498,7 @@ const ECXPortal: React.FC = () => {
   // moved User Management tab (3) redirect to Settings.
   useTabFromQuery(setTabValue, visibleTabs.map((tab) => tab.index), {
     3: '/settings?section=users',
-  });
+  }, 'ecx');
 
   const stats = {
     warehoused: lots.filter(l => l.status === 'WAREHOUSED').length,

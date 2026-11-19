@@ -35,14 +35,26 @@
 //     7: '/settings?section=users',
 //     8: '/settings?section=system',
 //   });
+//
+// Named tabs: stored notification links carry NAMES, not indices
+// (`/portals/banks?tab=swift-messages`, `/portals/exporter?tab=contracts`).
+// `parseInt('contracts', 10)` is NaN, so every named link used to be
+// ignored and the portal landed on tab 0. Pass the portal slug as the
+// 4th argument and a name resolves through that portal's map in
+// utils/portalTabNames (`contracts` is ECTA 2, Exporter 1, Banks 0,
+// NBE 1 — a name means a different index per portal). A name that
+// matches no tab in this portal is ignored, like an out-of-range
+// index: the portal stays on its default tab, honestly.
 
 import { useEffect, useRef } from 'react';
 import { useRouter } from 'next/router';
+import { resolvePortalTabIndex } from '@/utils/portalTabNames';
 
 export function useTabFromQuery(
   setTab: (index: number) => void,
   visibleIndices: number[],
   redirects?: Record<number, string>,
+  portalSlug?: string,
 ): void {
   const router = useRouter();
   const appliedTab = useRef<number | null>(null);
@@ -62,8 +74,12 @@ export function useTabFromQuery(
     if (!router.isReady) return;
     const raw = router.query.tab;
     if (typeof raw !== 'string') return;
-    const index = parseInt(raw, 10);
-    if (Number.isNaN(index)) return;
+    // Numeric values pass through; named values resolve through the
+    // portal's map. Without a portal slug only numeric values resolve
+    // (previous behaviour). Unknown names resolve to null and are
+    // ignored — the portal stays on its default tab.
+    const index = portalSlug ? resolvePortalTabIndex(portalSlug, raw) : /^\d+$/.test(raw) ? parseInt(raw, 10) : null;
+    if (index === null || Number.isNaN(index)) return;
     if (appliedTab.current === index) return;
     // A moved tab keeps its old deep-link working: redirect to the new
     // home under Settings instead of selecting a (now different) tab.

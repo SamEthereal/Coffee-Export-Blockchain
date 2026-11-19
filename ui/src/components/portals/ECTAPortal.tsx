@@ -579,7 +579,7 @@ const ECTAPortal: React.FC = () => {
   useTabFromQuery(setTabValue, visibleTabs.map((tab) => tab.index), {
     7: '/settings?section=users',
     8: '/settings?section=system',
-  });
+  }, 'ecta');
 
   // 🎯 ROLE-BASED FILTERING: Show only items that need user's action
   const filterContractsForRole = (contracts: any[]) => {

@@ -74,6 +74,7 @@ import api from '@/utils/api';
 import { API_BASE_URL } from '@/config/api.config';
 import { PortalDialog } from '@/components/shared/portal/PortalDialog';
 import { PortalOrgKey } from '@/components/shared/portal/PortalBrand';
+import { portalSlugFromPath, resolvePortalTabUrl } from '@/utils/portalTabNames';
 
 interface NotificationCenterProps {
   userRole: string;
@@ -178,11 +179,15 @@ function formatAbsoluteTime(date: Date): string {
 // Verified against the actual portal tab lists (ECTA 0-10, ECX 0-3,
 // Exporter 0-7, Banks hierarchy incl. tabIndex 10 = All LCs, NBE 0-8,
 // Customs 0-7, Shipping 0-10) and api/src/routes/search.ts hrefFor.
-// A backend actionUrl is honoured only when it already carries a
-// NUMERIC ?tab= (named ?tab=contracts etc. are ignored by
-// useTabFromQuery and therefore unusable as-is); otherwise this table
-// decides. Unknown entity/role combinations fall back to the viewer's
-// portal root (never a tab that does not exist for that role).
+// A backend actionUrl that points at the VIEWER's own portal is
+// honoured — numeric ?tab= verbatim, named ?tab= resolved to its
+// numeric index through utils/portalTabNames (per-portal: `contracts`
+// is ECTA 2, Exporter 1, Banks 0, NBE 1). A stored URL pointing at
+// ANOTHER portal (some events store the exporter's link on every role
+// row) or carrying an unknown name falls through to the table below,
+// which routes by entity type + viewer role. Unknown entity/role
+// combinations fall back to the viewer's portal root (never a tab
+// that does not exist for that role).
 // ---------------------------------------------------------------------------
 
 const PORTAL_PATH: Record<string, string> = {
@@ -233,14 +238,22 @@ export function resolveNotificationDestination(
   const portalRoot = `/portals/${portal}`;
   const tab = (index: number) => `/portals/${portal}?tab=${index}`;
 
-  // A backend actionUrl with a NUMERIC ?tab= is already a valid
-  // deep-link (useTabFromQuery honours it); use it verbatim.
+  // A backend actionUrl pointing at the viewer's own portal is a
+  // valid deep-link: numeric ?tab= verbatim, named ?tab= resolved to
+  // its numeric index for that portal (see utils/portalTabNames).
+  // A URL for ANOTHER portal, or with an unknown name, falls through
+  // to the entity table below instead of landing on tab 0.
   if (row.actionUrl) {
     try {
       const url = new URL(row.actionUrl, 'http://localhost');
       const tabParam = url.searchParams.get('tab');
-      if (url.pathname.startsWith('/portals/') && tabParam !== null && /^\d+$/.test(tabParam)) {
-        return row.actionUrl;
+      if (url.pathname.startsWith('/portals/') && tabParam !== null) {
+        const urlPortal = portalSlugFromPath(url.pathname);
+        if (urlPortal && urlPortal === portal) {
+          if (/^\d+$/.test(tabParam)) return row.actionUrl;
+          const resolved = resolvePortalTabUrl(row.actionUrl);
+          if (resolved) return resolved;
+        }
       }
     } catch {
       // Not a parseable URL — fall through to the table below.

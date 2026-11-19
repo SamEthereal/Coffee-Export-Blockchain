@@ -1020,7 +1020,7 @@ const NBEPortal: React.FC = () => {
   useTabFromQuery(setTabValue, visibleTabs.map((tab) => tab.index), {
     7: '/settings?section=users',
     8: '/settings?section=system',
-  });
+  }, 'nbe');
 
   const contractColumns: GridColDef[] = [
     { field: 'contractId', headerName: 'Contract ID', width: 150 },

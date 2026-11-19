@@ -46,6 +46,7 @@ import {
 import { createOrganizationTheme } from '@/theme/organizationThemes';
 import { apiFetch, API_BASE_URL, API_ENDPOINTS, getAuthHeaders } from '@/config/api.config';
 import api from '@/utils/api';
+import { resolvePortalTabIndex } from '@/utils/portalTabNames';
 import { validateBIC } from '@/utils/fieldValidation';
 import { couchDBService } from '@/services/couchdbService';
 import {
@@ -753,13 +754,18 @@ const BanksPortal: React.FC = () => {
   }, [activeTab]);
 
   // ?tab=<child tabIndex> deep-link from global search results (e.g.
-  // /portals/banks?tab=0 for Payment Methods). The All LCs tab
-  // (?tab=10) was removed in the 2026-11-18 merge and stays removed;
-  // a ?tab=10 link now lands on tab 0 with a notice (see the tabIndex
-  // === 10 branch below). Maps the flat tabIndex to its
-  // parent/child pair; the sync effect above then derives activeTab.
-  // Waits until the role-based structure is non-empty (userRole loads
-  // async), applies once, and ignores an unknown / invisible tab.
+  // /portals/banks?tab=0 for Payment Methods) and from stored
+  // notification links, which carry NAMES (e.g. ?tab=swift-messages).
+  // A name resolves through the Banks map in utils/portalTabNames
+  // (`swift-messages` -> 4, `contracts` -> 0); parseInt('contracts')
+  // is NaN, so named links used to be ignored and landed on tab 0.
+  // The All LCs tab (?tab=10) was removed in the 2026-11-18 merge and
+  // stays removed; a ?tab=10 link now lands on tab 0 with a notice
+  // (see the tabIndex === 10 branch below). Maps the flat tabIndex to
+  // its parent/child pair; the sync effect above then derives
+  // activeTab. Waits until the role-based structure is non-empty
+  // (userRole loads async), applies once, and ignores an unknown /
+  // invisible tab.
   const tabFromQueryHandled = React.useRef(false);
   const router = useRouter();
   React.useEffect(() => {
@@ -770,8 +776,8 @@ const BanksPortal: React.FC = () => {
     if (typeof window === 'undefined') return;
     const raw = new URLSearchParams(window.location.search).get('tab');
     if (raw === null) return;
-    const tabIndex = parseInt(raw, 10);
-    if (Number.isNaN(tabIndex)) return;
+    const tabIndex = resolvePortalTabIndex('banks', raw);
+    if (tabIndex === null || Number.isNaN(tabIndex)) return;
     // Old links to the moved tabs keep working: User Management and
     // Audit Trail now live under Settings in the account menu.
     if (tabIndex === 7) {

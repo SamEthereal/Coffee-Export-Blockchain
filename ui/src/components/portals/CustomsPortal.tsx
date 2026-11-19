@@ -193,7 +193,7 @@ const CustomsPortal: React.FC = () => {
   useTabFromQuery(setTabValue, visibleTabs.map((tab) => tab.index), {
     6: '/settings?section=users',
     7: '/settings?section=system',
-  });
+  }, 'customs');
   
   
   // Auto-mapped data for inspection scheduling

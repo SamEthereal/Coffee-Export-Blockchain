@@ -587,7 +587,7 @@ const ExporterPortal: React.FC = () => {
   // to the moved Audit Trail tab (7) redirect to Settings.
   useTabFromQuery(setTabValue, [0, 1, 2, 3, 4, 5, 6], {
     7: '/settings?section=system',
-  });
+  }, 'exporter');
 
   // "Has export permit" comes from the permit endpoint, never from an
   // inspection row: GET /permits/exporter/:exporterId (permits.ts:334,

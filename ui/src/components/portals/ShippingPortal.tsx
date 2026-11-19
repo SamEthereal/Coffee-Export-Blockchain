@@ -209,7 +209,7 @@ const ShippingPortal: React.FC = () => {
   // moved Users tab (10) redirect to Settings.
   useTabFromQuery(setTabValue, visibleMainTabs.map((tab) => tab.index), {
     10: '/settings?section=users',
-  });
+  }, 'shipping');
 
   // Lifecycle progress and stage colors used by the per-status tab tables
   const lifecycleProgressMap: { [key: string]: number } = {
