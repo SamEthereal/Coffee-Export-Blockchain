@@ -1717,10 +1717,54 @@ router.post('/',
 
       if (result.success) {
         logger.info(`Exporter registered successfully: ${exporterID}`);
+        // Mirror the direct registration into the `exporters` table.
+        // The approval path mirrors (F12); this direct path never did,
+        // so a directly registered exporter existed on the ledger and in
+        // users but never in PG `exporters` — the same mirror gap the
+        // 2026-11-19 resync backfills. Best-effort: the registration
+        // already committed on-chain, so a mirror failure must never
+        // fail this response.
+        let exporterMirrorSynced = false;
+        try {
+          await postgresDb.run(
+            `INSERT INTO exporters (
+              exporter_id, company_name, ecta_license_number, license_status,
+              capital_requirement, laboratory_certified, professional_taster,
+              taster_certificate, license_expiry_date, bank_name, bank_branch,
+              bank_branch_code, contact_person, email, phone, address
+            ) VALUES ($1, $2, $3, 'ACTIVE', $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+            ON CONFLICT (exporter_id) DO UPDATE SET
+              company_name = EXCLUDED.company_name,
+              ecta_license_number = EXCLUDED.ecta_license_number,
+              license_status = 'ACTIVE',
+              capital_requirement = EXCLUDED.capital_requirement,
+              laboratory_certified = EXCLUDED.laboratory_certified,
+              professional_taster = EXCLUDED.professional_taster,
+              taster_certificate = EXCLUDED.taster_certificate,
+              license_expiry_date = EXCLUDED.license_expiry_date,
+              bank_name = EXCLUDED.bank_name,
+              bank_branch = EXCLUDED.bank_branch,
+              bank_branch_code = EXCLUDED.bank_branch_code,
+              contact_person = EXCLUDED.contact_person,
+              email = EXCLUDED.email,
+              phone = EXCLUDED.phone,
+              address = EXCLUDED.address,
+              updated_at = CURRENT_TIMESTAMP`,
+            [exporterID, companyName, ectaLicenseNumber,
+             capitalRequirement, false,
+             professionalTaster, tasterCertificate,
+             licenseExpiryDate, null, null, null, null, null, null, null]
+          );
+          exporterMirrorSynced = true;
+        } catch (mirrorErr: any) {
+          logger.error(`[EXPORTERS] Direct registration committed on-ledger but exporters-table mirror failed for ${exporterID}:`, mirrorErr?.message || mirrorErr);
+        }
         res.status(201).json({
           success: true,
           data: result.data,
           txId: result.txId,
+          exporterMirrorSynced,
+          warning: exporterMirrorSynced ? undefined : 'Registration is on the ledger, but the local exporters table mirror did not synchronize.',
           timestamp: new Date().toISOString(),
         });
       } else {
@@ -2303,6 +2347,26 @@ router.put('/:exporterID/status',
 
       if (result.success) {
         logger.info(`Exporter status updated: ${exporterID} - ${status}`);
+        // Mirror the licence-status move into the `exporters` table.
+        // The status route updated the ledger only, so a suspended /
+        // reactivated exporter kept its old PG license_status — the
+        // same stale-mirror class as the revoke gap (EXP-PROBE-20261115
+        // stayed ACTIVE in PG after its on-ledger revocation).
+        // Best-effort: the move already committed on-chain.
+        let exporterMirrorSynced = false;
+        try {
+          const mirrored = await postgresDb.run(
+            `UPDATE exporters SET license_status = $1, updated_at = CURRENT_TIMESTAMP
+             WHERE exporter_id = $2`,
+            [status, exporterID]
+          );
+          exporterMirrorSynced = Number((mirrored as any)?.rowCount || 0) > 0;
+          if (!exporterMirrorSynced) {
+            logger.warn(`[EXPORTERS] Status ${status} committed on-ledger for ${exporterID} but no exporters-table row exists to mirror it into (run POST /exporters/resync)`);
+          }
+        } catch (mirrorErr: any) {
+          logger.error(`[EXPORTERS] Status ${status} committed on-ledger but exporters-table mirror failed for ${exporterID}:`, mirrorErr?.message || mirrorErr);
+        }
         // Audit: this chain move never wrote an audit_trail row.
         // Best-effort — a failed audit write must not fail the move.
         await logAuditBestEffort(req, {
@@ -2318,6 +2382,8 @@ router.put('/:exporterID/status',
           success: true,
           data: result.data,
           txId: result.txId,
+          exporterMirrorSynced,
+          warning: exporterMirrorSynced ? undefined : 'Status is on the ledger, but the local exporters table mirror did not synchronize.',
           timestamp: new Date().toISOString(),
         });
       } else {
@@ -2380,6 +2446,23 @@ router.post('/:exporterID/renew-license',
         logger.error(`[EXPORTERS] License renewal committed on-ledger but application mirror sync failed for ${exporterID}:`, syncError);
       }
 
+      // Mirror the renewal into the `exporters` table too: the renew
+      // route updated exporter_applications only, so the exporters row
+      // kept the old expiry (and a SUSPENDED row stayed SUSPENDED even
+      // though renewal re-activates the licence on-chain).
+      // Best-effort: the renewal already committed on-chain.
+      let exporterMirrorSynced = false;
+      try {
+        const mirrored = await postgresDb.run(
+          `UPDATE exporters SET license_expiry_date = $1, license_status = 'ACTIVE',
+             updated_at = CURRENT_TIMESTAMP WHERE exporter_id = $2`,
+          [newExpiryDate, exporterID]
+        );
+        exporterMirrorSynced = Number((mirrored as any)?.rowCount || 0) > 0;
+      } catch (syncError) {
+        logger.error(`[EXPORTERS] License renewal committed on-ledger but exporters-table mirror sync failed for ${exporterID}:`, syncError);
+      }
+
       // Audit: this chain move never wrote an audit_trail row.
       // Best-effort — a failed audit write must not fail the move.
       await logAuditBestEffort(req, {
@@ -2388,13 +2471,13 @@ router.post('/:exporterID/renew-license',
         action: 'RENEW_LICENSE',
         newValue: 'ACTIVE',
         blockchainTxId: result.txId || undefined,
-        metadata: { newExpiryDate, applicationMirrorSynchronized, blockchainTxId: result.txId || null },
+        metadata: { newExpiryDate, applicationMirrorSynchronized, exporterMirrorSynced, blockchainTxId: result.txId || null },
       }, `exporter ${exporterID} license-renew`);
       return res.json({
         success: true,
-        data: { exporterID, licenseExpiryDate: newExpiryDate, licenseStatus: 'ACTIVE', applicationMirrorSynchronized },
+        data: { exporterID, licenseExpiryDate: newExpiryDate, licenseStatus: 'ACTIVE', applicationMirrorSynchronized, exporterMirrorSynced },
         txId: result.txId,
-        warning: applicationMirrorSynchronized ? undefined : 'Renewal is on the ledger, but the application database mirror did not synchronize.',
+        warning: applicationMirrorSynchronized && exporterMirrorSynced ? undefined : 'Renewal is on the ledger, but a local mirror did not synchronize.',
         timestamp: new Date().toISOString(),
       });
     } catch (error) {
@@ -2402,6 +2485,175 @@ router.post('/:exporterID/renew-license',
       return res.status(500).json({
         success: false,
         error: { code: 'INTERNAL_ERROR', message: 'Failed to renew exporter license' },
+        timestamp: new Date().toISOString(),
+      });
+    }
+  }
+);
+
+/**
+ * POST /exporters/resync (PG-vs-ledger equality, 2026-11-19, worker C)
+ *
+ * Backfill `exporters` rows that exist on the ledger but never reached
+ * PostgreSQL, and heal stale `license_status` values from ledger truth.
+ * Live case (audit 2026-11-19): ledger 295 exporters vs PG 195 — 101
+ * missing from PG (94 approved-application exporters + 7 direct
+ * registrations with no application) and 1 status diff
+ * (EXP-PROBE-20261115 REVOKED on-ledger, ACTIVE in PG).
+ *
+ * Cause of the 94 (proven by the timestamp boundary): the approval path
+ * wrote the application row + the ledger doc but never inserted into
+ * `exporters` until the F12 mirror landed (d06f8253, 2026-11-13 06:41
+ * UTC) — the last missing approval is 2026-11-13 06:08:28 and zero
+ * approved applications with approved_at >= 06:41 are missing from PG.
+ * The direct-register route (POST /exporters) never mirrored at all,
+ * which is the path the 7 no-application exporters came through; it
+ * mirrors now.
+ *
+ * Safety: INSERT-only for missing rows (ON CONFLICT DO NOTHING, so a
+ * repeat call is a no-op); status healing only ever writes the ledger's
+ * license_status into an existing row — never the reverse, never a
+ * DELETE. Rows are enriched from the approved application when one
+ * exists (bank/contact fields the ledger doc does not carry); the 7
+ * no-application exporters are inserted from ledger fields alone.
+ * Every backfilled/healed row gets an audit_trail RESYNC row.
+ * ADMIN-only. Mirrors POST /banking/lc/resync (fdc18abc).
+ */
+router.post('/resync',
+  authMiddleware,
+  requireRole('ADMIN'),
+  async (req: Request, res: Response) => {
+    try {
+      const result = await fabricService.getAllExporters();
+      if (!result || !(result as any).success || !Array.isArray((result as any).data)) {
+        return res.status(502).json({
+          success: false,
+          error: { code: 'LEDGER_UNAVAILABLE', message: 'Could not read exporters from the ledger (QueryAllExporters failed)' },
+          timestamp: new Date().toISOString(),
+        });
+      }
+      const KNOWN_LICENSE_STATUSES = new Set(['ACTIVE', 'SUSPENDED', 'EXPIRED', 'REVOKED', 'PENDING']);
+      const ledgerExporters = (result as any).data as any[];
+      const resynced: string[] = [];
+      const statusHealed: string[] = [];
+      const skippedUnknownStatus: string[] = [];
+      const skippedNoLicence: string[] = [];
+      let skippedExisting = 0;
+      for (const exp of ledgerExporters) {
+        const exporterId = String(exp?.exporterId || exp?.ExporterId || exp?.id || '').trim();
+        if (!exporterId) continue;
+        const licenseStatus = String(exp?.licenseStatus || exp?.LicenseStatus || '').trim().toUpperCase();
+        if (!KNOWN_LICENSE_STATUSES.has(licenseStatus)) {
+          skippedUnknownStatus.push(`${exporterId} (${licenseStatus || 'no-status'})`);
+          continue;
+        }
+        const existing = await postgresDb.get(
+          `SELECT exporter_id, license_status FROM exporters WHERE exporter_id = $1`,
+          [exporterId]
+        );
+        if (existing) {
+          skippedExisting++;
+          // Heal a stale licence status from ledger truth (the
+          // EXP-PROBE-20261115 case: REVOKED on-ledger, ACTIVE in PG
+          // because the revoke route never updated this table).
+          if (String(existing.license_status || '').toUpperCase() !== licenseStatus) {
+            await postgresDb.run(
+              `UPDATE exporters SET license_status = $1, updated_at = CURRENT_TIMESTAMP WHERE exporter_id = $2`,
+              [licenseStatus, exporterId]
+            );
+            statusHealed.push(`${exporterId}: ${existing.license_status} -> ${licenseStatus}`);
+            logger.info(`[EXPORTERS] 🔧 Resync: healed license_status for ${exporterId} (${existing.license_status} -> ${licenseStatus}) from ledger truth`);
+            await logAuditBestEffort(req, {
+              entityType: 'EXPORTER',
+              entityId: exporterId,
+              action: 'RESYNC',
+              oldValue: String(existing.license_status || ''),
+              newValue: licenseStatus,
+              reason: 'Exporter re-sync: healed stale license_status from ledger truth',
+              metadata: { resynced: true, source: 'ledger' },
+            }, `exporter ${exporterId} resync status heal`);
+          }
+          continue;
+        }
+        const licenceNumber = String(exp?.ectaLicenseNumber || exp?.EctaLicenseNumber || '').trim();
+        const companyName = String(exp?.companyName || exp?.CompanyName || '').trim();
+        if (!licenceNumber || !companyName) {
+          skippedNoLicence.push(exporterId);
+          continue;
+        }
+        // Enrich from the approved application when one exists: the
+        // ledger doc carries no bank/contact fields.
+        const app = await postgresDb.get(
+          `SELECT company_name, bank_name, bank_branch, bank_branch_code,
+                  contact_person, email, phone, address
+           FROM exporter_applications WHERE exporter_id = $1 AND status = 'approved'
+           ORDER BY approved_at DESC LIMIT 1`,
+          [exporterId]
+        );
+        const labCertified = exp?.laboratoryCertified === true || String(exp?.laboratoryCertified || '').toLowerCase() === 'true';
+        const inserted = await postgresDb.run(
+          `INSERT INTO exporters (
+            exporter_id, company_name, ecta_license_number, license_status,
+            capital_requirement, laboratory_certified, professional_taster,
+            taster_certificate, license_expiry_date, bank_name, bank_branch,
+            bank_branch_code, contact_person, email, phone, address
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+          ON CONFLICT (exporter_id) DO NOTHING
+          RETURNING exporter_id`,
+          [
+            exporterId,
+            app?.company_name || companyName,
+            licenceNumber,
+            licenseStatus,
+            exp?.capitalRequirement ?? exp?.CapitalRequirement ?? null,
+            labCertified,
+            exp?.professionalTaster ?? exp?.ProfessionalTaster ?? null,
+            exp?.tasterCertificate ?? exp?.TasterCertificate ?? null,
+            exp?.licenseExpiryDate ?? exp?.LicenseExpiryDate ?? null,
+            app?.bank_name || null,
+            app?.bank_branch || null,
+            app?.bank_branch_code || null,
+            app?.contact_person || null,
+            app?.email || null,
+            app?.phone || null,
+            app?.address || null,
+          ]
+        );
+        if (inserted && Number((inserted as any).rowCount || 0) > 0) {
+          resynced.push(exporterId);
+          logger.info(`[EXPORTERS] 🔧 Resync: backfilled missing PG row for ${exporterId} (${licenseStatus}) from ledger truth`);
+          await logAuditBestEffort(req, {
+            entityType: 'EXPORTER',
+            entityId: exporterId,
+            action: 'RESYNC',
+            newValue: licenseStatus,
+            reason: 'Exporter re-sync: backfilled missing PG row from ledger truth (no PG row existed)',
+            metadata: { resynced: true, source: 'ledger', fromApplication: !!app },
+          }, `exporter ${exporterId} resync`);
+        } else {
+          skippedExisting++;
+        }
+      }
+      logger.info(`[EXPORTERS] 🔧 Resync complete: ledger=${ledgerExporters.length} existing=${skippedExisting} resynced=${resynced.length} statusHealed=${statusHealed.length} unknownStatus=${skippedUnknownStatus.length} noLicence=${skippedNoLicence.length}`);
+      res.json({
+        success: true,
+        data: {
+          ledgerTotal: ledgerExporters.length,
+          skippedExisting,
+          resynced,
+          resyncedCount: resynced.length,
+          statusHealed,
+          statusHealedCount: statusHealed.length,
+          skippedUnknownStatus,
+          skippedNoLicence,
+        },
+        timestamp: new Date().toISOString(),
+      });
+    } catch (error: any) {
+      logger.error('[EXPORTERS] Resync error:', error);
+      return res.status(500).json({
+        success: false,
+        error: { code: 'SERVER_ERROR', message: error.message },
         timestamp: new Date().toISOString(),
       });
     }
@@ -2443,6 +2695,26 @@ router.post('/:exporterID/revoke',
         logger.error(`[EXPORTERS] License revocation committed on-ledger but account sync failed for ${exporterID}:`, syncError);
       }
 
+      // Mirror the revocation into the `exporters` table. The revoke
+      // route updated `users` + the ledger only, so the exporters row
+      // stayed ACTIVE — proven live: EXP-PROBE-20261115 was REVOKED
+      // on-ledger (block 8383, 2026-11-15) while PG still said ACTIVE.
+      // Best-effort: the revocation already committed on-chain.
+      let exporterMirrorSynced = false;
+      try {
+        const mirrored = await postgresDb.run(
+          `UPDATE exporters SET license_status = 'REVOKED', updated_at = CURRENT_TIMESTAMP
+           WHERE exporter_id = $1`,
+          [exporterID]
+        );
+        exporterMirrorSynced = Number((mirrored as any)?.rowCount || 0) > 0;
+        if (!exporterMirrorSynced) {
+          logger.warn(`[EXPORTERS] Revocation committed on-ledger for ${exporterID} but no exporters-table row exists to mirror it into (run POST /exporters/resync)`);
+        }
+      } catch (syncError) {
+        logger.error(`[EXPORTERS] License revocation committed on-ledger but exporters-table sync failed for ${exporterID}:`, syncError);
+      }
+
       // Audit: this chain move never wrote an audit_trail row.
       // Best-effort — a failed audit write must not fail the move.
       await logAuditBestEffort(req, {
@@ -2451,13 +2723,13 @@ router.post('/:exporterID/revoke',
         action: 'REVOKE_LICENSE',
         newValue: 'REVOKED',
         blockchainTxId: result.txId || undefined,
-        metadata: { reason, accountDisabled, blockchainTxId: result.txId || null },
+        metadata: { reason, accountDisabled, exporterMirrorSynced, blockchainTxId: result.txId || null },
       }, `exporter ${exporterID} license-revoke`);
       return res.json({
         success: true,
-        data: { exporterID, licenseStatus: 'REVOKED', accountDisabled },
+        data: { exporterID, licenseStatus: 'REVOKED', accountDisabled, exporterMirrorSynced },
         txId: result.txId,
-        warning: accountDisabled ? undefined : 'Revocation is on the ledger, but the local account could not be disabled.',
+        warning: accountDisabled && exporterMirrorSynced ? undefined : 'Revocation is on the ledger, but a local mirror did not synchronize.',
         timestamp: new Date().toISOString(),
       });
     } catch (error) {

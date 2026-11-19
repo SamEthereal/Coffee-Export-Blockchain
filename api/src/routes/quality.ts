@@ -1671,16 +1671,38 @@ router.post('/inspections/:inspectionID/issue-permit',
         ],
         'BanksMSP'
       );
+      // Unknown-outcome recovery (PG-vs-ledger equality, 2026-11-19,
+      // worker C): a submit can time out AFTER the tx committed — the
+      // permit case PERMIT-20261119045142 (2026-11-19 04:51 UTC) is the
+      // live proof. On a timeout/unknown-outcome failure, read the
+      // permit back from the ledger before reporting failure; when it
+      // exists, fall through to the mirror/success path below with
+      // recoveredFromTimeout set, so PG gets its row.
+      let recoveredFromTimeout = false;
       if (!chainResult.success) {
-        logger.error(`[PERMIT] IssueCBEExportPermit failed for inspection ${inspectionID}: ${chainResult.error}`);
-        return res.status(503).json({
-          success: false,
-          error: {
-            code: 'PERMIT_ISSUE_FAILED',
-            message: chainResult.error || 'Failed to issue export permit on the ledger'
-          },
-          timestamp: new Date().toISOString()
-        });
+        const outcomeMsg = String(chainResult.error || '').toLowerCase();
+        if (outcomeMsg.includes('timed out') || outcomeMsg.includes('timeout') || outcomeMsg.includes('unknown')) {
+          try {
+            const confirm = await fabricService.queryChaincode('ReadExportPermit', [permitId]);
+            if (confirm?.success && confirm.data) {
+              recoveredFromTimeout = true;
+              logger.info(`[PERMIT] Permit ${permitId} confirmed on-ledger after submit timeout (tx outcome was unknown); mirroring to Postgres`);
+            }
+          } catch (confirmErr) {
+            logger.warn(`[PERMIT] Timeout recovery read-back failed for ${permitId}:`, confirmErr);
+          }
+        }
+        if (!recoveredFromTimeout) {
+          logger.error(`[PERMIT] IssueCBEExportPermit failed for inspection ${inspectionID}: ${chainResult.error}`);
+          return res.status(503).json({
+            success: false,
+            error: {
+              code: 'PERMIT_ISSUE_FAILED',
+              message: chainResult.error || 'Failed to issue export permit on the ledger'
+            },
+            timestamp: new Date().toISOString()
+          });
+        }
       }
       const blockchain_tx_id = chainResult.txId || null;
 
@@ -1818,6 +1840,7 @@ router.post('/inspections/:inspectionID/issue-permit',
           certificateNo: inspection.certification_number,
           status: 'PERMIT_ISSUED',
           blockchain_tx_id,
+          recoveredFromTimeout,
           // F10 (leg2) — signer vs submitter, stated plainly:
           // IssueCBEExportPermit is BanksMSP-only on-chain
           // (permit.go:64-66), so the ledger signer is always the
@@ -1844,7 +1867,9 @@ router.post('/inspections/:inspectionID/issue-permit',
           },
         },
         txId: blockchain_tx_id,
-        message: inspectionMirrorError
+        message: recoveredFromTimeout
+          ? 'Export permit issued successfully (confirmed on the ledger after the submit timed out; the transaction had committed). Shipment ready for customs clearance.'
+          : inspectionMirrorError
           ? 'Export permit issued on the ledger, but the Postgres inspection mirror failed — the ledger state is authoritative, re-check the inspection row before retrying.'
           : 'Export permit issued successfully. Shipment ready for customs clearance.',
         timestamp: new Date().toISOString()

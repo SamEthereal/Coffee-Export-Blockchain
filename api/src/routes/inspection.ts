@@ -12,6 +12,117 @@ const router = express.Router();
 const fabricService = FabricService.getInstance();
 const postgresDb = DatabaseService.getInstance();
 
+/**
+ * POST /inspection/resync (ADMIN-only)
+ *
+ * Backfill `quality_inspections` rows for pre-shipment inspections
+ * that exist on the ledger but never reached PostgreSQL. Live case
+ * (audit 2026-11-19): ledger 98 PREINSPECTION_ docs vs 63 PG rows —
+ * 35 ledger-only (early-run Nov 11–14 approvals whose approve-mirror
+ * predates the Leg2 #6 mirror in the approve handler below, or whose
+ * mirror failed). The 63 shared rows agree on status (0 diffs), so
+ * this endpoint is INSERT-only: it never updates an existing row.
+ *
+ * Why only pre-shipment inspections: there is no chaincode QueryAll
+ * for the quality `INSPECTION_` docs, so those cannot be enumerated
+ * from the API (they rest on a CouchDB range read); the 266
+ * auto-created PENDING `INSPECTION_<shipmentId>` placeholders are a
+ * by-design id-scheme split (ledger key = shipment id, PG id =
+ * generated) and are not backfilled as rows.
+ *
+ * Safety: INSERT-only with a pre-check (the partial unique index on
+ * inspection_id cannot be an ON CONFLICT target — see the approve
+ * handler). Never a DELETE, never a status change. Idempotent; every
+ * backfilled row gets an audit_trail RESYNC row. Mirrors
+ * POST /banking/lc/resync (fdc18abc).
+ */
+router.post('/resync',
+  authMiddleware,
+  requireRole('ADMIN'),
+  async (req, res) => {
+    try {
+      const result = await fabricService.getAllInspections();
+      if (!result || !(result as any).success || !Array.isArray((result as any).data)) {
+        return res.status(502).json({
+          success: false,
+          error: { code: 'LEDGER_UNAVAILABLE', message: 'Could not read pre-shipment inspections from the ledger (QueryAllInspections failed)' },
+          timestamp: new Date().toISOString(),
+        });
+      }
+      const KNOWN_PSI_STATUSES = new Set(['PENDING', 'REQUESTED', 'SCHEDULED', 'SAMPLE_COLLECTED', 'INSPECTED', 'APPROVED', 'REJECTED', 'PERMIT_ISSUED', 'CERTIFICATE_ISSUED', 'COMPLETED']);
+      const ledgerInspections = (result as any).data as any[];
+      const resynced: string[] = [];
+      const skippedUnknownStatus: string[] = [];
+      const skippedNoShipment: string[] = [];
+      let skippedExisting = 0;
+      for (const insp of ledgerInspections) {
+        const inspectionId = String(insp?.inspectionId || insp?.InspectionId || insp?.id || '').trim();
+        if (!inspectionId) continue;
+        const status = String(insp?.status || insp?.Status || '').trim().toUpperCase();
+        if (!KNOWN_PSI_STATUSES.has(status)) {
+          skippedUnknownStatus.push(`${inspectionId} (${status || 'no-status'})`);
+          continue;
+        }
+        const existing = await postgresDb.get(
+          `SELECT id FROM quality_inspections WHERE inspection_id = $1`,
+          [inspectionId]
+        );
+        if (existing) { skippedExisting++; continue; }
+        const shipmentId = String(insp?.shipmentId || insp?.ShipmentId || insp?.shipmentID || '').trim();
+        if (!shipmentId) {
+          skippedNoShipment.push(inspectionId);
+          continue;
+        }
+        await postgresDb.run(
+          `INSERT INTO quality_inspections (
+             inspection_id, exporter_id, contract_id, shipment_id,
+             coffee_type, quantity, status, passed, blockchain_tx_id
+           ) VALUES ($1, $2, $3, $4, 'Arabica', $5, $6, $7, NULL)`,
+          [
+            inspectionId,
+            String(insp?.exporterId || insp?.ExporterId || insp?.exporterID || '') || null,
+            String(insp?.contractId || insp?.ContractId || insp?.contractID || '') || null,
+            shipmentId,
+            Number(insp?.inspectedQuantity ?? insp?.quantity ?? insp?.Quantity ?? 0) || null,
+            status,
+            status === 'APPROVED',
+          ]
+        );
+        resynced.push(inspectionId);
+        logger.info(`[INSPECTION] 🔧 Resync: backfilled missing PG row for ${inspectionId} (${status}) from ledger truth`);
+        await logAuditBestEffort(req, {
+          entityType: 'PRE_SHIPMENT_INSPECTION',
+          entityId: inspectionId,
+          action: 'RESYNC',
+          newValue: status,
+          reason: 'Pre-shipment inspection re-sync: backfilled missing PG row from ledger truth (no PG row existed)',
+          metadata: { shipmentId, resynced: true, source: 'ledger' },
+        }, `pre-shipment inspection ${inspectionId} resync`);
+      }
+      logger.info(`[INSPECTION] 🔧 Resync complete: ledger=${ledgerInspections.length} existing=${skippedExisting} resynced=${resynced.length} unknownStatus=${skippedUnknownStatus.length} noShipment=${skippedNoShipment.length}`);
+      res.json({
+        success: true,
+        data: {
+          ledgerTotal: ledgerInspections.length,
+          skippedExisting,
+          resynced,
+          resyncedCount: resynced.length,
+          skippedUnknownStatus,
+          skippedNoShipment,
+        },
+        timestamp: new Date().toISOString(),
+      });
+    } catch (error: any) {
+      logger.error('[INSPECTION] Resync error:', error);
+      return res.status(500).json({
+        success: false,
+        error: { code: 'SERVER_ERROR', message: error.message },
+        timestamp: new Date().toISOString(),
+      });
+    }
+  }
+);
+
 // ==================== PRE-SHIPMENT INSPECTION ROUTES ====================
 
 // POST /api/v1/inspection — Create inspection (wrapper for /request endpoint)

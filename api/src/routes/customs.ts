@@ -1121,6 +1121,123 @@ router.post('/declaration/submit',
 );
 
 /**
+ * POST /api/v1/customs/resync (ADMIN-only)
+ *
+ * Backfill `customs_declarations` rows that exist on the ledger but
+ * never reached PostgreSQL. Live case (audit 2026-11-19): ledger 262
+ * vs PG 280 — 3 ledger-only declarations, all direct-chaincode
+ * creations that bypassed the API's ledger-first submit mirror
+ * (submittedBy is a raw certificate string, not an API user):
+ * DECL-1794478204066 (SUBMITTED, SHP-REMV2-1794478138, Nov 12) and
+ * the range-test pair CD-RNG16-OK / CD-RNG17-OK (Nov 14).
+ *
+ * Safety: INSERT-only (ON CONFLICT DO NOTHING, so a repeat call is a
+ * no-op). Deliberately NO status healing: the 8 PG CANCELLED vs
+ * ledger SUBMITTED diffs are PG-only by design — the chaincode has no
+ * cancel function and the cancel route states it (customs.ts cancel
+ * handler) — so a cancelled declaration correctly still reads
+ * SUBMITTED on the ledger, and healing PG to SUBMITTED would
+ * un-cancel it. Never a DELETE. Idempotent; every backfilled row
+ * gets an audit_trail RESYNC row. Mirrors POST /banking/lc/resync
+ * (fdc18abc).
+ */
+router.post('/resync',
+  authMiddleware,
+  requireRole('ADMIN'),
+  async (req: Request, res: Response) => {
+    try {
+      const result = await fabricService.queryChaincode('QueryAllCustomsDeclarations', []);
+      if (!result || !(result as any).success || !Array.isArray((result as any).data)) {
+        return res.status(502).json({
+          success: false,
+          error: { code: 'LEDGER_UNAVAILABLE', message: 'Could not read customs declarations from the ledger (QueryAllCustomsDeclarations failed)' },
+          timestamp: new Date().toISOString(),
+        });
+      }
+      const KNOWN_CUSTOMS_STATUSES = new Set(['SUBMITTED', 'UNDER_INSPECTION', 'UNDER_REVIEW', 'CLEARED', 'REJECTED', 'CANCELLED']);
+      const ledgerDecls = (result as any).data as any[];
+      const resynced: string[] = [];
+      const skippedUnknownStatus: string[] = [];
+      let skippedExisting = 0;
+      for (const decl of ledgerDecls) {
+        const declarationId = String(decl?.declarationId || decl?.DeclarationId || decl?.id || '').trim();
+        if (!declarationId) continue;
+        const status = String(decl?.status || decl?.Status || '').trim().toUpperCase();
+        if (!KNOWN_CUSTOMS_STATUSES.has(status)) {
+          skippedUnknownStatus.push(`${declarationId} (${status || 'no-status'})`);
+          continue;
+        }
+        const existing = await postgresDb.get(
+          `SELECT declaration_id FROM customs_declarations WHERE declaration_id = $1`,
+          [declarationId]
+        );
+        if (existing) { skippedExisting++; continue; }
+        const submittedDate = decl?.submissionDate || decl?.SubmissionDate || decl?.createdAt || null;
+        const inserted = await postgresDb.run(
+          `INSERT INTO customs_declarations (
+            declaration_id, declaration_number, shipment_id, contract_id, exporter_id,
+            declaration_type, hs_code, quantity, customs_value_usd, currency,
+            destination, port_of_exit, eudr_compliant, status,
+            submitted_date, created_at
+          ) VALUES ($1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, NOW())
+          ON CONFLICT (declaration_id) DO NOTHING
+          RETURNING declaration_id`,
+          [
+            declarationId,
+            String(decl?.shipmentId || decl?.ShipmentId || '') || null,
+            String(decl?.contractId || decl?.ContractId || '') || null,
+            String(decl?.exporterId || decl?.ExporterId || '') || null,
+            String(decl?.declarationType || decl?.DeclarationType || 'STANDARD'),
+            String(decl?.hsCode || decl?.HsCode || '090111'),
+            Number(decl?.quantity ?? decl?.Quantity ?? 0) || 0,
+            Number(decl?.totalValue ?? decl?.TotalValue ?? 0) || 0,
+            String(decl?.currency || decl?.Currency || 'USD'),
+            String(decl?.destination || decl?.Destination || 'Unknown'),
+            String(decl?.portOfExit || decl?.PortOfExit || 'Djibouti Port'),
+            decl?.eudrCompliant === true,
+            status,
+            submittedDate ? new Date(submittedDate).toISOString() : null,
+          ]
+        );
+        if (inserted && Number((inserted as any).rowCount || 0) > 0) {
+          resynced.push(declarationId);
+          logger.info(`[CUSTOMS] 🔧 Resync: backfilled missing PG row for ${declarationId} (${status}) from ledger truth`);
+          await logAuditBestEffort(req, {
+            entityType: 'CUSTOMS_DECLARATION',
+            entityId: declarationId,
+            action: 'RESYNC',
+            newValue: status,
+            reason: 'Customs re-sync: backfilled missing PG row from ledger truth (no PG row existed)',
+            metadata: { shipmentId: String(decl?.shipmentId || '') || null, resynced: true, source: 'ledger' },
+          }, `customs declaration ${declarationId} resync`);
+        } else {
+          skippedExisting++;
+        }
+      }
+      logger.info(`[CUSTOMS] 🔧 Resync complete: ledger=${ledgerDecls.length} existing=${skippedExisting} resynced=${resynced.length} unknownStatus=${skippedUnknownStatus.length}`);
+      res.json({
+        success: true,
+        data: {
+          ledgerTotal: ledgerDecls.length,
+          skippedExisting,
+          resynced,
+          resyncedCount: resynced.length,
+          skippedUnknownStatus,
+        },
+        timestamp: new Date().toISOString(),
+      });
+    } catch (error: any) {
+      logger.error('[CUSTOMS] Resync error:', error);
+      return res.status(500).json({
+        success: false,
+        error: { code: 'SERVER_ERROR', message: error.message },
+        timestamp: new Date().toISOString(),
+      });
+    }
+  }
+);
+
+/**
  * POST /api/v1/customs/test-shipment-update/:shipmentId
  * Test endpoint to manually update shipment status to CUSTOMS_CLEARED
  */

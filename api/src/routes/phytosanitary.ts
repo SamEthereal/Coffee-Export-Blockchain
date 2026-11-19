@@ -14,6 +14,180 @@ const router = express.Router();
 const fabricService = FabricService.getInstance();
 const postgresDb = DatabaseService.getInstance();
 
+// Phyto mirror-race fixes (PG-vs-ledger equality, 2026-11-19, worker C).
+// The inspect→issue flow is two chaincode calls and PG used to mirror
+// only one of them, in either direction: 11 INSPECTED↔ISSUED flips on
+// 2026-11-11–13 (e.g. PHYTO-1794423838: PG ISSUED, ledger INSPECTED —
+// the issue step updated PG but never the ledger; ALN-HAPPY-...-PHYTO:
+// ledger ISSUED, PG INSPECTED — the ledger issue was never mirrored
+// back). The inspect/issue handlers below now mirror the status READ
+// BACK from the ledger after a successful invoke instead of assuming
+// the target status, and on a submit timeout with unknown outcome they
+// read the ledger back before reporting failure — a tx can commit
+// on-chain while the submit times out (proven live on permits:
+// PERMIT-20261119045142 committed 04:51:42.812 UTC but the invoke
+// timed out at 04:52:12, the route 400'd and no mirror ever ran).
+
+/** A chaincode error whose outcome is unknown — the tx may have committed. */
+function isUnknownOutcomeError(error: unknown): boolean {
+  const msg = String((error as any)?.message || error || '').toLowerCase();
+  return msg.includes('timed out') || msg.includes('timeout') || msg.includes('unknown');
+}
+
+const PHYTO_KNOWN_STATUSES = new Set(['PENDING', 'INSPECTED', 'ISSUED', 'REVOKED']);
+
+/** Read a certificate's current ledger status (null when unreadable/absent). */
+async function readLedgerPhytoStatus(certificateID: string): Promise<string | null> {
+  try {
+    const r = await fabricService.queryChaincode('ReadPhytosanitaryCertificate', [certificateID]);
+    if (!r?.success || !r.data) return null;
+    const s = String((r.data as any)?.status || (r.data as any)?.Status || '').trim().toUpperCase();
+    return PHYTO_KNOWN_STATUSES.has(s) ? s : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Heal one PG phyto row from ledger truth. Returns the ledger status
+ * when a heal (or a confirm-no-change) was possible, else null.
+ */
+async function mirrorPhytoStatusFromLedger(certificateID: string): Promise<{ ledgerStatus: string; healed: boolean; pgBefore: string | null } | null> {
+  const ledgerStatus = await readLedgerPhytoStatus(certificateID);
+  if (!ledgerStatus) return null;
+  const pg = await postgresDb.get(
+    `SELECT status FROM phytosanitary_certificates WHERE certificate_id = $1`,
+    [certificateID]
+  );
+  if (!pg) return { ledgerStatus, healed: false, pgBefore: null };
+  if (String(pg.status || '').toUpperCase() === ledgerStatus) {
+    return { ledgerStatus, healed: false, pgBefore: pg.status };
+  }
+  await postgresDb.run(
+    `UPDATE phytosanitary_certificates SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE certificate_id = $2`,
+    [ledgerStatus, certificateID]
+  );
+  return { ledgerStatus, healed: true, pgBefore: pg.status };
+}
+
+/**
+ * POST /phytosanitary/resync (ADMIN-only)
+ *
+ * Heal phytosanitary_certificates statuses from ledger truth and
+ * backfill any ledger certificate missing from PG (none at audit time:
+ * 92 = 92, 11 status flips). INSERT-only for missing rows; status
+ * updates only ever write the ledger status into PG — never the
+ * reverse, never a DELETE. Idempotent; every healed row gets an
+ * audit_trail RESYNC row. Mirrors POST /banking/lc/resync (fdc18abc).
+ */
+router.post('/resync',
+  authMiddleware,
+  requireRole('ADMIN'),
+  async (req, res) => {
+    try {
+      const result = await fabricService.getAllPhytosanitaryCertificates();
+      if (!result || !(result as any).success || !Array.isArray((result as any).data)) {
+        return res.status(502).json({
+          success: false,
+          error: { code: 'LEDGER_UNAVAILABLE', message: 'Could not read phytosanitary certificates from the ledger (QueryAllPhytosanitaryCertificates failed)' },
+          timestamp: new Date().toISOString(),
+        });
+      }
+      const ledgerCerts = (result as any).data as any[];
+      const resynced: string[] = [];
+      const statusHealed: string[] = [];
+      const skippedUnknownStatus: string[] = [];
+      let skippedExisting = 0;
+      for (const cert of ledgerCerts) {
+        const certificateId = String(cert?.certificateId || cert?.CertificateId || cert?.id || '').trim();
+        if (!certificateId) continue;
+        const ledgerStatus = String(cert?.status || cert?.Status || '').trim().toUpperCase();
+        if (!PHYTO_KNOWN_STATUSES.has(ledgerStatus)) {
+          skippedUnknownStatus.push(`${certificateId} (${ledgerStatus || 'no-status'})`);
+          continue;
+        }
+        const existing = await postgresDb.get(
+          `SELECT certificate_id, status FROM phytosanitary_certificates WHERE certificate_id = $1`,
+          [certificateId]
+        );
+        if (existing) {
+          skippedExisting++;
+          if (String(existing.status || '').toUpperCase() !== ledgerStatus) {
+            await postgresDb.run(
+              `UPDATE phytosanitary_certificates SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE certificate_id = $2`,
+              [ledgerStatus, certificateId]
+            );
+            statusHealed.push(`${certificateId}: ${existing.status} -> ${ledgerStatus}`);
+            logger.info(`[PHYTO] 🔧 Resync: healed status for ${certificateId} (${existing.status} -> ${ledgerStatus}) from ledger truth`);
+            await logAuditBestEffort(req, {
+              entityType: 'PHYTOSANITARY_CERTIFICATE',
+              entityId: certificateId,
+              action: 'RESYNC',
+              oldValue: String(existing.status || ''),
+              newValue: ledgerStatus,
+              reason: 'Phytosanitary re-sync: healed stale status from ledger truth',
+              metadata: { resynced: true, source: 'ledger' },
+            }, `phyto certificate ${certificateId} resync`);
+          }
+          continue;
+        }
+        const inserted = await postgresDb.run(
+          `INSERT INTO phytosanitary_certificates (
+            certificate_id, shipment_id, exporter_id, contract_id, status,
+            issue_date, treatment_type, inspection_result, created_at
+          ) VALUES ($1, $2, $3, $4, $5, NOW(), $6, $7, NOW())
+          ON CONFLICT (certificate_id) DO NOTHING
+          RETURNING certificate_id`,
+          [
+            certificateId,
+            String(cert?.shipmentId || cert?.shipmentID || '') || null,
+            String(cert?.exporterId || cert?.exporterID || '') || null,
+            String(cert?.contractId || cert?.contractID || '') || null,
+            ledgerStatus,
+            String(cert?.treatmentApplied || cert?.treatmentType || '') || null,
+            ledgerStatus === 'INSPECTED' || ledgerStatus === 'ISSUED' ? 'PASSED' : 'PENDING',
+          ]
+        );
+        if (inserted && Number((inserted as any).rowCount || 0) > 0) {
+          resynced.push(certificateId);
+          logger.info(`[PHYTO] 🔧 Resync: backfilled missing PG row for ${certificateId} (${ledgerStatus}) from ledger truth`);
+          await logAuditBestEffort(req, {
+            entityType: 'PHYTOSANITARY_CERTIFICATE',
+            entityId: certificateId,
+            action: 'RESYNC',
+            newValue: ledgerStatus,
+            reason: 'Phytosanitary re-sync: backfilled missing PG row from ledger truth (no PG row existed)',
+            metadata: { resynced: true, source: 'ledger' },
+          }, `phyto certificate ${certificateId} resync`);
+        } else {
+          skippedExisting++;
+        }
+      }
+      logger.info(`[PHYTO] 🔧 Resync complete: ledger=${ledgerCerts.length} existing=${skippedExisting} resynced=${resynced.length} statusHealed=${statusHealed.length} unknownStatus=${skippedUnknownStatus.length}`);
+      res.json({
+        success: true,
+        data: {
+          ledgerTotal: ledgerCerts.length,
+          skippedExisting,
+          resynced,
+          resyncedCount: resynced.length,
+          statusHealed,
+          statusHealedCount: statusHealed.length,
+          skippedUnknownStatus,
+        },
+        timestamp: new Date().toISOString(),
+      });
+    } catch (error: any) {
+      logger.error('[PHYTO] Resync error:', error);
+      return res.status(500).json({
+        success: false,
+        error: { code: 'SERVER_ERROR', message: error.message },
+        timestamp: new Date().toISOString(),
+      });
+    }
+  }
+);
+
 /**
  * @swagger
  * /api/v1/phytosanitary/request:
@@ -246,15 +420,21 @@ router.post('/:certificateID/inspect',
       ]);
 
       if (result.success) {
-        // Blockchain success - mirror to PostgreSQL
+        // Mirror the status READ BACK from the ledger, not the assumed
+        // target: the old code wrote INSPECTED whenever the invoke
+        // reported success, which is exactly how the 11 PG/ledger flips
+        // were born. If the read-back fails, fall back to INSPECTED.
+        const ledgerStatus = await readLedgerPhytoStatus(certificateID);
+        const mirrorStatus = ledgerStatus || 'INSPECTED';
         try {
           await postgresDb.run(`
             UPDATE phytosanitary_certificates 
-            SET status = 'INSPECTED', 
-                inspection_result = $1,
+            SET status = $1, 
+                inspection_result = $2,
                 updated_at = CURRENT_TIMESTAMP
-            WHERE certificate_id = $2
+            WHERE certificate_id = $3
           `, [
+            mirrorStatus,
             (pestsDetected || diseaseDetected) ? 'FAILED' : 'PASSED',
             certificateID
           ]);
@@ -268,7 +448,7 @@ router.post('/:certificateID/inspect',
           entityType: 'PHYTOSANITARY_CERTIFICATE',
           entityId: certificateID,
           action: 'INSPECT',
-          newValue: 'INSPECTED',
+          newValue: mirrorStatus,
           blockchainTxId: result.txId || undefined,
           metadata: { inspectorName, inspectionDate, pestsDetected, diseaseDetected, blockchainTxId: result.txId || null },
         }, `phyto certificate ${certificateID} inspect`);
@@ -278,6 +458,34 @@ router.post('/:certificateID/inspect',
           message: 'Inspection completed successfully',
           data: result.data,
           txId: result.txId,
+          timestamp: new Date().toISOString(),
+        });
+      } else if (isUnknownOutcomeError(result.error)) {
+        // The invoke timed out: the tx may still have committed (the
+        // permit case, PERMIT-20261119045142). Read the ledger back
+        // before reporting failure — if it is INSPECTED, the inspection
+        // happened and PG must say so.
+        const recovered = await mirrorPhytoStatusFromLedger(certificateID);
+        if (recovered && recovered.ledgerStatus === 'INSPECTED') {
+          logger.info(`✅ Phytosanitary inspection ${certificateID} confirmed on-ledger after submit timeout (tx outcome was unknown); PG mirrored to INSPECTED`);
+          await logAuditBestEffort(req, {
+            entityType: 'PHYTOSANITARY_CERTIFICATE',
+            entityId: certificateID,
+            action: 'INSPECT',
+            newValue: 'INSPECTED',
+            metadata: { inspectorName, inspectionDate, pestsDetected, diseaseDetected, recoveredFromTimeout: true, submitError: String(result.error || '') },
+          }, `phyto certificate ${certificateID} inspect (timeout recovery)`);
+          return res.json({
+            success: true,
+            message: 'Inspection completed successfully (confirmed on the ledger after the submit timed out; the transaction had committed)',
+            data: result.data,
+            recoveredFromTimeout: true,
+            timestamp: new Date().toISOString(),
+          });
+        }
+        res.status(400).json({
+          success: false,
+          error: { code: 'INSPECTION_FAILED', message: result.error },
           timestamp: new Date().toISOString(),
         });
       } else if (result.error && result.error.includes('not found in contract')) {
@@ -452,15 +660,20 @@ router.post('/:certificateID/issue',
           // Mirror into Postgres: best-effort, ledger-first — the
           // issuance already committed on-chain. (Leg2 #12 removed the
           // PG-only issuance branch that used to be the only writer.)
+          // Mirror the status READ BACK from the ledger, not the assumed
+          // ISSUED: a read-back that still says INSPECTED must not be
+          // papered over in PG (that is how the 11 flips were born).
+          const ledgerStatus = String(issued?.status || issued?.Status || '').trim().toUpperCase();
+          const mirrorStatus = PHYTO_KNOWN_STATUSES.has(ledgerStatus) ? ledgerStatus : 'ISSUED';
           try {
             await postgresDb.run(`
               UPDATE phytosanitary_certificates
-              SET status = 'ISSUED',
-                  issue_date = $1,
-                  certifying_officer = $2,
+              SET status = $1,
+                  issue_date = $2,
+                  certifying_officer = $3,
                   updated_at = CURRENT_TIMESTAMP
-              WHERE certificate_id = $3
-            `, [new Date().toISOString(), issuingAuthority, certificateID]);
+              WHERE certificate_id = $4
+            `, [mirrorStatus, new Date().toISOString(), issuingAuthority, certificateID]);
           } catch (mirrorErr) {
             logger.warn(`[PHYTO] Could not mirror issuance of ${certificateID} to Postgres:`, mirrorErr);
           }
@@ -471,7 +684,7 @@ router.post('/:certificateID/issue',
             entityId: certificateID,
             action: 'ISSUE',
             oldValue: 'INSPECTED',
-            newValue: 'ISSUED',
+            newValue: mirrorStatus,
             blockchainTxId: result.txId || undefined,
             metadata: { certificateNumber, issuingAuthority, blockchainTxId: result.txId || null },
           }, `phyto certificate ${certificateID} issue`);
@@ -493,6 +706,36 @@ router.post('/:certificateID/issue',
         } else if (result.error && result.error.includes('not found in contract')) {
           // Chaincode function not found - use PostgreSQL
           useBlockchain = false;
+        } else if (isUnknownOutcomeError(result.error)) {
+          // The invoke timed out: the tx may still have committed (the
+          // permit case, PERMIT-20261119045142). Read the ledger back
+          // before reporting failure — if it is ISSUED, the issuance
+          // happened and PG must say so.
+          const recovered = await mirrorPhytoStatusFromLedger(certificateID);
+          if (recovered && recovered.ledgerStatus === 'ISSUED') {
+            logger.info(`✅ Phytosanitary certificate ${certificateID} confirmed ISSUED on-ledger after submit timeout (tx outcome was unknown); PG mirrored`);
+            await logAuditBestEffort(req, {
+              entityType: 'PHYTOSANITARY_CERTIFICATE',
+              entityId: certificateID,
+              action: 'ISSUE',
+              oldValue: 'INSPECTED',
+              newValue: 'ISSUED',
+              metadata: { certificateNumber, issuingAuthority, recoveredFromTimeout: true, submitError: String(result.error || '') },
+            }, `phyto certificate ${certificateID} issue (timeout recovery)`);
+            return res.json({
+              success: true,
+              message: 'Phytosanitary certificate issued successfully (confirmed on the ledger after the submit timed out; the transaction had committed)',
+              data: { certificateId: certificateID, certificateNumber, validUntil, status: 'ISSUED', issuingAuthority },
+              recoveredFromTimeout: true,
+              timestamp: new Date().toISOString(),
+            });
+          }
+          res.status(400).json({
+            success: false,
+            error: { code: 'ISSUANCE_FAILED', message: result.error },
+            timestamp: new Date().toISOString(),
+          });
+          return;
         } else {
           res.status(400).json({
             success: false,

@@ -45,6 +45,195 @@ async function mirrorPermitCascadePG(contractId: string, shipmentId?: string): P
   }
 }
 
+// Unknown-outcome recovery (PG-vs-ledger equality, 2026-11-19, worker C).
+// LIVE ROOT CAUSE of the permit mirror gap: POST /api/v1/permits/export
+// for PERMIT-20261119045142 at 2026-11-19 04:51:42 UTC — the invoke
+// started 04:51:42.812, the tx COMMITTED on-chain at 04:51:42.812, but
+// the submit timed out awaiting commit status at 04:52:12.816
+// ("Transaction timed out while awaiting endorsement or commit status.
+// Transaction outcome is unknown"), the route returned 400, and
+// mirrorPermitPG never ran — no PG row, no audit row, while the ledger
+// holds an ISSUED permit. The fix: on a timeout/unknown-outcome
+// failure, read the permit back from the ledger BEFORE reporting
+// failure; when it exists, run the same mirrors + audit as the success
+// path and return 201 with recoveredFromTimeout: true. The same
+// unknown-outcome class is what the phyto inspect/issue handlers guard
+// against (phytosanitary.ts).
+function isUnknownOutcomeError(error: unknown): boolean {
+  const msg = String((error as any)?.message || error || '').toLowerCase();
+  return msg.includes('timed out') || msg.includes('timeout') || msg.includes('unknown');
+}
+
+/**
+ * Read a permit back from the ledger after an unknown-outcome submit.
+ * Returns the ledger doc when the permit exists, else null.
+ */
+async function confirmPermitOnLedger(permitId: string): Promise<any | null> {
+  try {
+    const r = await fabricService.queryChaincode('ReadExportPermit', [permitId]);
+    return r?.success && r.data ? r.data : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Recover a permit issuance whose submit timed out with unknown outcome:
+ * when the permit is on the ledger, run the success-path mirrors
+ * (PG permit row + shipment cascade + audit) and report it. Returns the
+ * ledger doc when recovered, else null. Never throws.
+ */
+async function recoverPermitAfterUnknownOutcome(
+  permitId: string,
+  contractId: string,
+  approvedBy: string,
+  req: any,
+  shipmentId?: string
+): Promise<any | null> {
+  try {
+    const doc = await confirmPermitOnLedger(permitId);
+    if (!doc) return null;
+    await mirrorPermitPG(permitId, contractId || String(doc.contractId || ''), approvedBy);
+    await mirrorPermitCascadePG(contractId || String(doc.contractId || ''), shipmentId);
+    await logAuditBestEffort(req, {
+      entityType: 'PERMIT',
+      entityId: permitId,
+      action: 'ISSUE',
+      newValue: String(doc.status || 'ISSUED'),
+      metadata: {
+        contractId: contractId || String(doc.contractId || ''),
+        recoveredFromTimeout: true,
+      },
+    }, `permit ${permitId} issue (timeout recovery)`);
+    logger.info(`✅ [PERMITS] Permit ${permitId} confirmed on-ledger after submit timeout (tx outcome was unknown); PG mirrored`);
+    return doc;
+  } catch (err) {
+    logger.warn(`[PERMITS] Timeout recovery read-back failed for ${permitId}:`, err);
+    return null;
+  }
+}
+
+/**
+ * POST /permits/resync (ADMIN-only)
+ *
+ * Backfill `export_permits` rows that exist on the ledger but never
+ * reached PostgreSQL, and heal stale statuses from ledger truth.
+ * Live case (audit 2026-11-19): ledger 255 vs PG 250 — 5 ledger-only
+ * permits, all direct-chaincode/probe/validation creations that
+ * bypassed the API mirror, including PERMIT-20261119045142 (created
+ * today 2026-11-19 04:51 UTC via the timeout path above) and the only
+ * SETTLED permit PERMIT-CNS-PROBE-20261115.
+ *
+ * Safety: INSERT-only for missing rows (ON CONFLICT DO NOTHING, so a
+ * repeat call is a no-op); status healing only ever writes the ledger
+ * status into an existing row — never the reverse, never a DELETE.
+ * Idempotent; every backfilled/healed row gets an audit_trail RESYNC
+ * row. Mirrors POST /banking/lc/resync (fdc18abc).
+ */
+router.post('/resync',
+  authMiddleware,
+  requireRole('ADMIN'),
+  async (req, res) => {
+    try {
+      const result = await fabricService.queryChaincode('QueryAllPermits', []);
+      if (!result || !(result as any).success || !Array.isArray((result as any).data)) {
+        return res.status(502).json({
+          success: false,
+          error: { code: 'LEDGER_UNAVAILABLE', message: 'Could not read permits from the ledger (QueryAllPermits failed)' },
+          timestamp: new Date().toISOString(),
+        });
+      }
+      const KNOWN_PERMIT_STATUSES = new Set(['PENDING', 'ISSUED', 'UTILIZED', 'SETTLED']);
+      const ledgerPermits = (result as any).data as any[];
+      const resynced: string[] = [];
+      const statusHealed: string[] = [];
+      const skippedUnknownStatus: string[] = [];
+      let skippedExisting = 0;
+      for (const permit of ledgerPermits) {
+        const permitId = String(permit?.permitId || permit?.PermitId || permit?.id || '').trim();
+        if (!permitId) continue;
+        const status = String(permit?.status || permit?.Status || '').trim().toUpperCase();
+        if (!KNOWN_PERMIT_STATUSES.has(status)) {
+          skippedUnknownStatus.push(`${permitId} (${status || 'no-status'})`);
+          continue;
+        }
+        const existing = await dbService.get(
+          `SELECT permit_id, status FROM export_permits WHERE permit_id = $1`,
+          [permitId]
+        );
+        if (existing) {
+          skippedExisting++;
+          if (String(existing.status || '').toUpperCase() !== status) {
+            await dbService.run(
+              `UPDATE export_permits SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE permit_id = $2`,
+              [status, permitId]
+            );
+            statusHealed.push(`${permitId}: ${existing.status} -> ${status}`);
+            logger.info(`[PERMITS] 🔧 Resync: healed status for ${permitId} (${existing.status} -> ${status}) from ledger truth`);
+            await logAuditBestEffort(req, {
+              entityType: 'PERMIT',
+              entityId: permitId,
+              action: 'RESYNC',
+              oldValue: String(existing.status || ''),
+              newValue: status,
+              reason: 'Permit re-sync: healed stale status from ledger truth',
+              metadata: { resynced: true, source: 'ledger' },
+            }, `permit ${permitId} resync`);
+          }
+          continue;
+        }
+        const inserted = await dbService.run(
+          `INSERT INTO export_permits (permit_id, contract_id, status, approved_by)
+           VALUES ($1, $2, $3, $4)
+           ON CONFLICT (permit_id) DO NOTHING
+           RETURNING permit_id`,
+          [
+            permitId,
+            String(permit?.contractId || permit?.ContractId || '') || null,
+            status,
+            String(permit?.approvedBy || permit?.ApprovedBy || '') || null,
+          ]
+        );
+        if (inserted && Number((inserted as any).rowCount || 0) > 0) {
+          resynced.push(permitId);
+          logger.info(`[PERMITS] 🔧 Resync: backfilled missing PG row for ${permitId} (${status}) from ledger truth`);
+          await logAuditBestEffort(req, {
+            entityType: 'PERMIT',
+            entityId: permitId,
+            action: 'RESYNC',
+            newValue: status,
+            reason: 'Permit re-sync: backfilled missing PG row from ledger truth (no PG row existed)',
+            metadata: { contractId: String(permit?.contractId || '') || null, resynced: true, source: 'ledger' },
+          }, `permit ${permitId} resync`);
+        } else {
+          skippedExisting++;
+        }
+      }
+      logger.info(`[PERMITS] 🔧 Resync complete: ledger=${ledgerPermits.length} existing=${skippedExisting} resynced=${resynced.length} statusHealed=${statusHealed.length} unknownStatus=${skippedUnknownStatus.length}`);
+      res.json({
+        success: true,
+        data: {
+          ledgerTotal: ledgerPermits.length,
+          skippedExisting,
+          resynced,
+          resyncedCount: resynced.length,
+          statusHealed,
+          statusHealedCount: statusHealed.length,
+          skippedUnknownStatus,
+        },
+        timestamp: new Date().toISOString(),
+      });
+    } catch (error: any) {
+      logger.error('[PERMITS] Resync error:', error);
+      return res.status(500).json({
+        success: false,
+        error: { code: 'SERVER_ERROR', message: error.message },
+        timestamp: new Date().toISOString(),
+      });
+    }
+  }
+);
+
 // Re-read the named shipment after the cascade mirror and report whether
 // it actually moved to PERMIT_ISSUED. The mirror is best-effort and used
 // to silently no-op on a missing shipment while the route returned 201;
@@ -271,10 +460,32 @@ router.post('/export', authMiddleware, requireRole('BANKS', 'BANK_ADMIN'), async
         txId: result.txId,
         timestamp: new Date().toISOString()
       });
+    } else if (isUnknownOutcomeError(result.error)) {
+      // The submit timed out with unknown outcome: the permit may still
+      // have committed (PERMIT-20261119045142, 2026-11-19 04:51 UTC).
+      // Read the ledger back before reporting failure.
+      const recovered = await recoverPermitAfterUnknownOutcome(permitId, contractId, approvedBy, req, shipmentID);
+      if (recovered) {
+        const shipmentMirror = await readShipmentMirror(shipmentID, shipmentStatusBefore);
+        await shipmentService.maybeTriggerCustomsDeclarationAfterPermit(shipmentID, (req as any).user?.username || approvedBy);
+        return res.status(201).json({
+          success: true,
+          message: 'Export permit issued successfully (confirmed on the ledger after the submit timed out; the transaction had committed)',
+          data: { permitID: permitId, permitId, status: 'ISSUED', shipment: shipmentMirror },
+          recoveredFromTimeout: true,
+          timestamp: new Date().toISOString()
+        });
+      }
+      logger.error(`❌ [PERMITS] Failed to issue: ${result.error}`);
+      res.status(400).json({
+        success: false,
+        error: { message: result.error || 'Failed to issue permit' },
+        timestamp: new Date().toISOString()
+      });
     } else {
       logger.error(`❌ [PERMITS] Failed to issue: ${result.error}`);
-      res.status(400).json({ 
-        success: false, 
+      res.status(400).json({
+        success: false,
         error: { message: result.error || 'Failed to issue permit' },
         timestamp: new Date().toISOString()
       });
@@ -404,10 +615,32 @@ router.post('/', authMiddleware, requireRole('BANKS', 'BANK_ADMIN'), async (req,
         txId: result.txId,
         timestamp: new Date().toISOString()
       });
+    } else if (isUnknownOutcomeError(result.error)) {
+      // The submit timed out with unknown outcome: the permit may still
+      // have committed (PERMIT-20261119045142, 2026-11-19 04:51 UTC).
+      // Read the ledger back before reporting failure.
+      const recovered = await recoverPermitAfterUnknownOutcome(permitId, contractId, approvedBy, req, shipmentID);
+      if (recovered) {
+        const shipmentMirror = await readShipmentMirror(shipmentID, shipmentStatusBefore);
+        await shipmentService.maybeTriggerCustomsDeclarationAfterPermit(shipmentID, (req as any).user?.username || approvedBy);
+        return res.status(201).json({
+          success: true,
+          message: 'Export permit issued successfully (confirmed on the ledger after the submit timed out; the transaction had committed)',
+          data: { permitID: permitId, permitId, status: 'ISSUED', shipment: shipmentMirror },
+          recoveredFromTimeout: true,
+          timestamp: new Date().toISOString()
+        });
+      }
+      logger.error(`❌ [PERMITS] Failed to issue: ${result.error}`);
+      res.status(400).json({
+        success: false,
+        error: { message: result.error || 'Failed to issue permit' },
+        timestamp: new Date().toISOString()
+      });
     } else {
       logger.error(`❌ [PERMITS] Failed to issue: ${result.error}`);
-      res.status(400).json({ 
-        success: false, 
+      res.status(400).json({
+        success: false,
         error: { message: result.error || 'Failed to issue permit' },
         timestamp: new Date().toISOString()
       });
@@ -526,9 +759,26 @@ router.post('/issue', authMiddleware, requireRole('BANKS', 'BANK_ADMIN'), async 
         data: result.data,
         txId: result.txId
       });
+    } else if (isUnknownOutcomeError(result.error)) {
+      // The submit timed out with unknown outcome: the permit may still
+      // have committed (PERMIT-20261119045142, 2026-11-19 04:51 UTC).
+      // Read the ledger back before reporting failure.
+      const recovered = await recoverPermitAfterUnknownOutcome(permitId, contractId, approvedBy, req);
+      if (recovered) {
+        return res.json({
+          success: true,
+          message: 'Export permit issued successfully (confirmed on the ledger after the submit timed out; the transaction had committed)',
+          data: recovered,
+          recoveredFromTimeout: true
+        });
+      }
+      res.status(400).json({
+        success: false,
+        error: { message: result.error || 'Failed to issue permit' }
+      });
     } else {
-      res.status(400).json({ 
-        success: false, 
+      res.status(400).json({
+        success: false,
         error: { message: result.error || 'Failed to issue permit' }
       });
     }
@@ -549,6 +799,17 @@ router.post('/utilize', authMiddleware, requireRole('BANKS', 'BANK_ADMIN'), asyn
     const result = await fabricService.invokeChaincode('UtilizeExportPermit', [permitId], 'BanksMSP');
 
     if (result.success) {
+      // Mirror the utilisation into PG: export_permits stayed ISSUED
+      // after an on-chain UTILIZE, so the portals (PG-first) never
+      // showed a utilised permit. Best-effort, like the issue mirror.
+      try {
+        await dbService.run(
+          `UPDATE export_permits SET status = 'UTILIZED', updated_at = CURRENT_TIMESTAMP WHERE permit_id = $1`,
+          [permitId]
+        );
+      } catch (mirrorErr) {
+        logger.warn(`[PERMITS] Could not mirror utilisation of ${permitId} to Postgres:`, mirrorErr);
+      }
       // Audit: this chain move never wrote an audit_trail row.
       // Best-effort — a failed audit write must not fail the move.
       await logAuditBestEffort(req, {
@@ -579,6 +840,19 @@ router.post('/settle', authMiddleware, requireRole('BANKS', 'BANK_ADMIN'), async
     );
 
     if (result.success) {
+      // Mirror the settlement into PG: export_permits stayed ISSUED
+      // after an on-chain SETTLE (the only SETTLED permit on the
+      // ledger, PERMIT-CNS-PROBE-20261115, has no PG row at all, and a
+      // settled permit with a PG row would read ISSUED forever).
+      // Best-effort, like the issue mirror.
+      try {
+        await dbService.run(
+          `UPDATE export_permits SET status = 'SETTLED', updated_at = CURRENT_TIMESTAMP WHERE permit_id = $1`,
+          [permitId]
+        );
+      } catch (mirrorErr) {
+        logger.warn(`[PERMITS] Could not mirror settlement of ${permitId} to Postgres:`, mirrorErr);
+      }
       // Audit: this chain move never wrote an audit_trail row.
       // Best-effort — a failed audit write must not fail the move.
       await logAuditBestEffort(req, {
