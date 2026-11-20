@@ -9,8 +9,16 @@ echo ""
 
 # Kill any existing API servers
 echo "Stopping existing API servers..."
+
+# Stop Docker container if running
+if docker ps --format '{{.Names}}' | grep -q 'cecbs-api'; then
+    echo "Stopping cecbs-api Docker container..."
+    docker stop cecbs-api 2>/dev/null || true
+fi
+
 pkill -9 -f "node.*server.js" 2>/dev/null || true
 pkill -9 -f "npm start" 2>/dev/null || true
+pkill -9 -f "ts-node-dev.*server.ts" 2>/dev/null || true
 
 # Also kill anything on port 3001
 PORT_PID=$(lsof -ti:3001 2>/dev/null)
