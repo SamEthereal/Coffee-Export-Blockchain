@@ -13,7 +13,9 @@
 # Test mode (proves section 9 catches a planted stale address without
 # touching any live peer):
 #   ./diagnose-chaincode.sh --test-installed <build-dir>
-# where <build-dir> holds release/chaincode/server/connection.json.
+# where <build-dir> holds release/chaincode/server/connection.json (or
+# bld/connection.json — the pre-launch copy; section 9 reads bld/ when
+# release/ does not exist yet, see the bld/ fallback below).
 # It runs ONLY section 9 against that scratch copy and exits 1 when the
 # check fails, 0 when it passes.
 # The failure this diagnoses is a STALE server, not a Fabric bug: if the
@@ -38,10 +40,11 @@ DIAG_TEST_DIR=""
 if [ "${1:-}" = "--test-installed" ]; then
     DIAG_MODE="test"
     DIAG_TEST_DIR="${2:-}"
-    if [ -z "$DIAG_TEST_DIR" ] || [ ! -f "$DIAG_TEST_DIR/release/chaincode/server/connection.json" ]; then
+    if [ -z "$DIAG_TEST_DIR" ] || { [ ! -f "$DIAG_TEST_DIR/release/chaincode/server/connection.json" ] && [ ! -f "$DIAG_TEST_DIR/bld/connection.json" ]; }; then
         echo "Usage: $0 --test-installed <build-dir>"
         echo "  <build-dir> must contain release/chaincode/server/connection.json"
-        echo "  (a scratch copy of an installed build, e.g. a planted stale address)."
+        echo "  or bld/connection.json (a scratch copy of an installed build,"
+        echo "  e.g. a planted stale address)."
         exit 2
     fi
 elif ! docker ps --filter "name=^peer0.ecta.cecbs.et$" --format "{{.Names}}" 2>/dev/null | grep -q "peer0.ecta"; then
@@ -192,6 +195,41 @@ else
     echo "Docker mode: installed copy at ${INSTALLED_CONN_PATH:- (not found)}"
 fi
 
+# --- bld/ fallback (2026-11-20): release/ only exists AFTER the first ---
+# --- launch of the installed package; bld/ exists right after install. ---
+# The peer dials the bld/ copy until release/ exists, so when the
+# resolved release/ path is absent, read bld/ instead of failing — and
+# record which path was read so the output says so.
+DIAG_CONN_SOURCE="release"
+diag_conn_exists() {
+    if [ "$DIAG_MODE" = "docker" ]; then
+        docker exec peer0.ecta.cecbs.et test -f "$1" 2>/dev/null
+    else
+        [ -f "$1" ]
+    fi
+}
+if [ -n "${INSTALLED_CONN_PATH:-}" ] && ! diag_conn_exists "$INSTALLED_CONN_PATH"; then
+    BLD_CANDIDATE="${INSTALLED_CONN_PATH%/release/chaincode/server/connection.json}/bld/connection.json"
+    if [ "$BLD_CANDIDATE" != "$INSTALLED_CONN_PATH" ] && diag_conn_exists "$BLD_CANDIDATE"; then
+        echo "(release/ copy not present yet — reading the bld/ copy instead: bld/ exists right after install, release/ only after first launch)"
+        INSTALLED_CONN_PATH="$BLD_CANDIDATE"
+        DIAG_CONN_SOURCE="bld"
+    fi
+elif [ -z "${INSTALLED_CONN_PATH:-}" ]; then
+    if [ "$DIAG_MODE" = "test" ]; then
+        BLD_NEWEST="$DIAG_TEST_DIR/bld/connection.json"
+    elif [ "$DIAG_MODE" = "docker" ]; then
+        BLD_NEWEST=$(docker exec peer0.ecta.cecbs.et sh -c 'ls -dt /var/hyperledger/production/externalbuilder/builds/*/bld/connection.json 2>/dev/null | head -1' 2>/dev/null || echo "")
+    else
+        BLD_NEWEST=$(ls -dt "$NATIVE_ROOT"/peers/ecta/externalbuilder/builds/*/bld/connection.json 2>/dev/null | head -1 || echo "")
+    fi
+    if [ -n "${BLD_NEWEST:-}" ] && diag_conn_exists "$BLD_NEWEST"; then
+        echo "(no release/ copy found — reading the newest bld/ copy instead)"
+        INSTALLED_CONN_PATH="$BLD_NEWEST"
+        DIAG_CONN_SOURCE="bld"
+    fi
+fi
+
 # --- Read the installed copy (mode-aware) ---
 if [ -n "${INSTALLED_CONN_PATH:-}" ]; then
     if [ "$DIAG_MODE" = "docker" ]; then
@@ -200,6 +238,30 @@ if [ -n "${INSTALLED_CONN_PATH:-}" ]; then
         INSTALLED_CONN=$(cat "$INSTALLED_CONN_PATH" 2>/dev/null || echo "")
     fi
 fi
+# If the chosen copy could not be read (raced with a launch, or the
+# file vanished), try the other copy once before failing.
+if [ -z "${INSTALLED_CONN:-}" ] && [ -n "${INSTALLED_CONN_PATH:-}" ]; then
+    if [ "$DIAG_CONN_SOURCE" = "release" ]; then
+        ALT_CONN_PATH="${INSTALLED_CONN_PATH%/release/chaincode/server/connection.json}/bld/connection.json"
+        ALT_SOURCE="bld"
+    else
+        ALT_CONN_PATH="${INSTALLED_CONN_PATH%/bld/connection.json}/release/chaincode/server/connection.json"
+        ALT_SOURCE="release"
+    fi
+    if [ "$ALT_CONN_PATH" != "$INSTALLED_CONN_PATH" ]; then
+        echo "(could not read ${INSTALLED_CONN_PATH} — trying the other copy: ${ALT_CONN_PATH})"
+        if [ "$DIAG_MODE" = "docker" ]; then
+            INSTALLED_CONN=$(docker exec peer0.ecta.cecbs.et cat "$ALT_CONN_PATH" 2>/dev/null || echo "")
+        else
+            INSTALLED_CONN=$(cat "$ALT_CONN_PATH" 2>/dev/null || echo "")
+        fi
+        if [ -n "$INSTALLED_CONN" ]; then
+            INSTALLED_CONN_PATH="$ALT_CONN_PATH"
+            DIAG_CONN_SOURCE="$ALT_SOURCE"
+        fi
+    fi
+fi
+echo "Installed connection.json read from: ${INSTALLED_CONN_PATH:- (not found)} (source: ${DIAG_CONN_SOURCE})"
 if [ -z "${INSTALLED_CONN:-}" ]; then
     echo "FAIL: could not read the installed connection.json (${INSTALLED_CONN_PATH:-no path resolved})"
     echo "  Without it the peer's dial address is unknown — check the peer's externalbuilder builds dir."

@@ -51,14 +51,22 @@ PKG_CONN_HOST="${PKG_CONN_ADDR%%:*}"
 PKG_CONN_PORT="${PKG_CONN_ADDR##*:}"
 PKG_CONN_TLS=$(grep -oP '"tls_required":\s*\K(true|false)' "$CHAINCODE_DIR/connection.json" 2>/dev/null || echo "unknown")
 
-# Endorsement policy for the readiness check (F5 follow-up): the native
-# deploy.sh evaluates readiness against AND(all 6 MSPs), and without the
-# flag the check once reported all-6-false with 5/6 approvals genuinely
-# recorded. NOTE: approveformyorg/commit below still omit --signature-policy
-# and therefore use the channel default — aligning all three is an open
-# follow-up; readiness alone is fixed here because it is only informational
-# (the script does not gate on its output).
-POLICY="AND('ECTAMSP.peer','ECXMSP.peer','BanksMSP.peer','NBEMSP.peer','CustomsMSP.peer','ShippingMSP.peer')"
+# Endorsement policy: NONE of approveformyorg, checkcommitreadiness or
+# commit passes --signature-policy in this script, so all three use the
+# channel default endorsement policy and all three ask about the SAME
+# definition. That alignment is load-bearing, not cosmetic:
+# checkcommitreadiness --signature-policy asks whether orgs approved
+# THAT policy's definition, and approvals recorded without the flag do
+# NOT count toward it. Proven live on the native stack 2026-11-20: ECTA
+# approved seq 28 with no policy flag; checkcommitreadiness WITHOUT the
+# flag showed ECTAMSP:true, WITH AND(all 6) showed all-false — the exact
+# all-false the host log showed on 2026-11-20 while the commit (also
+# without the flag) succeeded. Do NOT re-add --signature-policy to the
+# readiness check alone, and do NOT add it to approve/commit either:
+# that would change the committed endorsement policy and require a
+# redeploy. (~/fabric-native/deploy.sh differs by design: it passes the
+# AND(all 6) policy to approve, readiness AND commit alike, so ITS
+# three calls agree with each other — it needs no change.)
 
 # Compose command (v2 plugin preferred, v1 binary as fallback)
 if docker compose version &> /dev/null 2>&1; then
@@ -335,28 +343,48 @@ echo ""
 # Read back the connection.json the peer actually installed for this
 # package and compare it with the file just packaged. The peer dials
 # the installed copy — not the repo file — so a mismatch here is the
-# stale-address failure itself, caught before approve/commit. The
-# installed copy lives at
-# /var/hyperledger/production/externalbuilder/builds/<label>-<hash>/
-# release/chaincode/server/connection.json (peer-normalised; it carries
-# extra client_auth_required/root_cert/client_key/client_cert fields).
-# Unreadable (unexpected builder layout) is a warning only — a concrete
-# address mismatch is a hard fail.
+# stale-address failure itself, caught before approve/commit.
+#
+# WHICH PATH EXISTS WHEN (fed2d363 follow-up): the external builder's
+# BUILD step runs at install and writes
+#   <builds>/<label>-<hash>/bld/connection.json
+# while the RELEASE step runs only at first launch and writes
+#   <builds>/<label>-<hash>/release/chaincode/server/connection.json
+# So pre-commit — before any launch of this package — only bld/ can
+# exist; reading release/ here can never succeed (that is why the host
+# log on 2026-11-20 showed "could not read back … — skipping the
+# read-back check"). The release/ copy is re-checked AFTER the warm-up
+# query below, once the server has launched and release/ exists.
+# An unreadable bld/ copy is a HARD FAIL now, not a skipped check:
+# install just succeeded, so the build dir must be there.
 PKG_HASH="${PACKAGE_ID##*:}"
 PKG_BUILD_DIR="/var/hyperledger/production/externalbuilder/builds/coffee_${VERSION}-${PKG_HASH}"
-INSTALLED_CONN=$(docker exec peer0.ecta.cecbs.et cat "$PKG_BUILD_DIR/release/chaincode/server/connection.json" 2>/dev/null || echo "")
+INSTALLED_CONN=$(docker exec peer0.ecta.cecbs.et cat "$PKG_BUILD_DIR/bld/connection.json" 2>/dev/null || echo "")
 INSTALLED_ADDR=$(echo "$INSTALLED_CONN" | grep -oP '"address":\s*"\K[^"]+' || echo "")
-if [ -n "$INSTALLED_ADDR" ]; then
-    echo -e "${YELLOW}  Installed connection.json address (ECTA peer): ${INSTALLED_ADDR}${NC}"
-    if [ "$INSTALLED_ADDR" != "$PKG_CONN_ADDR" ]; then
-        echo -e "${RED}✗ FAIL: installed connection.json address (${INSTALLED_ADDR}) != packaged address (${PKG_CONN_ADDR})${NC}"
-        echo -e "${RED}  The peer will dial the installed address, not the repo file. Fix: rebuild the package from chaincodes/coffee/connection.json and reinstall — do not approve/commit this package.${NC}"
-        exit 1
-    fi
-    echo -e "${GREEN}✓ Installed connection.json matches the packaged address${NC}"
-else
-    echo -e "${YELLOW}  (could not read back the installed connection.json from $PKG_BUILD_DIR — skipping the read-back check; the warm-up query still gates)${NC}"
+INSTALLED_TLS=$(echo "$INSTALLED_CONN" | grep -oP '"tls_required":\s*\K(true|false)' || echo "")
+if [ -z "$INSTALLED_CONN" ] || [ -z "$INSTALLED_ADDR" ]; then
+    echo -e "${RED}✗ FAIL: could not read back the installed connection.json from $PKG_BUILD_DIR/bld/connection.json after a successful install${NC}"
+    echo -e "${RED}  The peer dials the installed copy, not the repo file — without it the dial address is unknown. Do not approve/commit this package.${NC}"
+    echo -e "${RED}  Check: docker exec peer0.ecta.cecbs.et ls -R $PKG_BUILD_DIR (unexpected builder layout?)${NC}"
+    exit 1
 fi
+echo -e "${YELLOW}  Installed connection.json address (ECTA peer, bld/): ${INSTALLED_ADDR}${NC}"
+INSTALLED_HOST="${INSTALLED_ADDR%%:*}"
+if [[ "$INSTALLED_HOST" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    echo -e "${RED}✗ FAIL: installed connection.json address is a bare IP (${INSTALLED_ADDR}) — a stale Docker-bridge IP the peer cannot rely on${NC}"
+    echo -e "${RED}  Fix: rebuild the package from chaincodes/coffee/connection.json (address coffee-chaincode:9999) and reinstall — do not approve/commit this package.${NC}"
+    exit 1
+fi
+if [ "$INSTALLED_ADDR" != "$PKG_CONN_ADDR" ]; then
+    echo -e "${RED}✗ FAIL: installed connection.json address (${INSTALLED_ADDR}) != packaged address (${PKG_CONN_ADDR})${NC}"
+    echo -e "${RED}  The peer will dial the installed address, not the repo file. Fix: rebuild the package from chaincodes/coffee/connection.json and reinstall — do not approve/commit this package.${NC}"
+    exit 1
+fi
+if [ -n "$INSTALLED_TLS" ] && [ "$INSTALLED_TLS" != "$PKG_CONN_TLS" ]; then
+    echo -e "${RED}✗ FAIL: installed connection.json tls_required (${INSTALLED_TLS}) != packaged tls_required (${PKG_CONN_TLS}) — the peer would dial with the wrong TLS mode${NC}"
+    exit 1
+fi
+echo -e "${GREEN}✓ Installed connection.json (bld/) matches the packaged address${NC}"
 echo ""
 
 # ── Update the chaincode server for the new package ID ──────────────────────
@@ -475,7 +503,169 @@ if [ "$SERVER_PROBE_OK" -eq 1 ] && [ "$SERVER_READY" -ne 1 ]; then
     docker logs --tail 30 coffee-chaincode 2>&1 || true
     exit 1
 fi
-echo -e "${GREEN}✓ Chaincode server rebuilt and reachable at ${PKG_CONN_ADDR} with the new package ID${NC}"
+if [ "$SERVER_READY" -eq 1 ]; then
+    echo -e "${GREEN}✓ Chaincode server rebuilt and reachable at ${PKG_CONN_ADDR} with the new package ID (TCP probe passed from peer0.ecta)${NC}"
+elif [ "$SERVER_PROBE_OK" -eq 0 ]; then
+    # Reached only via the 126/127 no-shell path in the loop above (the
+    # in-loop warning already printed). The old code printed "✓ …
+    # reachable" here unconditionally, claiming a probe that never ran.
+    # Reachability from a peer is NOT proven in this case — only the
+    # container state + package-ID match. The server-state gate below
+    # is then the only pre-commit proof the server is really serving.
+    echo -e "${YELLOW}⚠ Chaincode server rebuilt with the new package ID, but the TCP gate was SKIPPED (no shell in the peer container) — reachability from a peer is NOT proven; the server-state gate below is the only pre-commit proof${NC}"
+fi
+echo ""
+
+# ── Server-state gate: the container must PROVE it started as the NEW ──
+# ── server before any approve/commit (2026-11-20 host incident) ─────────
+# "Container Up" + a passing TCP probe do NOT prove the server
+# registered under the NEW package ID: on the host the probe succeeded
+# (TCP connects) while the chaincode never registered and every query
+# then hung 300 s. The server's own startup log is the proof: it
+# prints its CCID, its TLS mode and its listening state on every start
+# (chaincodes/coffee/main.go: "Starting Coffee Chaincode",
+# "Chaincode configuration: CCID=…", "About to start chaincode server
+# at …", "Chaincode server running..."). Require all three, against
+# THIS run's PACKAGE_ID, from the LAST startup block in the log (a
+# restarted container's log holds several blocks — only the last one
+# is the running server). Also require the container itself to be
+# healthy (running, never restarted since creation) and check the peer
+# containers for proxy env vars: a proxied gRPC dial hangs exactly
+# like the 300 s timeout while /dev/tcp succeeds, because the peer
+# would route the dial through the proxy instead of the fabric
+# network. (docker-compose-fabric.yml sets no proxy vars, so this is a
+# guard against host-level injection.)
+echo -e "${YELLOW}Checking chaincode server state (startup log + container health + peer proxy env)...${NC}"
+SERVER_CONTAINER_ID=$(docker ps -q --filter "name=^coffee-chaincode$" 2>/dev/null | head -1)
+if [ -z "$SERVER_CONTAINER_ID" ]; then
+    echo -e "${RED}✗ FAIL: coffee-chaincode container is not running (docker ps found nothing)${NC}"
+    exit 1
+fi
+SERVER_STATUS=$(docker inspect "$SERVER_CONTAINER_ID" --format '{{.State.Status}}' 2>/dev/null || echo "unknown")
+SERVER_RESTARTS=$(docker inspect "$SERVER_CONTAINER_ID" --format '{{.RestartCount}}' 2>/dev/null || echo "unknown")
+if [ "$SERVER_STATUS" != "running" ]; then
+    echo -e "${RED}✗ FAIL: coffee-chaincode container status is '${SERVER_STATUS}', not 'running'${NC}"
+    docker logs --tail 30 coffee-chaincode 2>&1 || true
+    exit 1
+fi
+if [ "$SERVER_RESTARTS" != "0" ]; then
+    echo -e "${RED}✗ FAIL: coffee-chaincode container has restarted ${SERVER_RESTARTS} time(s) since creation — the server crashed after start; its log below is from a crash loop, not a healthy start${NC}"
+    docker logs --tail 30 coffee-chaincode 2>&1 || true
+    exit 1
+fi
+SERVER_LOG=$(docker logs "$SERVER_CONTAINER_ID" 2>&1 || echo "")
+if [ -z "$SERVER_LOG" ]; then
+    echo -e "${RED}✗ FAIL: coffee-chaincode produced no log output at all — it never reached startup${NC}"
+    exit 1
+fi
+# Last startup block only: everything from the last "Starting Coffee Chaincode" line.
+SERVER_LAST_START=$(echo "$SERVER_LOG" | grep -n "Starting Coffee Chaincode" | tail -1 | cut -d: -f1)
+if [ -z "$SERVER_LAST_START" ]; then
+    echo -e "${RED}✗ FAIL: no 'Starting Coffee Chaincode' line in the server log — the server never started (log tail:)${NC}"
+    echo "$SERVER_LOG" | tail -30
+    exit 1
+fi
+SERVER_BLOCK=$(echo "$SERVER_LOG" | tail -n +"$SERVER_LAST_START")
+# (a) CCID must be THIS run's package ID — an old ID means a stale server.
+SERVER_CCID_LINE=$(echo "$SERVER_BLOCK" | grep "Chaincode configuration: CCID=" | tail -1 || echo "")
+if [ -z "$SERVER_CCID_LINE" ]; then
+    echo -e "${RED}✗ FAIL: no 'Chaincode configuration: CCID=…' line in the server log — the server never reached configuration${NC}"
+    echo "$SERVER_BLOCK" | tail -30
+    exit 1
+fi
+if ! echo "$SERVER_CCID_LINE" | grep -q "CCID=${PACKAGE_ID}"; then
+    SERVER_CCID=$(echo "$SERVER_CCID_LINE" | grep -oP 'CCID=\K[^,]+' || echo "unparseable")
+    echo -e "${RED}✗ FAIL: server started with CCID ${SERVER_CCID}, not this run's ${PACKAGE_ID} — a stale server is running; it will never serve the new definition${NC}"
+    echo "$SERVER_BLOCK" | tail -30
+    exit 1
+fi
+echo -e "${GREEN}✓ Server log shows CCID=${PACKAGE_ID}${NC}"
+# (b) TLS mode must agree with the packaged connection.json.
+if echo "$SERVER_BLOCK" | grep -q "TLS disabled for chaincode server"; then
+    SERVER_TLS_MODE="disabled"
+elif echo "$SERVER_BLOCK" | grep -q "TLS enabled for chaincode server"; then
+    SERVER_TLS_MODE="enabled"
+else
+    SERVER_TLS_MODE="unknown"
+fi
+if [ "$SERVER_TLS_MODE" = "unknown" ]; then
+    echo -e "${RED}✗ FAIL: no TLS state line ('TLS disabled…' / 'TLS enabled…') in the server log — the server's TLS mode cannot be proven${NC}"
+    echo "$SERVER_BLOCK" | tail -30
+    exit 1
+fi
+if [ "$PKG_CONN_TLS" = "false" ] && [ "$SERVER_TLS_MODE" = "enabled" ]; then
+    echo -e "${RED}✗ FAIL: TLS DISAGREEMENT — packaged connection.json says tls_required:false (peer dials plaintext) but the server log says TLS enabled${NC}"
+    echo "$SERVER_BLOCK" | tail -30
+    exit 1
+fi
+if [ "$PKG_CONN_TLS" = "true" ] && [ "$SERVER_TLS_MODE" = "disabled" ]; then
+    echo -e "${RED}✗ FAIL: TLS DISAGREEMENT — packaged connection.json says tls_required:true (peer dials TLS) but the server log says TLS disabled${NC}"
+    echo "$SERVER_BLOCK" | tail -30
+    exit 1
+fi
+echo -e "${GREEN}✓ Server TLS state (${SERVER_TLS_MODE}) agrees with packaged tls_required=${PKG_CONN_TLS}${NC}"
+# (c) Startup failure / crash lines in the last block.
+SERVER_CRASH_LINE=$(echo "$SERVER_BLOCK" | grep -iE "CRITICAL ERROR: server.Start\(\) failed|server.Start\(\) returned without error|panic:|FATAL|address already in use|bind: address" | head -1 || echo "")
+if [ -n "$SERVER_CRASH_LINE" ]; then
+    echo -e "${RED}✗ FAIL: server log shows a startup failure: ${SERVER_CRASH_LINE}${NC}"
+    echo "$SERVER_BLOCK" | tail -30
+    exit 1
+fi
+# (d) Listening evidence: "About to start…" is printed immediately
+# before Start(); "Chaincode server running..." is printed by the
+# monitor goroutine every 2 s once Start() is serving. Wait up to
+# ~30 s for the running line — the TCP probe above already passed, so
+# it should be there, but a just-started server may not have printed
+# its first tick yet.
+if ! echo "$SERVER_BLOCK" | grep -q "About to start chaincode server at"; then
+    echo -e "${RED}✗ FAIL: no 'About to start chaincode server' line in the server log — the server never reached Start()${NC}"
+    echo "$SERVER_BLOCK" | tail -30
+    exit 1
+fi
+SERVER_RUNNING=0
+for i in $(seq 1 15); do
+    if docker logs "$SERVER_CONTAINER_ID" 2>&1 | grep -q "Chaincode server running..."; then
+        SERVER_RUNNING=1
+        break
+    fi
+    sleep 2
+done
+if [ "$SERVER_RUNNING" -ne 1 ]; then
+    echo -e "${RED}✗ FAIL: no 'Chaincode server running...' line in the server log after ~30 s — Start() never reported serving (the TCP probe passed, but the server may be stuck before serving)${NC}"
+    docker logs --tail 30 coffee-chaincode 2>&1 || true
+    exit 1
+fi
+echo -e "${GREEN}✓ Server is running and serving (log shows 'Chaincode server running...')${NC}"
+# (e) Proxy env on the peer containers: a set http(s)_proxy WITHOUT a
+# NO_PROXY covering the fabric hostnames routes the peer's gRPC dial
+# through the proxy, which hangs exactly like the 300 s timeout while
+# /dev/tcp succeeds. The compose file sets no proxy vars; this guards
+# against host-level injection (daemon/systemd env, --env-file).
+PROXY_FAIL=0
+for peer_name in peer0.ecta.cecbs.et peer0.ecx.cecbs.et peer0.banks.cecbs.et peer0.nbe.cecbs.et peer0.customs.cecbs.et peer0.shipping.cecbs.et; do
+    PEER_ENV=$(docker inspect "$peer_name" --format '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null || echo "")
+    if [ -z "$PEER_ENV" ]; then
+        echo -e "${YELLOW}  (could not inspect ${peer_name} — proxy check skipped for this peer)${NC}"
+        continue
+    fi
+    PEER_NO_PROXY=$(echo "$PEER_ENV" | grep -i '^no_proxy=' | cut -d= -f2- | head -1 || echo "")
+    for proxy_var in http_proxy https_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY all_proxy; do
+        PROXY_VAL=$(echo "$PEER_ENV" | grep "^${proxy_var}=" | cut -d= -f2- | head -1 || echo "")
+        if [ -n "$PROXY_VAL" ]; then
+            if echo "$PEER_NO_PROXY" | grep -q "coffee-chaincode" && echo "$PEER_NO_PROXY" | grep -q "cecbs.et"; then
+                echo -e "${YELLOW}  ${peer_name}: ${proxy_var} is set but NO_PROXY covers coffee-chaincode + cecbs.et — dial bypasses the proxy${NC}"
+            else
+                echo -e "${RED}✗ FAIL: ${peer_name} has ${proxy_var}=${PROXY_VAL} but NO_PROXY (${PEER_NO_PROXY:-unset}) does not cover coffee-chaincode and the peer hostnames — the peer's gRPC dial to the chaincode server would go through the proxy and hang${NC}"
+                PROXY_FAIL=1
+            fi
+        fi
+    done
+done
+if [ "$PROXY_FAIL" -ne 0 ]; then
+    echo -e "${RED}  Fix: unset the proxy vars on the peer containers, or set NO_PROXY to include coffee-chaincode and all peer hostnames (peer0.*.cecbs.et, orderer.cecbs.et) — then re-run.${NC}"
+    exit 1
+fi
+echo -e "${GREEN}✓ Server-state gate passed: CCID + TLS + running + no uncovered proxy on any peer${NC}"
 echo ""
 
 # Approve for all organizations
@@ -552,8 +742,20 @@ echo ""
 
 # Check commit readiness
 echo -e "${YELLOW}Checking commit readiness...${NC}"
-docker exec peer0.ecta.cecbs.et peer lifecycle chaincode checkcommitreadiness \
-    --channelID coffeechannel --name coffee --version ${VERSION} --sequence ${SEQUENCE} --signature-policy "$POLICY" --output json | grep -A10 "approvals"
+# No --signature-policy here, deliberately: approveformyorg/commit
+# below also omit it, so the check asks about the definition that was
+# actually approved (channel default policy). Passing AND(all 6) here
+# made the host log report all-6-false while the commit succeeded
+# (proven live on native, 2026-11-20, seq-28 experiment — see the
+# comment at the top of this script). The check is informational: the
+# commit below is the real gate, and it fails honestly if approvals
+# are short. A false here is therefore a warning, not an exit.
+READINESS_OUT=$(docker exec peer0.ecta.cecbs.et peer lifecycle chaincode checkcommitreadiness \
+    --channelID coffeechannel --name coffee --version ${VERSION} --sequence ${SEQUENCE} --output json 2>&1)
+echo "$READINESS_OUT" | grep -A10 "approvals" || echo "$READINESS_OUT"
+if echo "$READINESS_OUT" | grep -q "false"; then
+    echo -e "${YELLOW}  ⚠ Readiness shows at least one org not yet approved for v${VERSION} seq ${SEQUENCE} (channel-default definition) — the commit below may fail; check the approvals above.${NC}"
+fi
 
 echo ""
 
@@ -611,24 +813,62 @@ if echo "$COMMITTED_INFO" | grep -q "Version: ${VERSION}" && echo "$COMMITTED_IN
     # succeed and its failure was silently ignored.)
     echo ""
     echo -e "${YELLOW}Warming up chaincode containers (query readiness)...${NC}"
+    # Peer choice matters: this query runs on peer0.ecta, NOT peer0.banks.
+    # The host incident (2026-11-20) ran it on Banks and failed 9/9
+    # after a VALID commit — Banks peer block commits take 188–300 s
+    # (observed natively) vs ~400 ms on ECTA, so the new definition had
+    # simply not landed on Banks yet when the query ran. ECTA is the
+    # fastest peer to see the committed definition.
+    # Budget: 12 attempts x 15 s (~180 s). The server takes ~25 s to
+    # start and register, the commit block lands on ECTA in ~400 ms,
+    # and the first query can take extra seconds while the peer routes
+    # to the newly registered server; 180 s covers a slow start with
+    # margin and still fails well inside the 300 s invoke timeout, so
+    # a genuine failure reports its cause instead of hanging.
     WARMUP_OK=0
-    for i in $(seq 1 9); do
-        if docker exec peer0.banks.cecbs.et peer chaincode query \
+    WARMUP_OUT=""
+    for i in $(seq 1 12); do
+        WARMUP_OUT=$(docker exec peer0.ecta.cecbs.et peer chaincode query \
             -C coffeechannel -n coffee \
-            -c '{"Args":["QueryAllLCs"]}' \
-            > /dev/null 2>&1; then
+            -c '{"Args":["QueryAllLCs"]}' 2>&1)
+        if [ $? -eq 0 ]; then
             WARMUP_OK=1
-            echo -e "${GREEN}✓ Chaincode containers initialized (warm-up query succeeded on attempt $i/9)${NC}"
+            echo -e "${GREEN}✓ Chaincode containers initialized (warm-up query succeeded on peer0.ecta, attempt $i/12)${NC}"
             break
         fi
-        echo -e "${YELLOW}  Warm-up query attempt $i/9 failed; retrying in 10s...${NC}"
-        [ $i -lt 9 ] && sleep 10
+        echo -e "${YELLOW}  Warm-up query attempt $i/12 failed; retrying in 15s...${NC}"
+        [ $i -lt 12 ] && sleep 15
     done
     if [ "$WARMUP_OK" -ne 1 ]; then
-        echo -e "${RED}✗ Warm-up query failed after 9 attempts (~90s) — the committed chaincode is not serving queries${NC}"
-        echo -e "${RED}  Check: docker logs coffee-chaincode${NC}"
+        echo -e "${RED}✗ Warm-up query failed after 12 attempts (~180s) — the committed chaincode is not serving queries${NC}"
+        echo -e "${RED}  Last query output (peer0.ecta, QueryAllLCs):${NC}"
+        echo "$WARMUP_OUT"
+        echo -e "${RED}  Chaincode server log (last 30 lines):${NC}"
         docker logs --tail 30 coffee-chaincode 2>&1 || true
         exit 1
+    fi
+    # Post-launch re-check of the release/ copy: release/ only exists
+    # AFTER the first launch (see the pre-commit read-back above), so
+    # this is the first point it can be read. A disagreement here
+    # means the peer launched with a different address/TLS than the
+    # package just installed — fail loudly instead of trusting the
+    # warm-up query alone (it may have been served by a stale server
+    # still registered under an older definition).
+    RELEASE_CONN=$(docker exec peer0.ecta.cecbs.et cat "$PKG_BUILD_DIR/release/chaincode/server/connection.json" 2>/dev/null || echo "")
+    if [ -n "$RELEASE_CONN" ]; then
+        RELEASE_ADDR=$(echo "$RELEASE_CONN" | grep -oP '"address":\s*"\K[^"]+' || echo "")
+        RELEASE_TLS=$(echo "$RELEASE_CONN" | grep -oP '"tls_required":\s*\K(true|false)' || echo "")
+        if [ "$RELEASE_ADDR" != "$PKG_CONN_ADDR" ]; then
+            echo -e "${RED}✗ FAIL: release/chaincode/server/connection.json address (${RELEASE_ADDR}) != packaged address (${PKG_CONN_ADDR}) after launch${NC}"
+            exit 1
+        fi
+        if [ -n "$RELEASE_TLS" ] && [ "$RELEASE_TLS" != "$PKG_CONN_TLS" ]; then
+            echo -e "${RED}✗ FAIL: release/chaincode/server/connection.json tls_required (${RELEASE_TLS}) != packaged tls_required (${PKG_CONN_TLS}) after launch${NC}"
+            exit 1
+        fi
+        echo -e "${GREEN}✓ Installed connection.json (release/, post-launch) matches the packaged address${NC}"
+    else
+        echo -e "${YELLOW}  (could not read back $PKG_BUILD_DIR/release/chaincode/server/connection.json after a successful warm-up query — the query itself proves the server is serving; the release/ check is skipped, not failed)${NC}"
     fi
 else
     echo -e "${RED}✗ Deployment verification failed${NC}"
