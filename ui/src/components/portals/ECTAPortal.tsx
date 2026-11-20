@@ -3440,8 +3440,16 @@ The exporter can reapply once all requirements are met.`,
         </form>
       </PortalDialog>
 
-      {/* Application Details Dialog */}
-      <PortalDialog brand="ECTA" title="Application Details" subtitle={selectedApplication ? `${selectedApplication.application_id} — ${selectedApplication.company_name}` : undefined} open={!!selectedApplication && !approveDialogOpen && !rejectDialogOpen && !approveConfirmOpen && !rejectConfirmOpen} onClose={() => setSelectedApplication(null)} maxWidth="md" contentSx={{ bgcolor: '#f8f9fa' }} actions={<>
+      {/* Application Details Dialog — gated on !validationDialogOpen:
+          handleViewApplicationDetails opens BOTH this dialog (via
+          setSelectedApplication) and the DocumentValidationDialog below
+          (via setValidationDialogOpen), so one click stacked two dialogs
+          on the same record. The validation dialog is the detail view
+          (same pattern as the Approved Exporters tab, which opens only
+          it); this dialog stays available for the Approve/Reject icon
+          flows, which set selectedApplication without opening the
+          validation dialog. */}
+      <PortalDialog brand="ECTA" title="Application Details" subtitle={selectedApplication ? `${selectedApplication.application_id} — ${selectedApplication.company_name}` : undefined} open={!!selectedApplication && !validationDialogOpen && !approveDialogOpen && !rejectDialogOpen && !approveConfirmOpen && !rejectConfirmOpen} onClose={() => setSelectedApplication(null)} maxWidth="md" contentSx={{ bgcolor: '#f8f9fa' }} actions={<>
 
           <GhostButton brand="ECTA" onClick={() => setSelectedApplication(null)}>
             Close
@@ -4129,6 +4137,11 @@ The exporter can reapply once all requirements are met.`,
         onClose={() => {
           setValidationDialogOpen(false);
           setValidationData(null);
+          // Also clear the selected application: handleViewApplicationDetails
+          // sets it too, and without this the Application Details dialog
+          // above would pop open the moment this dialog closes (the
+          // second half of the double-dialog bug).
+          setSelectedApplication(null);
         }}
         data={validationData}
         onApprove={(notes) => {
