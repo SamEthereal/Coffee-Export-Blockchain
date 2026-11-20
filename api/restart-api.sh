@@ -11,7 +11,15 @@ echo ""
 echo "Stopping existing API servers..."
 pkill -9 -f "node.*server.js" 2>/dev/null || true
 pkill -9 -f "npm start" 2>/dev/null || true
-sleep 2
+
+# Also kill anything on port 3001
+PORT_PID=$(lsof -ti:3001 2>/dev/null)
+if [ ! -z "$PORT_PID" ]; then
+    echo "Found process on port 3001 (PID: $PORT_PID), killing..."
+    kill -9 $PORT_PID 2>/dev/null || true
+fi
+
+sleep 3
 
 # Check required files
 if [ ! -f ".env" ]; then
