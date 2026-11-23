@@ -1,1 +1,0 @@
-scripts/monitoring/status.sh
