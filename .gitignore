@@ -136,3 +136,7 @@ ui/tsconfig.tsbuildinfo
 api/uploads/
 api/licenses/
 api/storage/
+
+api/tsconfig.tsbuildinfo
+*.pid
+*-results.txt
