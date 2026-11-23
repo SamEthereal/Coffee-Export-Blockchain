@@ -34,10 +34,33 @@ export async function runMigrations(): Promise<void> {
       logger.info('📁 No migrations directory found, skipping migrations');
       return;
     }
+
+    // If database already ran legacy migrations (e.g. 000_initial_schema through 083),
+    // mark the consolidated baseline and seed as already satisfied
+    const hasLegacyMigrations = appliedSet.has('000_initial_schema') || appliedSet.has('083_forex_signature_trail');
+    if (hasLegacyMigrations) {
+      if (!appliedSet.has('001_baseline_schema')) {
+        await db.query(
+          'INSERT INTO _schema_migrations (migration_name) VALUES ($1) ON CONFLICT DO NOTHING',
+          ['001_baseline_schema']
+        );
+        appliedSet.add('001_baseline_schema');
+        logger.info('   ℹ️  Existing database detected: baseline schema marked as satisfied');
+      }
+      if (!appliedSet.has('002_seed_initial_data')) {
+        await db.query(
+          'INSERT INTO _schema_migrations (migration_name) VALUES ($1) ON CONFLICT DO NOTHING',
+          ['002_seed_initial_data']
+        );
+        appliedSet.add('002_seed_initial_data');
+        logger.info('   ℹ️  Existing database detected: seed data marked as satisfied');
+      }
+    }
     
+    // Filter to .sql files and sort with natural numeric ordering (e.g. 001, 002, 010)
     const files = fs.readdirSync(migrationsDir)
-      .filter(f => f.endsWith('.sql'))
-      .sort(); // Ensures migrations run in order
+      .filter(f => f.endsWith('.sql') && fs.statSync(path.join(migrationsDir, f)).isFile())
+      .sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }));
     
     if (files.length === 0) {
       logger.info('✅ No migration files found');
