@@ -18,6 +18,8 @@ volumes:
   couchdb.shipping-data:
   postgres-data:
   redis-data:
+  ipfs-data:
+  ipfs-staging:
 
 services:
   # Orderer
@@ -497,6 +499,24 @@ services:
     networks:
       - cecbs
 
+  # IPFS (Kubo) - Decentralized Off-Chain Document Storage
+  ipfs.cecbs.et:
+    container_name: ipfs.cecbs.et
+    image: ipfs/kubo:v0.26.0
+    environment:
+      - IPFS_PATH=/data/ipfs
+      - IPFS_PROFILE=server
+    volumes:
+      - ipfs-staging:/export
+      - ipfs-data:/data/ipfs
+    ports:
+      - "4001:4001"
+      - "5001:5001"
+      - "8080:8080"
+    networks:
+      - cecbs
+    restart: unless-stopped
+
   # CECBS API Gateway
   cecbs-api:
     container_name: cecbs-api
@@ -522,10 +542,15 @@ services:
       - COUCHDB_URL=http://couchdb.ecta:5984
       - COUCHDB_USERNAME=admin
       - COUCHDB_PASSWORD=adminpw
+      - IPFS_HOST=ipfs.cecbs.et
+      - IPFS_PORT=5001
+      - IPFS_GATEWAY=http://localhost:8080/ipfs/
+      - USE_IPFS=true
     env_file:
       - ./api/.env.blockchain.fixed
     depends_on:
       - postgres
+      - ipfs.cecbs.et
       - peer0.ecta.cecbs.et
       - peer0.ecx.cecbs.et
       - peer0.banks.cecbs.et

@@ -12,6 +12,7 @@ import { CertificateManager } from '../utils/certificateManager';
 import { FabricService } from '../services/fabricService';
 import { CryptoUserService } from '../services/cryptoUserService';
 import { BlockchainSignatureService } from '../services/blockchainSignatureService';
+import { IpfsService } from '../services/ipfsService';
 import { logger } from '../utils/logger';
 import { resolveDocumentPath } from '../utils/fileUtils';
 
@@ -20,6 +21,7 @@ const postgresDb = DatabaseService.getInstance();
 const cryptoUserService = CryptoUserService.getInstance();
 const fabricService = FabricService.getInstance();
 const signatureService = BlockchainSignatureService.getInstance();
+const ipfsService = IpfsService.getInstance();
 
 // Configure multer for file uploads
 const uploadDir = path.join(__dirname, '../../uploads/documents');
@@ -248,7 +250,9 @@ router.post('/',
         data: { 
           documentID, 
           status: 'uploaded',
-          blockchainTxId: blockchainResult.txId
+          blockchainTxId: blockchainResult.txId,
+          ipfsCID: ipfsCID || null,
+          ipfsGatewayUrl: ipfsCID ? ipfsService.getGatewayUrl(ipfsCID) : null
         },
         timestamp: new Date().toISOString()
       });
@@ -652,6 +656,26 @@ router.get('/',
   }
 );
 
+router.get('/ipfs/status',
+  authMiddleware,
+  async (req: Request, res: Response) => {
+    try {
+      const status = await ipfsService.getStatus();
+      res.json({
+        success: true,
+        data: status,
+        timestamp: new Date().toISOString()
+      });
+    } catch (error: any) {
+      res.status(500).json({
+        success: false,
+        error: { code: 'IPFS_STATUS_ERROR', message: error.message },
+        timestamp: new Date().toISOString()
+      });
+    }
+  }
+);
+
 /**
  * GET /api/v1/documents/verification
  * Get document verification queue for ECTA portal
@@ -817,6 +841,20 @@ router.post('/upload',
         logger.warn(`Failed to sync approval requirements:`, syncErr);
       }
 
+      // ✅ OFF-CHAIN STORAGE: Pin file to IPFS with graceful fallback
+      let finalIpfsCid = ipfsCID || '';
+      if (!finalIpfsCid && fileBuffer) {
+        try {
+          const ipfsRes = await ipfsService.uploadFile(fileBuffer, finalFileName);
+          if (ipfsRes.success && ipfsRes.cid) {
+            finalIpfsCid = ipfsRes.cid;
+            logger.info(`✅ [DOCUMENTS] Pinned document ${documentID} to IPFS -> CID: ${finalIpfsCid}`);
+          }
+        } catch (ipfsErr: any) {
+          logger.warn(`⚠️ [DOCUMENTS] IPFS upload skipped/failed for ${documentID}: ${ipfsErr.message}`);
+        }
+      }
+
       // ✅ BLOCKCHAIN FIRST: Register document hash on blockchain (5s
       // race — see the read-back below: a timeout does not mean the
       // submit failed, it only means the caller stopped waiting)
@@ -831,7 +869,7 @@ router.post('/upload',
           finalEntityId,
           finalEntityType,
           fileHash,
-          ipfsCID || '',
+          finalIpfsCid,
           finalFileName,
           finalDocType,
         );
@@ -910,9 +948,9 @@ router.post('/upload',
         await postgresDb.run(
           `INSERT INTO documents (
           document_id, entity_type, entity_id, shipment_id, contract_id, exporter_id, document_type, file_name,
-          file_hash, mime_type, file_size, file_path, uploaded_by, status, description, 
+          file_hash, ipfs_hash, mime_type, file_size, file_path, uploaded_by, status, description, 
           blockchain_tx_id, verification_status
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`,
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)`,
           [
             documentID,
             finalEntityType,
@@ -923,6 +961,7 @@ router.post('/upload',
             finalDocType,
             finalFileName,
             fileHash,
+            finalIpfsCid || null,
             file.mimetype,
             file.size,
             file.path,
@@ -992,7 +1031,8 @@ router.post('/upload',
           documentId: documentID,
           fileName: finalFileName,
           hash: fileHash,
-          ipfsCID: null,
+          ipfsCID: finalIpfsCid || null,
+          ipfsGatewayUrl: finalIpfsCid ? ipfsService.getGatewayUrl(finalIpfsCid) : null,
           status: 'uploaded',
           blockchainTxId: blockchainResult?.txId || null,
           blockchainSynced: blockchainWriteSuccessful,
@@ -1107,6 +1147,20 @@ router.post('/upload-registration',
         filePath: file.path
       });
 
+      // ✅ OFF-CHAIN STORAGE: Pin file to IPFS with graceful fallback
+      let finalIpfsCid = '';
+      if (fileBuffer) {
+        try {
+          const ipfsRes = await ipfsService.uploadFile(fileBuffer, finalFileName);
+          if (ipfsRes.success && ipfsRes.cid) {
+            finalIpfsCid = ipfsRes.cid;
+            logger.info(`✅ [DOCUMENTS] Pinned registration document ${documentID} to IPFS -> CID: ${finalIpfsCid}`);
+          }
+        } catch (ipfsErr: any) {
+          logger.warn(`⚠️ [DOCUMENTS] IPFS upload skipped/failed for registration doc ${documentID}: ${ipfsErr.message}`);
+        }
+      }
+
       // ✅ BLOCKCHAIN FIRST: Register document hash on blockchain
       logger.info(`Registering registration document ${documentID} on blockchain...`);
       const blockchainResult = await fabricService.registerDocumentHash(
@@ -1114,7 +1168,7 @@ router.post('/upload-registration',
         finalEntityId,
         finalEntityType,
         fileHash,
-        '',
+        finalIpfsCid,
         finalFileName,
         finalDocType,
       );
@@ -1169,8 +1223,8 @@ router.post('/upload-registration',
         await postgresDb.run(
           `INSERT INTO documents (
           document_id, entity_type, entity_id, document_type, file_name,
-          file_hash, mime_type, file_size, file_path, uploaded_by, status, blockchain_tx_id
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+          file_hash, ipfs_hash, mime_type, file_size, file_path, uploaded_by, status, blockchain_tx_id
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
           [
             documentID,
             finalEntityType,
@@ -1178,6 +1232,7 @@ router.post('/upload-registration',
             finalDocType,
             finalFileName,
             fileHash,
+            finalIpfsCid || null,
             file.mimetype,
             file.size,
             file.path,
@@ -1218,7 +1273,8 @@ router.post('/upload-registration',
           documentId: documentID,
           fileName: finalFileName,
           hash: fileHash,
-          ipfsCID: null,
+          ipfsCID: finalIpfsCid || null,
+          ipfsGatewayUrl: finalIpfsCid ? ipfsService.getGatewayUrl(finalIpfsCid) : null,
           status: 'uploaded',
           blockchainTxId: blockchainResult.txId
         },
@@ -1294,20 +1350,38 @@ router.get('/:documentId/download',
       // Resolve file path using shared utility
       const filePath = resolveDocumentPath(doc.file_path, doc.file_name);
       
-      // Check if file exists
+      let ipfsBuffer: Buffer | null = null;
+      // Check if file exists on disk, otherwise fall back to IPFS
       if (!filePath || !fs.existsSync(filePath)) {
-        logger.error(`File not found on disk: ${doc.file_path}`);
-        return res.status(404).json({
-          success: false,
-          error: { code: 'FILE_NOT_FOUND', message: 'Document file not found on server' },
-          timestamp: new Date().toISOString()
-        });
+        if (doc.ipfs_hash) {
+          logger.info(`[DOCUMENTS] Local file not found on disk, fetching from IPFS (CID: ${doc.ipfs_hash})`);
+          ipfsBuffer = await ipfsService.downloadFile(doc.ipfs_hash);
+          if (ipfsBuffer && filePath) {
+            try {
+              const parentDir = path.dirname(filePath);
+              if (!fs.existsSync(parentDir)) fs.mkdirSync(parentDir, { recursive: true });
+              fs.writeFileSync(filePath, ipfsBuffer);
+              logger.info(`[DOCUMENTS] Cached IPFS file to local disk: ${filePath}`);
+            } catch (cacheErr: any) {
+              logger.warn(`[DOCUMENTS] Failed to cache IPFS file locally: ${cacheErr.message}`);
+            }
+          }
+        }
+
+        if (!ipfsBuffer) {
+          logger.error(`File not found on disk nor reachable on IPFS: ${doc.file_path}`);
+          return res.status(404).json({
+            success: false,
+            error: { code: 'FILE_NOT_FOUND', message: 'Document file not found on server or IPFS' },
+            timestamp: new Date().toISOString()
+          });
+        }
       }
 
       // ✅ SIGNATURES ARE NOW PERMANENTLY EMBEDDED - No need for on-the-fly sync
       // Signatures are embedded when the document is signed (see POST /:documentId/sign endpoint)
       // This ensures downloaded documents ALWAYS have permanent, verifiable signatures
-      logger.info(`📄 Serving permanently signed document: ${documentId}`);
+      logger.info(`📄 Serving permanently signed document: ${documentId} (source=${ipfsBuffer ? 'ipfs' : 'local'})`);
       
       // Set content type
       res.setHeader('Content-Type', doc.mime_type || 'application/octet-stream');
@@ -1321,9 +1395,13 @@ router.get('/:documentId/download',
       
       logger.info(`Streaming file: ${doc.file_name}`);
       
-      // Send file
-      const fileStream = fs.createReadStream(filePath);
-      fileStream.pipe(res);
+      // Send file (from IPFS buffer or disk stream)
+      if (ipfsBuffer) {
+        res.send(ipfsBuffer);
+      } else if (filePath) {
+        const fileStream = fs.createReadStream(filePath);
+        fileStream.pipe(res);
+      }
       
       // ✅ LOG TO AUDIT TRAIL - Document Viewed
       try {
@@ -1430,14 +1508,32 @@ router.get('/:documentId/view',
       // Resolve file path using shared utility
       const filePath = resolveDocumentPath(doc.file_path, doc.file_name);
       
-      // Check if file exists
+      let ipfsBuffer: Buffer | null = null;
+      // Check if file exists on disk, otherwise fall back to IPFS
       if (!filePath || !fs.existsSync(filePath)) {
-        logger.error(`File not found on disk: ${doc.file_path}`);
-        return res.status(404).json({
-          success: false,
-          error: { code: 'FILE_NOT_FOUND', message: 'Document file not found on server' },
-          timestamp: new Date().toISOString()
-        });
+        if (doc.ipfs_hash) {
+          logger.info(`[DOCUMENTS] Local file not found for viewing, fetching from IPFS (CID: ${doc.ipfs_hash})`);
+          ipfsBuffer = await ipfsService.downloadFile(doc.ipfs_hash);
+          if (ipfsBuffer && filePath) {
+            try {
+              const parentDir = path.dirname(filePath);
+              if (!fs.existsSync(parentDir)) fs.mkdirSync(parentDir, { recursive: true });
+              fs.writeFileSync(filePath, ipfsBuffer);
+              logger.info(`[DOCUMENTS] Cached IPFS view file to local disk: ${filePath}`);
+            } catch (cacheErr: any) {
+              logger.warn(`[DOCUMENTS] Failed to cache IPFS view file locally: ${cacheErr.message}`);
+            }
+          }
+        }
+
+        if (!ipfsBuffer) {
+          logger.error(`File not found on disk nor reachable on IPFS: ${doc.file_path}`);
+          return res.status(404).json({
+            success: false,
+            error: { code: 'FILE_NOT_FOUND', message: 'Document file not found on server or IPFS' },
+            timestamp: new Date().toISOString()
+          });
+        }
       }
 
       // Read/view requests must not rewrite files whose hashes are committed to Fabric.
@@ -1455,11 +1551,15 @@ router.get('/:documentId/view',
       // Allow embedding in iframes from localhost:3000
       res.setHeader('Content-Security-Policy', "frame-ancestors 'self' http://localhost:3000");
       
-      logger.info(`Streaming file for viewing: ${doc.file_name}`);
+      logger.info(`Streaming file for viewing: ${doc.file_name} (source=${ipfsBuffer ? 'ipfs' : 'local'})`);
       
-      // Send file
-      const fileStream = fs.createReadStream(filePath);
-      fileStream.pipe(res);
+      // Send file (from IPFS buffer or disk stream)
+      if (ipfsBuffer) {
+        res.send(ipfsBuffer);
+      } else if (filePath) {
+        const fileStream = fs.createReadStream(filePath);
+        fileStream.pipe(res);
+      }
       
       // ✅ LOG TO AUDIT TRAIL - Document Viewed
       try {
@@ -1532,7 +1632,7 @@ router.get('/:documentId',
       
       // Get document info only (metadata)
       const doc = await postgresDb.get(
-        'SELECT document_id, entity_type, entity_id, exporter_id, document_type, file_name, file_hash, mime_type, file_size, uploaded_by, status, uploaded_at FROM documents WHERE document_id = $1',
+        'SELECT document_id, entity_type, entity_id, exporter_id, document_type, file_name, file_hash, ipfs_hash, mime_type, file_size, uploaded_by, status, uploaded_at, blockchain_tx_id FROM documents WHERE document_id = $1',
         [documentId]
       );
 
@@ -1550,7 +1650,11 @@ router.get('/:documentId',
 
       res.json({
         success: true,
-        data: doc,
+        data: {
+          ...doc,
+          ipfsCID: doc.ipfs_hash || null,
+          ipfsGatewayUrl: doc.ipfs_hash ? ipfsService.getGatewayUrl(doc.ipfs_hash) : null,
+        },
         timestamp: new Date().toISOString()
       });
     } catch (error: any) {
