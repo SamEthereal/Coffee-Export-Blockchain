@@ -5,7 +5,6 @@ import { PDFDocument, rgb, StandardFonts, degrees } from 'pdf-lib';
 import crypto from 'crypto';
 import fs from 'fs';
 import { logger } from '../utils/logger';
-import { DocumentSignatureService } from './documentSignatureService';
 import { getFabricCertificateTrustStatus, normalizeFabricMspId } from '../utils/fabricCertificateTrust';
 
 // Try to import optional dependencies, fallback if not available
