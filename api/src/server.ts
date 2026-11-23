@@ -328,8 +328,8 @@ class CECBSServer {
     
     // Alias routes for convenience
     apiV1.use('/quality-inspections', authMiddleware, qualityRoutes); // Alias for /quality/inspections
-    apiV1.use('/certificates', authMiddleware, qualityRoutes); // Alias for quality certificates
-    apiV1.use('/warehouse', authMiddleware, ecxRoutes); // Alias for ECX warehouse
+    // REMOVED: apiV1.use('/certificates', authMiddleware, qualityRoutes); // Conflicts with certificatesRoutes (line 420)
+    // REMOVED: apiV1.use('/warehouse', authMiddleware, ecxRoutes); // Conflicts with warehouseRoutes (line 417)
     // REMOVED: apiV1.use('/market', authMiddleware, ecxRoutes); // Conflicts with marketRoutes
     apiV1.use('/applications', authMiddleware, exporterRoutes); // Alias for exporter applications
     
