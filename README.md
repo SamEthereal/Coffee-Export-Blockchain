@@ -1,141 +1,96 @@
 # GoCBC - Ethiopian Coffee Export Blockchain System
 
-## System Overview
+> **Branch:** `samuel` (Active cleanup & refactoring)
 
-GoCBC is a comprehensive blockchain-based coffee export management system for Ethiopia, integrating 7 organizations (ECTA, Banks, NBE, Customs, Shipping, Quality, ECX) into a unified platform.
+## Overview
 
-### Key Features
-- ✅ Hyperledger Fabric 2.5 blockchain
-- ✅ 6-peer multi-organization network
-- ✅ Complete export workflow management
-- ✅ Forex allocation & repatriation
-- ✅ Letter of Credit (LC) lifecycle
-- ✅ Payment processing & settlement
-- ✅ Quality inspection & customs clearance
-- ✅ Document management & digital signatures
-- ✅ SWIFT message generation
-- ✅ Real-time shipment tracking
+GoCBC is a consortium blockchain-based management platform designed for Ethiopia's coffee export ecosystem. It coordinates trade finance, regulatory compliance, quality verification, and shipping logistics across 7 participant organizations:
 
-## Quick Start
+1. **ECTA** — Ethiopian Coffee & Tea Authority (Licensing & Contract approval)
+2. **ECX** — Ethiopia Commodity Exchange (Lot verification & warehouse receipts)
+3. **Commercial Banks** — Letters of Credit (LC), payments, advance settlements
+4. **NBE** — National Bank of Ethiopia (Forex allocation, retention policy & repatriation tracking)
+5. **Quality & Inspection** — Pre-shipment grading, cupping, phytosanitary certification
+6. **Customs Commission** — Export declarations, duty valuation & border clearance
+7. **Shipping Lines (ESLSE)** — Freight booking, bill of lading & dispatch tracking
 
-```bash
-# Start all services
-./start-all.sh
+---
 
-# Stop all services
-./stop-all.sh
+## Technical Stack
 
-# Run E2E tests
-./test/e2e/COMPLETE-E2E-TEST-ALL-WORKFLOWS.sh
+- **Blockchain:** Hyperledger Fabric 2.5 (External Chaincode-as-a-Service)
+  - 6 Organization Peers (`ECTAMSP`, `ECXMSP`, `BanksMSP`, `NBEMSP`, `CustomsMSP`, `ShippingMSP`)
+  - Raft Ordering Service (`orderer.cecbs.et`)
+  - CouchDB State Databases
+- **Smart Contracts (Chaincode):** Go (`chaincodes/coffee/`)
+- **API Backend:** Node.js / TypeScript / Express (`api/`)
+  - Hyperledger Fabric Node SDK (`fabric-network`)
+  - PostgreSQL 15 database mirror
+  - JWT Authentication & RBAC
+- **Frontend:** Next.js / React / Material-UI (`ui/`)
+  - 7 Portal interfaces for participant organizations
+- **Document Storage:** Local/object storage with SHA-256 cryptographic registration on Fabric ledger (IPFS integration pending)
 
-# Check system health
-./test/e2e/COMPONENT-HEALTH-CHECK-V2.sh
-```
-
-## Documentation
-
-| Category | Location |
-|----------|----------|
-| **Architecture** | [Docs/CODEBASE-ARCHITECTURE-ANALYSIS.md](Docs/CODEBASE-ARCHITECTURE-ANALYSIS.md) |
-| **Testing** | [Docs/POST-CLEANUP-VERIFICATION.md](Docs/POST-CLEANUP-VERIFICATION.md) |
-| **Complete Reports** | [Docs/](Docs/) |
-| **Test Scripts** | [test/e2e/](test/e2e/) |
-| **Deployment Guides** | [scripts/](scripts/) |
-
-## System Architecture
-
-```
-Frontend (React) → API (Node.js) → Blockchain (Fabric) → Database (PostgreSQL)
-                                         ↓
-                          6 Peers + 1 Orderer + 6 CouchDB
-```
-
-### Components
-- **Frontend:** 7 portals (ECTA, Banks, NBE, Customs, Shipping, Quality, ECX)
-- **API:** 52 routes, 30+ services (Node.js/TypeScript)
-- **Blockchain:** 23 chaincode modules (Go)
-- **Database:** PostgreSQL with 51 tables
+---
 
 ## Directory Structure
 
+```text
+├── api/                    # Backend REST API (Node.js/TypeScript)
+│   ├── src/                # Routes, services, middleware, utils
+│   └── migrations/         # PostgreSQL schema migrations
+├── blockchain/             # Fabric network configs, crypto materials, channel artifacts
+├── chaincodes/             # Hyperledger Fabric smart contracts (Go)
+│   └── coffee/             # Export trade finance & logistics chaincode
+├── Docs/                   # System specifications & architecture references
+├── scripts/                # Network ops, deployment & initial seed scripts
+├── test/                   # E2E & integration test suites
+├── ui/                     # Frontend Next.js application
+├── docker-compose-fabric.yml # Main container orchestration
+├── start-all.sh            # Stack bootstrap & network launcher
+└── stop-all.sh             # Graceful teardown script
 ```
-GoCBC/
-├── api/                    # API server (Node.js/TypeScript)
-├── ui/                     # Frontend (React)
-├── blockchain/             # Fabric network configuration
-├── chaincodes/             # Smart contracts (Go)
-├── config/                 # Configuration files
-├── Docs/                   # 📚 Documentation & reports
-├── test/                  # 🧪 Test files & scripts
-├── logs/                   # 📋 Log files
-├── scripts/                # 🔧 Operational scripts
-├── archive/                # 📦 Archived/deprecated files
-├── start-all.sh           # Start all services
-├── stop-all.sh            # Stop all services
-└── README.md              # This file
-```
 
-## Testing
+---
 
-### System Status
-- ✅ E2E Tests: 100% (12/12 stages passed)
-- ✅ Component Health: 95% (46/48 components)
-- ✅ All 7 Portals: Functional
-- ✅ Primary Goal: Forex allocation validated
+## Quick Start
 
-### Run Tests
+### 1. Prerequisites
+- Docker Engine & Docker Compose
+- Node.js 18+ & npm 9+
+- Go 1.20+ (for chaincode modifications)
+
+### 2. Network Bootstrap
 ```bash
-# Full E2E test
-cd test/e2e
-./COMPLETE-E2E-TEST-ALL-WORKFLOWS.sh
-
-# Component health check
-./COMPONENT-HEALTH-CHECK-V2.sh
-
-# Integration tests
-cd test/integration
-./test-all-portals-comprehensive.sh
-```
-
-## Deployment
-
-### Production Deployment
-See [scripts/](scripts/) for deployment scripts.
-
-### Quick Deploy
-```bash
-# Full deployment
-./scripts/deployment/COMPLETE-DEPLOYMENT.sh
-
-# Start services
+# Start blockchain network, database, and background containers
 ./start-all.sh
 
-# Verify deployment
-./test/e2e/COMPONENT-HEALTH-CHECK-V2.sh
+# Stop services
+./stop-all.sh
 ```
 
-## Architecture Score
+### 3. Application Services
+```bash
+# Backend API
+cd api
+npm install
+npm run dev
 
-**Overall: 8.5/10** ⭐⭐⭐⭐⭐
+# Frontend UI
+cd ui
+npm install
+npm run dev
+```
 
-- Structure: 9/10
-- Code Quality: 8/10
-- Security: 8/10
-- Performance: 7/10
-- Testing: 7/10
-- Documentation: 8/10
-- Maintainability: 9/10
+---
 
-## Status
+## Key Reference Documentation
 
-**Production Ready** ✅
-
-The system has been comprehensively validated and is approved for production deployment.
-
-## License
-
-[Add license information]
-
-## Contact
-
-[Add contact information]
+All core reference materials are organized in `Docs/`:
+- [Architecture Analysis](Docs/CODEBASE-ARCHITECTURE-ANALYSIS.md)
+- [System Architecture](Docs/ARCHITECTURE.md)
+- [API Reference](Docs/API-DOCUMENTATION.md)
+- [Workflow API Guide](Docs/WORKFLOW-API-REFERENCE.md)
+- [Database Schema Reference](Docs/DATABASE-SCHEMA-REFERENCE.md)
+- [Ethiopian Coffee Export Requirements](Docs/ETHIOPIAN-COFFEE-EXPORT-REQUIREMENTS.md)
+- [Complete Export Workflow](Docs/COMPLETE-EXPORT-WORKFLOW.md)
