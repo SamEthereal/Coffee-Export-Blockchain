@@ -2670,38 +2670,37 @@ router.get('/lc', async (req, res) => {
           discrepancyResolved: false,
         }));
         
-        // D5 (2026-11-18): reconcile the list statuses against the
-        // ledger at read time. PG is only a mirror, and a settle that
-        // predated its mirror (post-delivery settle before F-C) leaves
-        // a row stale forever — LC-BVER showed PAYMENT_RELEASED here
-        // while the ledger said SETTLED. One QueryAllLCs call covers
-        // the whole list; a failed/slow ledger read falls back to the
-        // PG statuses above, so the list never breaks on chain trouble.
+        // Reconcile list statuses against ledger on explicit request (?reconcile=true)
+        // or when ENABLE_READ_TIME_HEALING=true is set. By default, serve fast indexed PostgreSQL
+        // mirror to prevent massive read latency and background DB locking.
         let statusReconciled = false;
         let statusHealed = 0;
         let statusMismatches = 0;
-        const ledgerStatuses = await fetchLedgerLcStatusMap();
-        if (ledgerStatuses) {
-          statusReconciled = true;
-          const toHeal: Array<{ lcId: string; chainStatus: string }> = [];
-          for (const row of lcData) {
-            const chainStatus = ledgerStatuses.get(row.lcId) || '';
-            if (chainStatus && chainStatus !== row.status) {
-              statusMismatches++;
-              row.status = chainStatus; // show the ledger truth now
-              toHeal.push({ lcId: row.lcId, chainStatus });
+        const shouldReconcile = req.query.reconcile === 'true' || process.env.ENABLE_READ_TIME_HEALING === 'true';
+        if (shouldReconcile) {
+          const ledgerStatuses = await fetchLedgerLcStatusMap();
+          if (ledgerStatuses) {
+            statusReconciled = true;
+            const toHeal: Array<{ lcId: string; chainStatus: string }> = [];
+            for (const row of lcData) {
+              const chainStatus = ledgerStatuses.get(row.lcId) || '';
+              if (chainStatus && chainStatus !== row.status) {
+                statusMismatches++;
+                row.status = chainStatus; // show the ledger truth now
+                toHeal.push({ lcId: row.lcId, chainStatus });
+              }
             }
-          }
-          if (toHeal.length > 0) {
-            const capped = toHeal.slice(0, LC_RECONCILE_HEAL_CAP);
-            if (toHeal.length > capped.length) {
-              logger.warn(`[BANKING] ⚠️ LC status reconciliation: ${toHeal.length} stale rows, healing ${capped.length} this call (cap ${LC_RECONCILE_HEAL_CAP}); the rest stay ledger-correct in the response and heal on a later list load`);
+            if (toHeal.length > 0) {
+              const capped = toHeal.slice(0, LC_RECONCILE_HEAL_CAP);
+              if (toHeal.length > capped.length) {
+                logger.warn(`[BANKING] ⚠️ LC status reconciliation: ${toHeal.length} stale rows, healing ${capped.length} this call (cap ${LC_RECONCILE_HEAL_CAP}); the rest stay ledger-correct in the response and heal on a later list load`);
+              }
+              const healed = await Promise.allSettled(
+                capped.map((h) => autoHealLCStatus(h.lcId, h.chainStatus))
+              );
+              statusHealed = healed.filter((r) => r.status === 'fulfilled').length;
+              logger.info(`[BANKING] 🔧 LC status reconciliation: ${statusMismatches} mismatched, ${statusHealed} PG rows healed to ledger status`);
             }
-            const healed = await Promise.allSettled(
-              capped.map((h) => autoHealLCStatus(h.lcId, h.chainStatus))
-            );
-            statusHealed = healed.filter((r) => r.status === 'fulfilled').length;
-            logger.info(`[BANKING] 🔧 LC status reconciliation: ${statusMismatches} mismatched, ${statusHealed} PG rows healed to ledger status`);
           }
         }
 

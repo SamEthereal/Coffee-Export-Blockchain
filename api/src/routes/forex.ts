@@ -190,35 +190,41 @@ router.get(['/', '/allocations'], authMiddleware, async (req, res) => {
     // by POST /forex/resync, not by a read-time heal. The old
     // background-only blockchain fetch is replaced by this awaited
     // reconciliation: a background log line never fixed the portal view.
+    // Reconcile list statuses against ledger on explicit request (?reconcile=true)
+    // or when ENABLE_READ_TIME_HEALING=true is set. By default, serve fast indexed PostgreSQL
+    // mirror to prevent massive read latency and background DB locking.
     let statusReconciled = false;
     let statusHealed = 0;
     let statusMismatches = 0;
     const ledgerById = new Map<string, { status: string; allocatedAmount?: number }>();
-    const ledgerMap = await fetchLedgerForexMap();
-    if (ledgerMap) {
-      statusReconciled = true;
-      for (const [id, doc] of ledgerMap) {
-        ledgerById.set(id, {
-          status: String(doc?.status || doc?.Status || '').trim().toUpperCase(),
-          allocatedAmount: typeof doc?.allocatedAmount === 'number' ? doc.allocatedAmount : undefined,
-        });
-      }
-      const toHeal: Array<{ forexId: string; chainStatus: string; allocatedAmount?: number }> = [];
-      for (const fx of pgForex as any[]) {
-        const key = String(fx?.forex_id || fx?.allocation_id || '');
-        const ledger = ledgerById.get(key);
-        if (ledger && ledger.status && ledger.status !== String(fx?.status || '').toUpperCase()) {
-          statusMismatches++;
-          toHeal.push({ forexId: key, chainStatus: ledger.status, allocatedAmount: ledger.allocatedAmount });
+    const shouldReconcile = req.query.reconcile === 'true' || process.env.ENABLE_READ_TIME_HEALING === 'true';
+    if (shouldReconcile) {
+      const ledgerMap = await fetchLedgerForexMap();
+      if (ledgerMap) {
+        statusReconciled = true;
+        for (const [id, doc] of ledgerMap) {
+          ledgerById.set(id, {
+            status: String(doc?.status || doc?.Status || '').trim().toUpperCase(),
+            allocatedAmount: typeof doc?.allocatedAmount === 'number' ? doc.allocatedAmount : undefined,
+          });
         }
-      }
-      if (toHeal.length > 0) {
-        const capped = toHeal.slice(0, 50);
-        const healed = await Promise.allSettled(
-          capped.map((h) => healForexRow(h.forexId, h.chainStatus, (req as any).user, h.allocatedAmount)),
-        );
-        statusHealed = healed.filter((r) => r.status === 'fulfilled' && (r as any).value?.healed).length;
-        logger.info(`[FOREX] 🔧 Status reconciliation: ${statusMismatches} mismatched, ${statusHealed} PG rows healed to ledger status`);
+        const toHeal: Array<{ forexId: string; chainStatus: string; allocatedAmount?: number }> = [];
+        for (const fx of pgForex as any[]) {
+          const key = String(fx?.forex_id || fx?.allocation_id || '');
+          const ledger = ledgerById.get(key);
+          if (ledger && ledger.status && ledger.status !== String(fx?.status || '').toUpperCase()) {
+            statusMismatches++;
+            toHeal.push({ forexId: key, chainStatus: ledger.status, allocatedAmount: ledger.allocatedAmount });
+          }
+        }
+        if (toHeal.length > 0) {
+          const capped = toHeal.slice(0, 50);
+          const healed = await Promise.allSettled(
+            capped.map((h) => healForexRow(h.forexId, h.chainStatus, (req as any).user, h.allocatedAmount)),
+          );
+          statusHealed = healed.filter((r) => r.status === 'fulfilled' && (r as any).value?.healed).length;
+          logger.info(`[FOREX] 🔧 Status reconciliation: ${statusMismatches} mismatched, ${statusHealed} PG rows healed to ledger status`);
+        }
       }
     }
 

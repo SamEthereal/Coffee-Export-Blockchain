@@ -332,6 +332,60 @@ export class FabricService {
     return this.defaultMspId || this.normalizeMspId(process.env.FABRIC_MSP_ID || 'ECTAMSP');
   }
 
+  /**
+   * Resolves the target endorsing organizations for a transaction proposal.
+   * By default, avoids the severe bottleneck of forcing all 6 peers on every single call.
+   * - If FABRIC_ENDORSE_ALL_PEERS === 'true': returns all 6 peers (for backward compatibility).
+   * - If FABRIC_TARGET_SUBMITTING_MSP_ONLY === 'true': returns only the submitting MSP.
+   * - Default: smart quorum targeting the submitting MSP plus relevant workflow counterparties,
+   *   fulfilling consensus requirements without being blocked by unrelated or offline peers.
+   */
+  public resolveEndorsingOrgs(targetMspId: string, functionName?: string): string[] {
+    if (process.env.FABRIC_ENDORSE_ALL_PEERS === 'true') {
+      return CONSORTIUM_PEER_MSPS;
+    }
+
+    const normalizedTarget = this.normalizeMspId(targetMspId);
+    if (process.env.FABRIC_TARGET_SUBMITTING_MSP_ONLY === 'true') {
+      return [normalizedTarget];
+    }
+
+    const orgs = new Set<string>([normalizedTarget]);
+    const fn = (functionName || '').toLowerCase();
+
+    // Map workflow domains to participating organizations
+    if (fn.includes('lc') || fn.includes('banking') || fn.includes('letterofcredit') || fn.includes('advance') || fn.includes('payment')) {
+      orgs.add('BanksMSP');
+      orgs.add('ECTAMSP');
+    } else if (fn.includes('forex') || fn.includes('repatriat') || fn.includes('exchange')) {
+      orgs.add('NBEMSP');
+      orgs.add('BanksMSP');
+    } else if (fn.includes('customs') || fn.includes('border') || fn.includes('duty')) {
+      orgs.add('CustomsMSP');
+      orgs.add('ECTAMSP');
+    } else if (fn.includes('shipment') || fn.includes('shipping') || fn.includes('vessel') || fn.includes('dispatch')) {
+      orgs.add('ShippingMSP');
+      orgs.add('CustomsMSP');
+    } else if (fn.includes('quality') || fn.includes('inspect') || fn.includes('phyto')) {
+      orgs.add('ECTAMSP');
+    } else if (fn.includes('ecx') || fn.includes('lot') || fn.includes('warehouse')) {
+      orgs.add('ECXMSP');
+      orgs.add('ECTAMSP');
+    } else {
+      orgs.add('ECTAMSP');
+    }
+
+    // Default to quorum target (e.g. 4 orgs for majority) if configured, prioritizing governing orgs
+    const quorumTarget = parseInt(process.env.FABRIC_ENDORSEMENT_QUORUM || '4', 10);
+    const fallbackPriority = ['ECTAMSP', 'BanksMSP', 'NBEMSP', 'ECXMSP', 'CustomsMSP', 'ShippingMSP'];
+    for (const msp of fallbackPriority) {
+      if (orgs.size >= quorumTarget) break;
+      orgs.add(msp);
+    }
+
+    return Array.from(orgs);
+  }
+
   /** Ensure a pooled gateway exists for the resolved signing identity.
    *  Outside an HTTP request this also selects the process default signer;
    *  inside a request the global default is left alone. Used at startup and
@@ -874,15 +928,14 @@ export class FabricService {
           argumentCount: args.length,
         });
 
-        // Ask Gateway to route the proposal to peers from every consortium MSP.
-        // This selects candidate endorsing organizations; the committed chaincode
-        // definition's endorsement policy is what determines which endorsements
-        // are required for a transaction to be VALID. Report actual endorsers from
-        // the committed envelope below instead of assuming every requested MSP signed.
+        // Ask Gateway to route the proposal to peers from candidate endorsing organizations.
+        // We dynamically resolve required endorsing MSPs (or quorum) rather than forcing all 6
+        // peers synchronously on every write, preventing massive latency and single-peer fragility.
         const transaction = contract.createTransaction(functionName);
-        // ✅ CRITICAL FIX: Re-enable setEndorsingOrganizations to ensure all 6 peers endorse
-        // Without this, only 1-2 peers get the state update, causing "does not exist" errors
-        transaction.setEndorsingOrganizations(...CONSORTIUM_PEER_MSPS);
+        const requestedOrgs = this.resolveEndorsingOrgs(targetMspId, functionName);
+        if (requestedOrgs.length > 0) {
+          transaction.setEndorsingOrganizations(...requestedOrgs);
+        }
         const txId = transaction.getTransactionId();
         attemptTxId = txId;
         
@@ -924,10 +977,10 @@ export class FabricService {
             endorsement: {
               policyStatus: 'NOT_RESOLVED',
               policySource: 'Committed channel chaincode definition; not included in the transaction envelope',
-              requestedOrganizations: CONSORTIUM_PEER_MSPS,
+              requestedOrganizations: requestedOrgs,
               actualOrganizations: committedDetails.endorsers.map((endorser) => endorser.mspId),
               verifiedFromLedger: true,
-              allRequestedOrganizationsEndorsed: CONSORTIUM_PEER_MSPS.every((mspId) =>
+              allRequestedOrganizationsEndorsed: requestedOrgs.every((mspId) =>
                 committedDetails.endorsers.some((endorser) => endorser.mspId === mspId)),
             },
           };
@@ -968,10 +1021,10 @@ export class FabricService {
           endorsement: {
             policyStatus: 'NOT_RESOLVED',
             policySource: 'Committed channel chaincode definition; not included in the transaction envelope',
-            requestedOrganizations: CONSORTIUM_PEER_MSPS,
+            requestedOrganizations: requestedOrgs,
             actualOrganizations: committedDetails?.endorsers.map((endorser) => endorser.mspId),
             verifiedFromLedger: !!committedDetails,
-            allRequestedOrganizationsEndorsed: !!committedDetails && CONSORTIUM_PEER_MSPS.every((mspId) =>
+            allRequestedOrganizationsEndorsed: !!committedDetails && requestedOrgs.every((mspId) =>
               committedDetails.endorsers.some((endorser) => endorser.mspId === mspId)),
           },
         };
@@ -1014,10 +1067,10 @@ export class FabricService {
             endorsement: {
               policyStatus: 'NOT_RESOLVED',
               policySource: 'Committed channel chaincode definition; not included in the transaction envelope',
-              requestedOrganizations: CONSORTIUM_PEER_MSPS,
+              requestedOrganizations: requestedOrgs,
               actualOrganizations: committedDetails.endorsers.map((endorser) => endorser.mspId),
               verifiedFromLedger: true,
-              allRequestedOrganizationsEndorsed: CONSORTIUM_PEER_MSPS.every((mspId) =>
+              allRequestedOrganizationsEndorsed: requestedOrgs.every((mspId) =>
                 committedDetails.endorsers.some((endorser) => endorser.mspId === mspId)),
             },
           };
