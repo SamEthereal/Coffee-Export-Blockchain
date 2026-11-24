@@ -1,0 +1,25 @@
+{
+  "name": "coffee-export-blockchain",
+  "version": "2.0.0",
+  "description": "Ethiopian Coffee Export Consortium Blockchain System (CECBS)",
+  "private": true,
+  "scripts": {
+    "dev:services": "docker compose -f docker-compose.dev.yml up -d",
+    "dev:services:down": "docker compose -f docker-compose.dev.yml down",
+    "dev:api": "npm --prefix api run dev",
+    "dev:ui": "npm --prefix ui run dev",
+    "build:api": "npm --prefix api run build",
+    "build:ui": "npm --prefix ui run build",
+    "fabric:up": "docker compose -f docker-compose-fabric.yml up -d",
+    "fabric:down": "docker compose -f docker-compose-fabric.yml down"
+  },
+  "keywords": [
+    "hyperledger-fabric",
+    "blockchain",
+    "coffee-export",
+    "trade-finance",
+    "consortium"
+  ],
+  "author": "Ethiopian Coffee Export Consortium",
+  "license": "UNLICENSED"
+}

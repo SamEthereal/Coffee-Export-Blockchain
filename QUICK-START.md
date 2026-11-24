@@ -1,123 +1,127 @@
-# Quick Start - Document Examination to Payment Release
-
-## Your Current State
-- ✅ Contract: CONTRACT1794809015706
-- ✅ LC: LC-CONTRACT1794809015706 (Status: FOREX_ALLOCATED)
-- ✅ Shipment: SHIP1794897257941 (Status: DELIVERED)
-- ✅ Documents: 3 documents uploaded
-
-## 3-Step Workflow
-
-### Step 1: Document Examination (5 minutes)
-```
-1. Refresh browser (Ctrl+Shift+R)
-2. Banks Portal → Document Examination tab
-3. Click "Examine Documents" on your LC
-4. Click "Approve" on each of 3 documents
-5. Click "Mark LC as Compliant & Ready for Payment"
-   → LC status becomes UTILIZED
-```
-
-### Step 2: Payment Release (2 minutes)
-```
-1. Go to Payment Release tab
-2. Click "Release Payment" on your LC
-3. Confirm
-   → LC status becomes PAYMENT_RELEASED
-   → MT103 SWIFT message auto-created ✅
-```
-
-### Step 3: View SWIFT Messages (1 minute)
-```
-1. Go to Communication & Issues tab
-2. See MT103 payment message
-3. View details (optional)
-```
-
-## Expected Results
-
-### Document Examination Tab
-- Shows: LC-CONTRACT1794809015706
-- Documents: 3 shipping documents from SHIP1794897257941
-- Action: Approve each document
-
-### Payment Release Tab  
-- Shows: LC-CONTRACT1794809015706 (after examination)
-- Status: UTILIZED, all docs verified
-- Action: Release payment
-
-### Communication & Issues Tab
-- Shows: MT103 SWIFT message (after payment release)
-- Type: MT103 Payment
-- Status: DRAFT
-- Amount: Your LC amount
-
-## Console Logs to Watch
-
-Open DevTools (F12) → Console:
-
-```javascript
-// Document Examination
-[BANKS] ✅ LC LC-CONTRACT1794809015706 ready for examination
-[TAB3] 📄 Fetching CUSTOMS_DECLARATION documents
-[TAB3] ✅ Fetched 3 CUSTOMS_DECLARATION documents
-[TAB3] 📚 Total documents (LC + Shipment): 3
-
-// Payment Release  
-[PAYMENT METHODS] ✅ Including LC-CONTRACT1794809015706 - status is UTILIZED
-[BANKS] Payment released successfully
-
-// SWIFT
-[PAYMENT RELEASE] Auto-creating MT103 SWIFT message
-[PAYMENT RELEASE] ✅ MT103 SWIFT message auto-created
-```
-
-## Quick Verification
-
-### After Document Examination:
-```bash
-# Check LC status changed to UTILIZED
-docker exec cecbs-postgres psql -U cecbs -d cecbs -t -c "SELECT status FROM letters_of_credit WHERE lc_id = 'LC-CONTRACT1794809015706';"
-# Expected: UTILIZED
-```
-
-### After Payment Release:
-```bash
-# Check LC status changed to PAYMENT_RELEASED
-docker exec cecbs-postgres psql -U cecbs -d cecbs -t -c "SELECT status FROM letters_of_credit WHERE lc_id = 'LC-CONTRACT1794809015706';"
-# Expected: PAYMENT_RELEASED
-
-# Check MT103 SWIFT message created
-docker exec cecbs-postgres psql -U cecbs -d cecbs -c "SELECT message_id, message_type FROM swift_messages WHERE lc_id = 'LC-CONTRACT1794809015706';"
-# Expected: 1 row with message_type = MT103
-```
-
-## Troubleshooting
-
-| Issue | Solution |
-|-------|----------|
-| LC not in Document Examination tab | Check LC status is FOREX_ALLOCATED and shipment is DELIVERED |
-| Documents not loading | Check browser console for fetch errors, verify shipment has documents |
-| LC not in Payment Release tab | Complete Document Examination first, LC must be UTILIZED |
-| No SWIFT messages | MT103 only created during payment release, check API logs |
-
-## Timeline
-
-```
-Start → Document Examination (5 min) → Payment Release (2 min) → SWIFT Messages (1 min) → Done!
-         ↓                              ↓                          ↓
-    FOREX_ALLOCATED              UTILIZED                  PAYMENT_RELEASED
-                                                          + MT103 Created
-```
-
-## Ready?
-
-**Refresh your browser and go to Banks Portal → Document Examination tab!**
-
-Your LC should be waiting there with all 3 shipping documents ready for examination.
+# ☕ CECBS - Fast Quick Start Guide
+> **Ethiopian Coffee Export Consortium Blockchain System (CECBS)**  
+> Production-grade trade finance, logistics, and compliance platform.
 
 ---
 
-**Total Time: ~8 minutes**  
-**Difficulty: Easy**  
-**Result: Complete end-to-end workflow with SWIFT messages ✅**
+## ⚡ 10-Second Quick Start (Fast Dev Mode)
+
+The project includes a **Tier 1 Fast Dev Mode** that boots in seconds with **<300MB RAM** using a built-in **Simulated Ledger Engine**. You do **not** need to start 36 heavy Hyperledger Fabric containers to develop, test, or demonstrate the application.
+
+### Step 1: Start Backing Services
+Run the launcher for your operating system:
+
+**Windows (PowerShell):**
+```powershell
+.\start-dev.ps1
+```
+
+**macOS / Linux / WSL / Git Bash:**
+```bash
+chmod +x start-dev.sh
+./start-dev.sh
+```
+
+*(Alternatively, via standard Docker Compose: `docker compose -f docker-compose.dev.yml up -d`)*
+
+### Step 2: Start API Server
+In a new terminal:
+```bash
+cd api
+npm install
+npm run dev
+```
+> The API automatically validates your environment, connects to PostgreSQL, activates the **Simulated Ledger Engine**, and starts listening at `http://localhost:3001`.
+
+### Step 3: Start UI Portals
+In another terminal:
+```bash
+cd ui
+npm install
+npm run dev
+```
+> The Next.js frontend will be live at `http://localhost:3000`.
+
+---
+
+## 🔐 Pre-Seeded Portal Login Credentials
+
+All sample accounts are pre-seeded in the database with the baseline schema:
+
+| Organization / Portal | Username | Password | Role / Primary Capability |
+|---|---|---|---|
+| **System Administrator** | `admin` | `admin123` | Full administrative control & audit trail |
+| **ECTA Authority** | `ecta_admin` | `password123` | Contract approvals, licensing & quality verification |
+| **ECX Exchange** | `ecx_admin` | `password123` | Lot inspection & warehouse receipt validation |
+| **Commercial Banks** | `bank_admin` | `password123` | LC issuance, document examination & payment release |
+| **NBE Central Bank** | `nbe_admin` | `password123` | Forex allocation, retention policy & repatriation |
+| **Customs Commission** | `customs_admin` | `password123` | Export declarations, duty assessment & border clearance |
+| **Shipping Lines** | `shipping_admin` | `password123` | Freight booking, Bill of Lading & vessel dispatch |
+| **Coffee Exporter** | `exporter1` | `password123` | Sales contract registration, shipment build & LC requests |
+
+---
+
+## 🔄 End-to-End Export Workflow Walkthrough
+
+You can test the entire Ethiopian coffee export lifecycle across portals in **under 10 minutes**:
+
+1. **Register Sales Contract:**
+   - Log in as `exporter1` at `http://localhost:3000`.
+   - Go to **Contracts** tab → Click **Register New Sales Contract**.
+   - Fill in buyer details, coffee grade (e.g. Yirgacheffe Grade 1), quantity, and price. Submit.
+   - Status: `REGISTERED`.
+
+2. **ECTA Contract Review & Approval:**
+   - Log in as `ecta_admin`.
+   - Go to **Contracts Approval** → Review the contract and click **Approve Contract**.
+   - Status: `APPROVED`.
+
+3. **NBE Forex & Bank LC Issuance:**
+   - Log in as `bank_admin`.
+   - Open **LC & Documentary Collections** → Click **Issue LC** on the approved contract.
+   - Central Bank (NBE) allocates forex rate; LC status moves to `ISSUED` / `FOREX_ALLOCATED`.
+
+4. **Shipment Preparation & Customs Filing:**
+   - Log back in as `exporter1`.
+   - Go to **Shipments** → Click **Create Shipment** linked to your approved contract.
+   - Go to **Customs Declaration** tab → Submit export declaration to ECC.
+
+5. **Customs Clearance & Freight Booking:**
+   - Log in as `customs_admin` → Approve inspection and mark shipment as `CUSTOMS_CLEARED`.
+   - Log in as `shipping_admin` → Issue Bill of Lading (`B/L`) and record vessel dispatch from Djibouti port.
+
+6. **Document Examination & Payment Settlement:**
+   - Log in as `bank_admin`.
+   - Go to **Document Examination** tab → Review shipping documents and mark LC as `UTILIZED`.
+   - Go to **Payment Release** tab → Release payment.
+   - Automated SWIFT `MT103` message is generated, and NBE retention policy credits proceeds.
+
+---
+
+## 🛑 Stopping the Development Stack
+
+When you are done testing:
+
+**Windows (PowerShell):**
+```powershell
+.\stop-dev.ps1
+```
+
+**macOS / Linux / WSL:**
+```bash
+./stop-dev.sh
+```
+
+---
+
+## 🏛️ Full Fabric Consortium Mode (Production / Multi-Org)
+
+When you need to test against real Hyperledger Fabric 2.5 Raft consensus with live peer nodes and Go chaincode:
+
+```bash
+# Start full 6-org Fabric network + Orderer + Chaincode-as-a-Service
+docker compose -f docker-compose-fabric.yml up -d
+
+# Stop full network
+docker compose -f docker-compose-fabric.yml down
+```

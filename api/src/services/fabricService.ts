@@ -192,6 +192,20 @@ export class FabricService {
   }
 
   private connectCalled: boolean = false;
+  private mockTxCounter: number = 100;
+
+  /**
+   * Returns true when Fabric integration is disabled or running in mock simulation mode.
+   * Allows full local development without running 36 Fabric Docker containers.
+   */
+  public isSimulationMode(): boolean {
+    return (
+      process.env.FABRIC_ENABLED === 'false' ||
+      process.env.MOCK_LEDGER === 'true' ||
+      process.env.FABRIC_MODE === 'mock' ||
+      process.env.FABRIC_MODE === 'dev'
+    );
+  }
 
   // Normalize organization name to MSP ID
   private normalizeMspId(org: string): string {

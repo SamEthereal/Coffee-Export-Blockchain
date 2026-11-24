@@ -1,0 +1,106 @@
+# ==============================================================================
+# Ethiopian Coffee Export Consortium Blockchain System (CECBS)
+# Fast Local Development Backing Stack (Tier 1: Fast Dev Mode)
+#
+# Starts only essential persistent backing services in ~5 seconds (<300MB RAM):
+#   - PostgreSQL 15 (auto-initializes with 001_baseline_schema and 002_seed_initial_data)
+#   - Redis 7 (caching, sessions, pub/sub)
+#   - Kubo IPFS v0.26.0 (hybrid decentralized document storage)
+#
+# Run with:
+#   docker compose -f docker-compose.dev.yml up -d
+#
+# Teardown with:
+#   docker compose -f docker-compose.dev.yml down
+# ==============================================================================
+
+version: '3.8'
+
+networks:
+  cecbs-network:
+    name: cecbs-network
+    driver: bridge
+
+volumes:
+  postgres-dev-data:
+    name: cecbs-postgres-dev-data
+  redis-dev-data:
+    name: cecbs-redis-dev-data
+  ipfs-dev-data:
+    name: cecbs-ipfs-dev-data
+  ipfs-dev-staging:
+    name: cecbs-ipfs-dev-staging
+
+services:
+  # ----------------------------------------------------------------------------
+  # PostgreSQL Database Mirror
+  # ----------------------------------------------------------------------------
+  postgres:
+    image: postgres:15-alpine
+    container_name: cecbs-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: cecbs
+      POSTGRES_USER: cecbs
+      POSTGRES_PASSWORD: cecbs123
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-dev-data:/var/lib/postgresql/data
+      - ./api/src/migrations/001_baseline_schema.sql:/docker-entrypoint-initdb.d/01-baseline.sql:ro
+      - ./api/src/migrations/002_seed_initial_data.sql:/docker-entrypoint-initdb.d/02-seed.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cecbs -d cecbs"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    networks:
+      - cecbs-network
+
+  # ----------------------------------------------------------------------------
+  # Redis Cache & Sessions
+  # ----------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: cecbs-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-dev-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 3s
+    networks:
+      - cecbs-network
+
+  # ----------------------------------------------------------------------------
+  # Kubo IPFS Node (Decentralized Document Storage)
+  # ----------------------------------------------------------------------------
+  ipfs:
+    image: ipfs/kubo:v0.26.0
+    container_name: cecbs-ipfs
+    restart: unless-stopped
+    environment:
+      IPFS_PATH: /data/ipfs
+      IPFS_PROFILE: server
+    ports:
+      - "4001:4001"      # Swarm
+      - "5001:5001"      # API
+      - "8080:8080"      # Gateway
+    volumes:
+      - ipfs-dev-data:/data/ipfs
+      - ipfs-dev-staging:/export
+    healthcheck:
+      test: ["CMD", "ipfs", "id"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    networks:
+      - cecbs-network
