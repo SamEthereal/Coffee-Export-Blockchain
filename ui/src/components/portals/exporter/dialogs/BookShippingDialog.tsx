@@ -16,8 +16,8 @@ import {
   GhostButton,
   AnimatedButton,
   PortalField,
-  PORTAL_COLORS,
-} from '../common';
+  getPortalBrand,
+} from '@/components/shared/portal';
 
 export interface BookShippingDialogProps {
   open: boolean;
@@ -29,7 +29,7 @@ export interface BookShippingDialogProps {
   handleBookShipping: () => void;
 }
 
-const brandPrimary = PORTAL_COLORS.EXPORTER.primary;
+const brandPrimary = getPortalBrand('EXPORTER').primary;
 
 export const BookShippingDialog: React.FC<BookShippingDialogProps> = ({
   open,

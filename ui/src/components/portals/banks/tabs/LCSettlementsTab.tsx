@@ -16,7 +16,7 @@ import {
 import {
   SecondaryButton,
 } from '@/components/shared/portal';
-import PostDeliveryWorkflowPanel from '../../shared/PostDeliveryWorkflowPanel';
+import PostDeliveryWorkflowPanel from '@/components/shared/PostDeliveryWorkflowPanel';
 
 export interface LCSettlementsTabProps {
   deliveredShipments: any[];

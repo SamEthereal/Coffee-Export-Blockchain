@@ -21,7 +21,7 @@ import {
   DangerButton,
   StatusChip,
 } from '@/components/shared/portal';
-import { apiFetch } from '@/utils/apiClient';
+import { apiFetch } from '@/config/api.config';
 import BlockchainSignatureVerification from '@/components/documents/BlockchainSignatureVerification';
 
 export interface ForexDetailsDialogProps {

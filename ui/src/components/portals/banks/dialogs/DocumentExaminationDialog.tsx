@@ -24,7 +24,7 @@ import {
   PrimaryButton,
   DangerButton,
 } from '@/components/shared/portal';
-import { apiFetch } from '@/utils/apiClient';
+import { apiFetch } from '@/config/api.config';
 
 export interface DocumentExaminationDialogProps {
   open: boolean;

@@ -29,8 +29,8 @@ import {
   PrimaryButton,
   SecondaryButton,
   DangerButton,
-  PORTAL_COLORS,
-} from '../common';
+  getPortalBrand,
+} from '@/components/shared/portal';
 import { ExportContract } from '../../../../types';
 import { DocumentManagementPanel } from '@/components/documents';
 import BlockchainSignatureVerification from '@/components/documents/BlockchainSignatureVerification';
@@ -49,7 +49,7 @@ export interface ContractDetailDialogProps {
   handleRequestLCForContract: (contract: ExportContract) => void;
 }
 
-const brandPrimary = PORTAL_COLORS.EXPORTER.primary;
+const brandPrimary = getPortalBrand('EXPORTER').primary;
 
 export const ContractDetailDialog: React.FC<ContractDetailDialogProps> = ({
   open,

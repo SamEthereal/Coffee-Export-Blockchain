@@ -2,8 +2,8 @@ import React from 'react';
 import {
   PortalDialog,
   GhostButton,
-} from '../common';
-import PostDeliveryWorkflowPanel from '../../shared/PostDeliveryWorkflowPanel';
+} from '@/components/shared/portal';
+import PostDeliveryWorkflowPanel from '@/components/shared/PostDeliveryWorkflowPanel';
 
 export interface PostDeliveryDialogProps {
   open: boolean;

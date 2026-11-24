@@ -40,7 +40,7 @@ import {
   DangerButton,
   StatusChip,
 } from '@/components/shared/portal';
-import { apiFetch } from '@/utils/apiClient';
+import { apiFetch } from '@/config/api.config';
 import { DocumentManagementPanel } from '@/components/documents';
 import BlockchainSignatureVerification from '@/components/documents/BlockchainSignatureVerification';
 import BusinessActivityTimeline from '@/components/documents/BusinessActivityTimeline';

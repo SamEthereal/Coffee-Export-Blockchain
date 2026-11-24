@@ -22,8 +22,8 @@ import {
   AnimatedButton,
   SecondaryButton,
   PortalField,
-  PORTAL_COLORS,
-} from '../common';
+  getPortalBrand,
+} from '@/components/shared/portal';
 
 export interface CustomsDeclarationDialogProps {
   open: boolean;
@@ -37,7 +37,7 @@ export interface CustomsDeclarationDialogProps {
   handleSubmitCustomsDeclaration: () => void;
 }
 
-const brandPrimary = PORTAL_COLORS.EXPORTER.primary;
+const brandPrimary = getPortalBrand('EXPORTER').primary;
 
 export const CustomsDeclarationDialog: React.FC<CustomsDeclarationDialogProps> = ({
   open,

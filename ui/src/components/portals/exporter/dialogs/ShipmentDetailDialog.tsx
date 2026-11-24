@@ -18,7 +18,7 @@ import {
   GhostButton,
   PrimaryButton,
   SecondaryButton,
-} from '../common';
+} from '@/components/shared/portal';
 import { StatusChip } from '@/components/modern';
 
 export interface ShipmentDetailDialogProps {

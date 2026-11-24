@@ -22,7 +22,7 @@ import {
   GhostButton,
   AnimatedButton,
   PortalField,
-} from '../common';
+} from '@/components/shared/portal';
 import { DocumentManagementPanel } from '@/components/documents';
 
 export interface CreateShipmentDialogProps {

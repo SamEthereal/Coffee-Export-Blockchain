@@ -16,8 +16,8 @@ import {
   GhostButton,
   AnimatedButton,
   PortalField,
-  PORTAL_COLORS,
-} from '../common';
+  getPortalBrand,
+} from '@/components/shared/portal';
 
 export interface PaymentSettlementDialogProps {
   open: boolean;
@@ -32,7 +32,7 @@ export interface PaymentSettlementDialogProps {
   handleInitiatePayment: () => void;
 }
 
-const brandPrimary = PORTAL_COLORS.EXPORTER.primary;
+const brandPrimary = getPortalBrand('EXPORTER').primary;
 
 export const PaymentSettlementDialog: React.FC<PaymentSettlementDialogProps> = ({
   open,

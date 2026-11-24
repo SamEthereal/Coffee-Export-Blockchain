@@ -34,10 +34,10 @@ import {
   PrimaryButton,
   SecondaryButton,
   PortalField,
-  BankSelect,
-  PhoneInput,
-  PORTAL_COLORS,
-} from '../common';
+  getPortalBrand,
+} from '@/components/shared/portal';
+import BankSelect from '@/components/common/BankSelect';
+import PhoneInput from '@/components/common/PhoneInput';
 import { ExportContract } from '../../../../types';
 
 interface CreateContractDialogProps {
@@ -58,7 +58,7 @@ interface CreateContractDialogProps {
   isSupportedCoffeeType: (coffeeType: string) => boolean;
 }
 
-const brandPrimary = PORTAL_COLORS.EXPORTER.primary;
+const brandPrimary = getPortalBrand('EXPORTER').primary;
 
 export const CreateContractDialog: React.FC<CreateContractDialogProps> = ({
   open,
