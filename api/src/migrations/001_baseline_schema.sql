@@ -190,48 +190,6 @@ CREATE TABLE IF NOT EXISTS revoked_tokens (
 );
 
 -- ----------------------------------------------------------------------------
--- Table: applicant_credentials
--- ----------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS applicant_credentials (
-    id SERIAL PRIMARY KEY,
-    application_id INTEGER NOT NULL REFERENCES exporter_applications(id) ON DELETE CASCADE,
-    temp_username VARCHAR(100) UNIQUE NOT NULL,
-    temp_password_hash TEXT NOT NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    expires_at TIMESTAMP,
-    last_login TIMESTAMP,
-    login_attempts INTEGER DEFAULT 0,
-    is_active BOOLEAN DEFAULT TRUE,
-    UNIQUE(application_id)
-);
-
--- ----------------------------------------------------------------------------
--- Table: exporters
--- ----------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS exporters (
-    id SERIAL PRIMARY KEY,
-    exporter_id VARCHAR(100) UNIQUE NOT NULL,
-    company_name VARCHAR(255) NOT NULL,
-    ecta_license_number VARCHAR(100) UNIQUE NOT NULL,
-    license_status VARCHAR(20) NOT NULL DEFAULT 'ACTIVE',
-    capital_requirement DECIMAL(15, 2),
-    laboratory_certified BOOLEAN DEFAULT FALSE,
-    professional_taster VARCHAR(255),
-    taster_certificate VARCHAR(255),
-    license_expiry_date TIMESTAMP,
-    bank_name VARCHAR(255),
-    bank_branch VARCHAR(255),
-    bank_branch_code VARCHAR(50),
-    contact_person VARCHAR(255),
-    email VARCHAR(255),
-    phone VARCHAR(50),
-    address TEXT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    CONSTRAINT chk_license_status CHECK (license_status IN ('PENDING', 'ACTIVE', 'SUSPENDED', 'EXPIRED', 'REVOKED'))
-);
-
--- ----------------------------------------------------------------------------
 -- Table: exporter_applications
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS exporter_applications (
@@ -287,6 +245,48 @@ CREATE TABLE IF NOT EXISTS exporter_applications (
 );
 
 -- ----------------------------------------------------------------------------
+-- ----------------------------------------------------------------------------
+-- Table: applicant_credentials
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS applicant_credentials (
+    id SERIAL PRIMARY KEY,
+    application_id INTEGER NOT NULL REFERENCES exporter_applications(id) ON DELETE CASCADE,
+    temp_username VARCHAR(100) UNIQUE NOT NULL,
+    temp_password_hash TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    expires_at TIMESTAMP,
+    last_login TIMESTAMP,
+    login_attempts INTEGER DEFAULT 0,
+    is_active BOOLEAN DEFAULT TRUE,
+    UNIQUE(application_id)
+);
+
+-- ----------------------------------------------------------------------------
+-- Table: exporters
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS exporters (
+    id SERIAL PRIMARY KEY,
+    exporter_id VARCHAR(100) UNIQUE NOT NULL,
+    company_name VARCHAR(255) NOT NULL,
+    ecta_license_number VARCHAR(100) UNIQUE NOT NULL,
+    license_status VARCHAR(20) NOT NULL DEFAULT 'ACTIVE',
+    capital_requirement DECIMAL(15, 2),
+    laboratory_certified BOOLEAN DEFAULT FALSE,
+    professional_taster VARCHAR(255),
+    taster_certificate VARCHAR(255),
+    license_expiry_date TIMESTAMP,
+    bank_name VARCHAR(255),
+    bank_branch VARCHAR(255),
+    bank_branch_code VARCHAR(50),
+    contact_person VARCHAR(255),
+    email VARCHAR(255),
+    phone VARCHAR(50),
+    address TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT chk_license_status CHECK (license_status IN ('PENDING', 'ACTIVE', 'SUSPENDED', 'EXPIRED', 'REVOKED'))
+);
+
 -- Table: contracts
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS contracts (
@@ -332,28 +332,6 @@ CREATE TABLE IF NOT EXISTS contracts (
                     'CANCELLED', 'COMPLETED'))
 );
 
--- ----------------------------------------------------------------------------
--- Table: contract_documents
--- ----------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS contract_documents (
-    id SERIAL PRIMARY KEY,
-    contract_id VARCHAR(100) NOT NULL,
-    document_id VARCHAR(100) NOT NULL,
-    linked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    linked_by INTEGER,
-    notes TEXT,
-    UNIQUE(contract_id, document_id),
-    CONSTRAINT fk_contract 
-        FOREIGN KEY (contract_id) 
-        REFERENCES contracts(contract_id) 
-        ON DELETE CASCADE,
-    CONSTRAINT fk_document 
-        FOREIGN KEY (document_id) 
-        REFERENCES documents(document_id) 
-        ON DELETE CASCADE
-);
-
--- ----------------------------------------------------------------------------
 -- Table: approval_requirements
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS approval_requirements (
@@ -1726,6 +1704,28 @@ CREATE TABLE IF NOT EXISTS documents (
 );
 
 -- ----------------------------------------------------------------------------
+-- Table: contract_documents
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS contract_documents (
+    id SERIAL PRIMARY KEY,
+    contract_id VARCHAR(100) NOT NULL,
+    document_id VARCHAR(100) NOT NULL,
+    linked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    linked_by INTEGER,
+    notes TEXT,
+    UNIQUE(contract_id, document_id),
+    CONSTRAINT fk_contract 
+        FOREIGN KEY (contract_id) 
+        REFERENCES contracts(contract_id) 
+        ON DELETE CASCADE,
+    CONSTRAINT fk_document 
+        FOREIGN KEY (document_id) 
+        REFERENCES documents(document_id) 
+        ON DELETE CASCADE
+);
+
+-- ----------------------------------------------------------------------------
+-- ----------------------------------------------------------------------------
 -- Table: document_verifications
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS document_verifications (
@@ -2328,63 +2328,63 @@ CREATE INDEX IF NOT EXISTS idx_container_allocations_status ON container_allocat
 CREATE INDEX IF NOT EXISTS idx_stuffing_reports_container_id ON container_stuffing_reports(container_id);
 CREATE INDEX IF NOT EXISTS idx_stuffing_reports_container_number ON container_stuffing_reports(container_number);
 CREATE INDEX IF NOT EXISTS idx_stuffing_reports_stuffing_date ON container_stuffing_reports(stuffing_date);
-CREATE INDEX idx_declaration_amendments_declaration ON declaration_amendments(declaration_id);
-CREATE INDEX idx_declaration_amendments_status ON declaration_amendments(approval_status);
-CREATE INDEX idx_declaration_amendments_requested_at ON declaration_amendments(amendment_requested_at);
-CREATE INDEX idx_duty_calculations_declaration ON duty_calculations(declaration_id);
-CREATE INDEX idx_duty_calculations_calculated_at ON duty_calculations(calculated_at);
-CREATE INDEX idx_customs_valuations_declaration ON customs_valuations(declaration_id);
-CREATE INDEX idx_customs_valuations_method ON customs_valuations(valuation_method);
-CREATE INDEX idx_customs_valuations_status ON customs_valuations(approval_status);
-CREATE INDEX idx_customs_declarations_cancellation ON customs_declarations(cancellation_status) 
+CREATE INDEX IF NOT EXISTS idx_declaration_amendments_declaration ON declaration_amendments(declaration_id);
+CREATE INDEX IF NOT EXISTS idx_declaration_amendments_status ON declaration_amendments(approval_status);
+CREATE INDEX IF NOT EXISTS idx_declaration_amendments_requested_at ON declaration_amendments(amendment_requested_at);
+CREATE INDEX IF NOT EXISTS idx_duty_calculations_declaration ON duty_calculations(declaration_id);
+CREATE INDEX IF NOT EXISTS idx_duty_calculations_calculated_at ON duty_calculations(calculated_at);
+CREATE INDEX IF NOT EXISTS idx_customs_valuations_declaration ON customs_valuations(declaration_id);
+CREATE INDEX IF NOT EXISTS idx_customs_valuations_method ON customs_valuations(valuation_method);
+CREATE INDEX IF NOT EXISTS idx_customs_valuations_status ON customs_valuations(approval_status);
+CREATE INDEX IF NOT EXISTS idx_customs_declarations_cancellation ON customs_declarations(cancellation_status) 
     WHERE cancellation_status IS NOT NULL;
-CREATE INDEX idx_customs_tariffs_hs_code ON customs_tariffs(hs_code);
-CREATE INDEX idx_customs_tariffs_effective ON customs_tariffs(effective_from, effective_to);
-CREATE INDEX idx_customs_tariffs_origin ON customs_tariffs(country_of_origin);
-CREATE INDEX idx_trade_preferences_agreement ON trade_preferences(agreement_name);
-CREATE INDEX idx_trade_preferences_hs_code ON trade_preferences(hs_code);
-CREATE INDEX idx_trade_preferences_country_group ON trade_preferences(country_group);
-CREATE INDEX idx_trade_preferences_active ON trade_preferences(is_active) WHERE is_active = true;
-CREATE INDEX idx_retention_accounts_exporter ON retention_accounts(exporter_id);
-CREATE INDEX idx_retention_accounts_status ON retention_accounts(status);
-CREATE INDEX idx_retention_accounts_currency ON retention_accounts(currency);
-CREATE INDEX idx_retention_accounts_balance ON retention_accounts(current_balance);
-CREATE INDEX idx_retention_penalties_account ON retention_penalties(account_id);
-CREATE INDEX idx_retention_penalties_status ON retention_penalties(status);
-CREATE INDEX idx_retention_penalties_violation_type ON retention_penalties(violation_type);
-CREATE INDEX idx_retention_penalties_payment_deadline ON retention_penalties(payment_deadline);
-CREATE INDEX idx_retention_penalties_created ON retention_penalties(created_at);
-CREATE INDEX idx_retention_waivers_exporter ON retention_waivers(exporter_id);
-CREATE INDEX idx_retention_waivers_account ON retention_waivers(account_id);
-CREATE INDEX idx_retention_waivers_penalty ON retention_waivers(penalty_id);
-CREATE INDEX idx_retention_waivers_status ON retention_waivers(request_status);
-CREATE INDEX idx_retention_waivers_type ON retention_waivers(request_type);
-CREATE INDEX idx_retention_waivers_created ON retention_waivers(created_at);
-CREATE INDEX idx_retention_transactions_account ON retention_transactions(account_id);
-CREATE INDEX idx_retention_transactions_type ON retention_transactions(transaction_type);
-CREATE INDEX idx_retention_transactions_processed ON retention_transactions(processed_at);
-CREATE INDEX idx_retention_transactions_reference ON retention_transactions(reference_type, reference_id);
-CREATE INDEX idx_retention_policies_active ON retention_compliance_policies(is_active) WHERE is_active = true;
-CREATE INDEX idx_retention_policies_effective ON retention_compliance_policies(effective_from, effective_to);
-CREATE INDEX idx_retention_policies_product ON retention_compliance_policies(product_category);
-CREATE INDEX idx_user_2fa_settings_user ON user_2fa_settings(user_id);
-CREATE INDEX idx_user_2fa_settings_enabled ON user_2fa_settings(is_enabled) WHERE is_enabled = true;
-CREATE INDEX idx_user_sessions_user ON user_sessions(user_id);
-CREATE INDEX idx_user_sessions_active ON user_sessions(is_active) WHERE is_active = true;
-CREATE INDEX idx_user_sessions_expires ON user_sessions(expires_at);
-CREATE INDEX idx_user_sessions_last_activity ON user_sessions(last_activity);
-CREATE INDEX idx_user_sessions_token_hash ON user_sessions(token_hash);
-CREATE INDEX idx_2fa_verification_log_user ON user_2fa_verification_log(user_id);
-CREATE INDEX idx_2fa_verification_log_attempted ON user_2fa_verification_log(attempted_at);
-CREATE INDEX idx_2fa_verification_log_success ON user_2fa_verification_log(was_successful);
-CREATE INDEX idx_session_activity_log_session ON session_activity_log(session_id);
-CREATE INDEX idx_session_activity_log_user ON session_activity_log(user_id);
-CREATE INDEX idx_session_activity_log_occurred ON session_activity_log(occurred_at);
-CREATE INDEX idx_session_activity_log_type ON session_activity_log(activity_type);
-CREATE INDEX idx_trusted_devices_user ON user_trusted_devices(user_id);
-CREATE INDEX idx_trusted_devices_fingerprint ON user_trusted_devices(device_fingerprint);
-CREATE INDEX idx_trusted_devices_trusted ON user_trusted_devices(is_trusted) WHERE is_trusted = true;
-CREATE INDEX idx_trusted_devices_expires ON user_trusted_devices(expires_at);
+CREATE INDEX IF NOT EXISTS idx_customs_tariffs_hs_code ON customs_tariffs(hs_code);
+CREATE INDEX IF NOT EXISTS idx_customs_tariffs_effective ON customs_tariffs(effective_from, effective_to);
+CREATE INDEX IF NOT EXISTS idx_customs_tariffs_origin ON customs_tariffs(country_of_origin);
+CREATE INDEX IF NOT EXISTS idx_trade_preferences_agreement ON trade_preferences(agreement_name);
+CREATE INDEX IF NOT EXISTS idx_trade_preferences_hs_code ON trade_preferences(hs_code);
+CREATE INDEX IF NOT EXISTS idx_trade_preferences_country_group ON trade_preferences(country_group);
+CREATE INDEX IF NOT EXISTS idx_trade_preferences_active ON trade_preferences(is_active) WHERE is_active = true;
+CREATE INDEX IF NOT EXISTS idx_retention_accounts_exporter ON retention_accounts(exporter_id);
+CREATE INDEX IF NOT EXISTS idx_retention_accounts_status ON retention_accounts(status);
+CREATE INDEX IF NOT EXISTS idx_retention_accounts_currency ON retention_accounts(currency);
+CREATE INDEX IF NOT EXISTS idx_retention_accounts_balance ON retention_accounts(current_balance);
+CREATE INDEX IF NOT EXISTS idx_retention_penalties_account ON retention_penalties(account_id);
+CREATE INDEX IF NOT EXISTS idx_retention_penalties_status ON retention_penalties(status);
+CREATE INDEX IF NOT EXISTS idx_retention_penalties_violation_type ON retention_penalties(violation_type);
+CREATE INDEX IF NOT EXISTS idx_retention_penalties_payment_deadline ON retention_penalties(payment_deadline);
+CREATE INDEX IF NOT EXISTS idx_retention_penalties_created ON retention_penalties(created_at);
+CREATE INDEX IF NOT EXISTS idx_retention_waivers_exporter ON retention_waivers(exporter_id);
+CREATE INDEX IF NOT EXISTS idx_retention_waivers_account ON retention_waivers(account_id);
+CREATE INDEX IF NOT EXISTS idx_retention_waivers_penalty ON retention_waivers(penalty_id);
+CREATE INDEX IF NOT EXISTS idx_retention_waivers_status ON retention_waivers(request_status);
+CREATE INDEX IF NOT EXISTS idx_retention_waivers_type ON retention_waivers(request_type);
+CREATE INDEX IF NOT EXISTS idx_retention_waivers_created ON retention_waivers(created_at);
+CREATE INDEX IF NOT EXISTS idx_retention_transactions_account ON retention_transactions(account_id);
+CREATE INDEX IF NOT EXISTS idx_retention_transactions_type ON retention_transactions(transaction_type);
+CREATE INDEX IF NOT EXISTS idx_retention_transactions_processed ON retention_transactions(processed_at);
+CREATE INDEX IF NOT EXISTS idx_retention_transactions_reference ON retention_transactions(reference_type, reference_id);
+CREATE INDEX IF NOT EXISTS idx_retention_policies_active ON retention_compliance_policies(is_active) WHERE is_active = true;
+CREATE INDEX IF NOT EXISTS idx_retention_policies_effective ON retention_compliance_policies(effective_from, effective_to);
+CREATE INDEX IF NOT EXISTS idx_retention_policies_product ON retention_compliance_policies(product_category);
+CREATE INDEX IF NOT EXISTS idx_user_2fa_settings_user ON user_2fa_settings(user_id);
+CREATE INDEX IF NOT EXISTS idx_user_2fa_settings_enabled ON user_2fa_settings(is_enabled) WHERE is_enabled = true;
+CREATE INDEX IF NOT EXISTS idx_user_sessions_user ON user_sessions(user_id);
+CREATE INDEX IF NOT EXISTS idx_user_sessions_active ON user_sessions(is_active) WHERE is_active = true;
+CREATE INDEX IF NOT EXISTS idx_user_sessions_expires ON user_sessions(expires_at);
+CREATE INDEX IF NOT EXISTS idx_user_sessions_last_activity ON user_sessions(last_activity);
+CREATE INDEX IF NOT EXISTS idx_user_sessions_token_hash ON user_sessions(token_hash);
+CREATE INDEX IF NOT EXISTS idx_2fa_verification_log_user ON user_2fa_verification_log(user_id);
+CREATE INDEX IF NOT EXISTS idx_2fa_verification_log_attempted ON user_2fa_verification_log(attempted_at);
+CREATE INDEX IF NOT EXISTS idx_2fa_verification_log_success ON user_2fa_verification_log(was_successful);
+CREATE INDEX IF NOT EXISTS idx_session_activity_log_session ON session_activity_log(session_id);
+CREATE INDEX IF NOT EXISTS idx_session_activity_log_user ON session_activity_log(user_id);
+CREATE INDEX IF NOT EXISTS idx_session_activity_log_occurred ON session_activity_log(occurred_at);
+CREATE INDEX IF NOT EXISTS idx_session_activity_log_type ON session_activity_log(activity_type);
+CREATE INDEX IF NOT EXISTS idx_trusted_devices_user ON user_trusted_devices(user_id);
+CREATE INDEX IF NOT EXISTS idx_trusted_devices_fingerprint ON user_trusted_devices(device_fingerprint);
+CREATE INDEX IF NOT EXISTS idx_trusted_devices_trusted ON user_trusted_devices(is_trusted) WHERE is_trusted = true;
+CREATE INDEX IF NOT EXISTS idx_trusted_devices_expires ON user_trusted_devices(expires_at);
 CREATE INDEX IF NOT EXISTS idx_notifications_role ON notifications(role);
 CREATE INDEX IF NOT EXISTS idx_notifications_exporter_id ON notifications(exporter_id);
 CREATE INDEX IF NOT EXISTS idx_notifications_user_id ON notifications(user_id);
@@ -2404,3 +2404,14 @@ CREATE INDEX IF NOT EXISTS idx_user_activity_log_user_id ON user_activity_log(us
 CREATE INDEX IF NOT EXISTS idx_user_activity_log_action ON user_activity_log(action);
 CREATE INDEX IF NOT EXISTS idx_user_activity_log_target ON user_activity_log(target_user_id);
 CREATE INDEX IF NOT EXISTS idx_user_activity_log_created ON user_activity_log(created_at DESC);
+
+-- ----------------------------------------------------------------------------
+-- Schema Migrations Tracking
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS _schema_migrations (
+    id SERIAL PRIMARY KEY,
+    migration_name VARCHAR(255) UNIQUE NOT NULL,
+    applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+INSERT INTO _schema_migrations (migration_name) VALUES ('001_baseline_schema') ON CONFLICT DO NOTHING;
+

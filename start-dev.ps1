@@ -82,7 +82,7 @@ Write-Host ""
 Write-Host "=================================================================" -ForegroundColor Cyan
 Write-Host "                  FAST DEV STACK IS ACTIVE                       " -ForegroundColor Green
 Write-Host "=================================================================" -ForegroundColor Cyan
-Write-Host "  Database:     localhost:5432  (DB: cecbs, User: cecbs)" -ForegroundColor White
+Write-Host "  Database:     localhost:5433  (DB: cecbs, User: cecbs)" -ForegroundColor White
 Write-Host "  Redis Cache:  localhost:6379" -ForegroundColor White
 Write-Host "  IPFS API:     localhost:5001  (Gateway: http://localhost:8080/ipfs)" -ForegroundColor White
 Write-Host "  Blockchain:   SIMULATED (Built-in Simulated Ledger Engine Active)" -ForegroundColor Cyan

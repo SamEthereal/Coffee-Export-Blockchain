@@ -25,7 +25,7 @@ INSERT INTO roles (name, description, permissions) VALUES
 ON CONFLICT (name) DO NOTHING;
 
 -- ----------------------------------------------------------------------------
--- 2. System Default Users (Passwords hashed with bcrypt 10 rounds)
+-- 2. System Default Users (Passwords hashed with bcrypt 10 rounds: password123 / admin123)
 -- ----------------------------------------------------------------------------
 -- admin / admin123
 INSERT INTO users (username, password_hash, email, full_name, organization, role, status) VALUES
@@ -70,43 +70,45 @@ ON CONFLICT (username) DO NOTHING;
 -- ----------------------------------------------------------------------------
 -- 3. Exporter Profiles
 -- ----------------------------------------------------------------------------
-INSERT INTO exporters (exporter_id, company_name, tin_number, license_number, contact_person, email, phone, status) VALUES
-  ('EXP001', 'Ethiopian Specialty Coffee Exporter', '0012345678', 'LIC-ECTA-2026-001', 'Abebe Bikila', 'exporter@test.com', '+251911234567', 'ACTIVE')
+INSERT INTO exporters (exporter_id, company_name, ecta_license_number, license_status, contact_person, email, phone) VALUES
+  ('EXP001', 'Ethiopian Specialty Coffee Exporter', 'LIC-ECTA-2026-001', 'ACTIVE', 'Abebe Bikila', 'exporter@test.com', '+251911234567')
 ON CONFLICT (exporter_id) DO NOTHING;
 
 -- ----------------------------------------------------------------------------
 -- 4. Initial Approval Requirements
 -- ----------------------------------------------------------------------------
-INSERT INTO approval_requirements (entity_type, action_type, required_roles, required_msp_ids, quorum_count, description) VALUES
-  ('CONTRACT', 'APPROVE', '["ECTA", "ECTA_ADMIN"]'::jsonb, '["ECTAMSP"]'::jsonb, 1, 'ECTA approval required for sales contract registration'),
-  ('LETTER_OF_CREDIT', 'ISSUE', '["BANKS", "BANK_ADMIN"]'::jsonb, '["BanksMSP"]'::jsonb, 1, 'Commercial bank issuance for Letter of Credit'),
-  ('FOREX_ALLOCATION', 'ALLOCATE', '["NBE", "NBE_ADMIN"]'::jsonb, '["NBEMSP"]'::jsonb, 1, 'National Bank of Ethiopia foreign exchange allocation'),
-  ('QUALITY_INSPECTION', 'CERTIFY', '["ECTA", "ECTA_ADMIN"]'::jsonb, '["ECTAMSP"]'::jsonb, 1, 'ECTA Quality & Cupping Certificate issuance'),
-  ('CUSTOMS_DECLARATION', 'CLEAR', '["CUSTOMS", "CUSTOMS_ADMIN"]'::jsonb, '["CustomsMSP"]'::jsonb, 1, 'Customs export clearance and release'),
-  ('BILL_OF_LADING', 'ISSUE', '["SHIPPING", "SHIPPING_ADMIN"]'::jsonb, '["ShippingMSP"]'::jsonb, 1, 'Shipping company Bill of Lading issuance')
-ON CONFLICT (entity_type, action_type) DO NOTHING;
+INSERT INTO approval_requirements (document_type, entity_type, min_approvers, required_roles, approval_order, description, active) VALUES
+  ('CONTRACT', 'SALES_CONTRACT', 1, ARRAY['ECTA', 'ECTA_ADMIN'], 1, 'ECTA approval required for sales contract registration', true),
+  ('LETTER_OF_CREDIT', 'LC', 1, ARRAY['BANKS', 'BANK_ADMIN'], 1, 'Commercial bank issuance for Letter of Credit', true),
+  ('FOREX_ALLOCATION', 'FOREX', 1, ARRAY['NBE', 'NBE_ADMIN'], 1, 'National Bank of Ethiopia foreign exchange allocation', true),
+  ('QUALITY_CERTIFICATE', 'INSPECTION', 1, ARRAY['ECTA', 'ECTA_ADMIN'], 1, 'ECTA Quality & Cupping Certificate issuance', true),
+  ('CUSTOMS_CLEARANCE', 'DECLARATION', 1, ARRAY['CUSTOMS', 'CUSTOMS_ADMIN'], 1, 'Customs export clearance and release', true),
+  ('BILL_OF_LADING', 'SHIPMENT', 1, ARRAY['SHIPPING', 'SHIPPING_ADMIN'], 1, 'Shipping company Bill of Lading issuance', true)
+ON CONFLICT (document_type, entity_type) DO NOTHING;
 
 -- ----------------------------------------------------------------------------
 -- 5. Standard Customs Tariffs & Preferences
 -- ----------------------------------------------------------------------------
-INSERT INTO customs_tariffs (hs_code, description, duty_rate, excise_rate, vat_rate, surtax_rate, withholding_tax_rate) VALUES
-  ('0901.11.00', 'Coffee, not roasted, not decaffeinated (Arabica)', 0.00, 0.00, 0.00, 0.00, 0.00),
-  ('0901.12.00', 'Coffee, not roasted, decaffeinated', 0.00, 0.00, 0.00, 0.00, 0.00),
-  ('0901.21.00', 'Coffee, roasted, not decaffeinated', 5.00, 0.00, 15.00, 0.00, 2.00),
-  ('0901.22.00', 'Coffee, roasted, decaffeinated', 5.00, 0.00, 15.00, 0.00, 2.00)
-ON CONFLICT (hs_code) DO NOTHING;
+INSERT INTO customs_tariffs (hs_code, description, duty_rate, excise_rate, vat_rate, effective_from) VALUES
+  ('0901.11.00', 'Coffee, not roasted, not decaffeinated (Arabica)', 0.00, 0.00, 0.00, '2026-01-01'),
+  ('0901.12.00', 'Coffee, not roasted, decaffeinated', 0.00, 0.00, 0.00, '2026-01-01'),
+  ('0901.21.00', 'Coffee, roasted, not decaffeinated', 5.00, 0.00, 15.00, '2026-01-01'),
+  ('0901.22.00', 'Coffee, roasted, decaffeinated', 5.00, 0.00, 15.00, '2026-01-01');
 
-INSERT INTO trade_preferences (country_code, agreement_name, preferential_duty_rate, preferential_vat_rate, requires_certificate_of_origin) VALUES
-  ('EU', 'Everything But Arms (EBA) / GSP', 0.00, 0.00, true),
-  ('US', 'African Growth and Opportunity Act (AGOA) / GSP', 0.00, 0.00, true),
-  ('CN', 'China Duty-Free Special Treatment for LDCs', 0.00, 0.00, true),
-  ('JP', 'Japan GSP Scheme for LDCs', 0.00, 0.00, true),
-  ('AE', 'UAE-Ethiopia Bilateral Trade Preference', 0.00, 0.00, true)
-ON CONFLICT (country_code, agreement_name) DO NOTHING;
+INSERT INTO trade_preferences (agreement_name, country_group, hs_code, preferential_rate, standard_rate, valid_from, is_active, notes) VALUES
+  ('Everything But Arms (EBA)', 'EU', '0901.11.00', 0.00, 0.00, '2026-01-01', true, 'Duty-free export to European Union'),
+  ('African Growth and Opportunity Act (AGOA)', 'US', '0901.11.00', 0.00, 0.00, '2026-01-01', true, 'Duty-free export to United States'),
+  ('China Special Preferential Tariff', 'CN', '0901.11.00', 0.00, 0.00, '2026-01-01', true, 'Zero tariff for LDC origins'),
+  ('Japan GSP Scheme', 'JP', '0901.11.00', 0.00, 0.00, '2026-01-01', true, 'Generalized Scheme of Preferences');
 
 -- ----------------------------------------------------------------------------
 -- 6. Initial NBE Retention Policy (70/30 retention rule)
 -- ----------------------------------------------------------------------------
-INSERT INTO retention_compliance_policies (policy_code, name, commodity_type, retention_percentage, surrender_percentage, holding_period_days, description) VALUES
-  ('NBE-COFFEE-2026', 'NBE Coffee Export Retention Rule (Directives)', 'COFFEE', 70.00, 30.00, 120, '70% retention in Exporter Foreign Currency Account, 30% converted to ETB at prevailing rate')
-ON CONFLICT (policy_code) DO NOTHING;
+INSERT INTO retention_compliance_policies (policy_name, policy_type, retention_percentage, minimum_retention_period_days, grace_period_days, product_category, effective_from, is_active, description) VALUES
+  ('NBE Coffee Export Retention Rule (Directives)', 'SECTOR_SPECIFIC', 70.00, 120, 30, 'COFFEE', '2026-01-01', true, '70% retention in Exporter Foreign Currency Account, 30% converted to ETB at prevailing rate');
+
+-- ----------------------------------------------------------------------------
+-- Schema Migrations Tracking
+-- ----------------------------------------------------------------------------
+INSERT INTO _schema_migrations (migration_name) VALUES ('002_seed_initial_data') ON CONFLICT DO NOTHING;
+

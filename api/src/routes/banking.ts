@@ -18,7 +18,7 @@ import { dedupeById, isValidLC } from '../utils/dataFilters';
 import { body, param } from 'express-validator';
 import { resolveDocumentPath } from '../utils/fileUtils';
 import { validateBankAccount, validateBIC } from '../utils/fieldValidation';
-import { cadRoutes, consignmentRoutes, lcDiscrepancyRoutes } from './banking';
+import { cadRoutes, consignmentRoutes, lcDiscrepancyRoutes } from './banking/index';
 
 /** Field validation 2026-11-16: BIC must be 8/11 chars (ISO 9362). */
 const bicValidator = (field: string, label: string) =>
