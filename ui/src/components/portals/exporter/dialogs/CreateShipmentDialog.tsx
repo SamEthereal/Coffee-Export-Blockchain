@@ -22,6 +22,7 @@ import {
   GhostButton,
   AnimatedButton,
   PortalField,
+  getPortalBrand,
 } from '@/components/shared/portal';
 import { DocumentManagementPanel } from '@/components/documents';
 
@@ -37,7 +38,10 @@ export interface CreateShipmentDialogProps {
   applyContractToShipment: (contract: any, forexRate?: number) => void;
   handleCreateShipment: () => void;
   isContractApproved: (contract: any) => boolean;
+  shipments?: any[];
 }
+
+const brandPrimary = getPortalBrand('EXPORTER').primary;
 
 export const CreateShipmentDialog: React.FC<CreateShipmentDialogProps> = ({
   open,
@@ -51,7 +55,19 @@ export const CreateShipmentDialog: React.FC<CreateShipmentDialogProps> = ({
   applyContractToShipment,
   handleCreateShipment,
   isContractApproved,
+  shipments = [],
 }) => {
+  const isECXShipment = newShipment?.channel === 'ECX';
+  const isUnionShipment = newShipment?.channel === 'Union';
+  const isDirectExport = newShipment?.channel === 'Direct Export';
+
+  const shipmentFieldValidation = {
+    icoRequired: true,
+    ecxLotRequired: isECXShipment,
+    unionApprovalRequired: isUnionShipment,
+    bondReferenceRequired: isDirectExport,
+  };
+
   return (
     <PortalDialog brand='EXPORTER' 
       open={open} 

@@ -172,7 +172,7 @@ interface ExportContract {
   approvalDate?: string;
 }
 
-const COFFEE_TYPE_OPTIONS = [
+export const COFFEE_TYPE_OPTIONS = [
   { value: 'Yirgacheffe Grade 1', label: 'Yirgacheffe Grade 1 - Washed' },
   { value: 'Yirgacheffe Grade 2', label: 'Yirgacheffe Grade 2 - Washed' },
   { value: 'Sidamo Grade 2', label: 'Sidamo Grade 2 - Washed' },
@@ -4692,6 +4692,7 @@ const ExporterPortal: React.FC = () => {
       handleCreateContract={handleCreateContract}
       hasActionableRejectionFeedback={hasActionableRejectionFeedback}
       isSupportedCoffeeType={isSupportedCoffeeType}
+      profile={profile}
     />
 
     {/* Contract Detail Dialog */}
@@ -4819,6 +4820,7 @@ const ExporterPortal: React.FC = () => {
       applyContractToShipment={applyContractToShipment}
       handleCreateShipment={handleCreateShipment}
       isContractApproved={isContractApproved}
+      shipments={shipments}
     />
 
     {/* Post Delivery Dialog */}
@@ -4863,7 +4865,7 @@ const ExporterPortal: React.FC = () => {
         setPaymentSettlementDialogOpen(true);
       }}
       handleViewAuditTrail={(entityType, entityId) => {
-        setAuditEntityType(entityType);
+        setAuditEntityType(entityType as any);
         setAuditEntityId(entityId);
         setShowAuditTrail(true);
       }}

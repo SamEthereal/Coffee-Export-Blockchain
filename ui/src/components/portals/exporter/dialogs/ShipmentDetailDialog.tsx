@@ -87,9 +87,7 @@ export const ShipmentDetailDialog: React.FC<ShipmentDetailDialogProps> = ({
                 size="small"
                 startIcon={<LocalShipping />}
                 onClick={() => {
-                  setSelectedShipmentForShipping(selectedShipmentForDetail);
-                  setShipmentDetailDialogOpen(false);
-                  setBookShippingDialogOpen(true);
+                  handleOpenBookShipping(selectedShipmentForDetail);
                 }}
               >
                 Book Freight
@@ -100,9 +98,7 @@ export const ShipmentDetailDialog: React.FC<ShipmentDetailDialogProps> = ({
                 size="small"
                 startIcon={<AttachMoney />}
                 onClick={() => {
-                  setSelectedShipmentForPayment(selectedShipmentForDetail);
-                  setShipmentDetailDialogOpen(false);
-                  setPaymentSettlementDialogOpen(true);
+                  handleOpenPaymentSettlement(selectedShipmentForDetail);
                 }}
               >
                 Initiate Payment

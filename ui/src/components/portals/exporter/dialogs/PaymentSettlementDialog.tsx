@@ -18,6 +18,7 @@ import {
   PortalField,
   getPortalBrand,
 } from '@/components/shared/portal';
+import { bankAccountHelperText, validateBankAccount } from '@/utils/fieldValidation';
 
 export interface PaymentSettlementDialogProps {
   open: boolean;

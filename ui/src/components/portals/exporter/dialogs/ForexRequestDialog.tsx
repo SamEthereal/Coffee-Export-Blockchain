@@ -24,6 +24,7 @@ export interface ForexRequestDialogProps {
   isRequestingForex: boolean;
   approvedContracts: any[];
   lcStatuses: any[];
+  contracts?: any[];
 }
 
 export const ForexRequestDialog: React.FC<ForexRequestDialogProps> = ({
@@ -35,7 +36,10 @@ export const ForexRequestDialog: React.FC<ForexRequestDialogProps> = ({
   isRequestingForex,
   approvedContracts,
   lcStatuses,
+  contracts,
 }) => {
+  const contractList = contracts || approvedContracts || [];
+
   return (
     <PortalDialog brand='EXPORTER'
       open={open}
@@ -74,7 +78,7 @@ export const ForexRequestDialog: React.FC<ForexRequestDialogProps> = ({
             label="Contract"
             value={forexRequestForm.contractId}
             onChange={(e) => {
-              const c = contracts.find((x) => x.contractId === e.target.value);
+              const c = contractList.find((x: any) => x.contractId === e.target.value);
               setForexRequestForm({
                 ...forexRequestForm,
                 contractId: e.target.value,
@@ -85,7 +89,7 @@ export const ForexRequestDialog: React.FC<ForexRequestDialogProps> = ({
             required
             helperText="The sales contract this forex is for"
           >
-            {contracts.map((c) => (
+            {contractList.map((c: any) => (
               <MenuItem key={c.contractId} value={c.contractId}>
                 {c.contractId} — {c.buyerName || c.buyerId} (${Number(c.totalValue || 0).toLocaleString()} {c.currency})
               </MenuItem>

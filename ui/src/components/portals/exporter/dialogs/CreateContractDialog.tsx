@@ -40,6 +40,19 @@ import BankSelect from '@/components/common/BankSelect';
 import PhoneInput from '@/components/common/PhoneInput';
 import { ExportContract } from '../../../../types';
 
+export const COFFEE_TYPE_OPTIONS = [
+  { value: 'Yirgacheffe Grade 1', label: 'Yirgacheffe Grade 1 - Washed' },
+  { value: 'Yirgacheffe Grade 2', label: 'Yirgacheffe Grade 2 - Washed' },
+  { value: 'Sidamo Grade 2', label: 'Sidamo Grade 2 - Washed' },
+  { value: 'Sidamo Grade 3', label: 'Sidamo Grade 3 - Washed' },
+  { value: 'Guji Grade 1', label: 'Guji Grade 1 - Natural' },
+  { value: 'Guji Grade 2', label: 'Guji Grade 2 - Natural' },
+  { value: 'Limu Grade 2', label: 'Limu Grade 2 - Washed' },
+  { value: 'Limu Grade 3', label: 'Limu Grade 3 - Washed' },
+  { value: 'Harrar Grade 4', label: 'Harrar Grade 4 - Natural' },
+  { value: 'Jimma Grade 5', label: 'Jimma Grade 5 - Washed' },
+] as const;
+
 interface CreateContractDialogProps {
   open: boolean;
   onClose: () => void;
@@ -56,6 +69,7 @@ interface CreateContractDialogProps {
   handleCreateContract: () => void;
   hasActionableRejectionFeedback: (contract: any) => boolean;
   isSupportedCoffeeType: (coffeeType: string) => boolean;
+  profile?: any;
 }
 
 const brandPrimary = getPortalBrand('EXPORTER').primary;
@@ -76,6 +90,7 @@ export const CreateContractDialog: React.FC<CreateContractDialogProps> = ({
   handleCreateContract,
   hasActionableRejectionFeedback,
   isSupportedCoffeeType,
+  profile,
 }) => {
   return (
         <PortalDialog brand='EXPORTER' 
