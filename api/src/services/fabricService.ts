@@ -405,6 +405,14 @@ export class FabricService {
    *  inside a request the global default is left alone. Used at startup and
    *  as a reconnect retry (routes/documents.ts). */
   public async connect(orgId?: string): Promise<void> {
+    if (this.isSimulationMode()) {
+      if (!this.connectCalled) {
+        logger.info('⚡ Hyperledger Fabric running in SIMULATED/MOCK mode (FABRIC_ENABLED=false)');
+        logger.info('💡 Fast Dev Mode active: ledger transactions are simulated and persisted to PostgreSQL');
+        this.connectCalled = true;
+      }
+      return;
+    }
     await this.withGatewayLock(async () => {
       const target = this.resolveSigningTarget(orgId);
       const entry = await this.getOrCreateEntryLocked(target.mspId, target.identityLabel);
@@ -638,6 +646,9 @@ export class FabricService {
   }
 
   public isConnected(): boolean {
+    if (this.isSimulationMode()) {
+      return true;
+    }
     return this.gatewayPool.size > 0;
   }
 
@@ -909,8 +920,90 @@ export class FabricService {
 
   // Chaincode invoke operations
   public async invokeChaincode(functionName: string, args: string[], userMspId?: string): Promise<ChaincodeResponse> {
+    if (this.isSimulationMode()) {
+      return this.invokeMockChaincode(functionName, args, userMspId);
+    }
     const target = this.resolveSigningTarget(userMspId);
     return this.withGatewayLock(() => this.invokeChaincodeLocked(functionName, args, target.mspId, target.identityLabel));
+  }
+
+  private async invokeMockChaincode(functionName: string, args: string[], userMspId?: string): Promise<ChaincodeResponse> {
+    this.mockTxCounter++;
+    const targetMsp = this.normalizeMspId(userMspId || this.getRequestMspId() || 'ECTAMSP');
+    const txId = `tx_sim_${Date.now()}_${crypto.randomBytes(6).toString('hex')}`;
+    
+    logger.info(`[SIMULATION] Fabric Mock invoke: ${functionName} signed by ${targetMsp}`, {
+      txId,
+      argsCount: args.length,
+    });
+
+    let simulatedData: any = {
+      status: 'COMMITTED',
+      functionName,
+      txId,
+      timestamp: new Date().toISOString(),
+    };
+
+    try {
+      if (functionName.includes('Contract')) {
+        simulatedData = {
+          contractId: args[0] || `CONTRACT-${Date.now()}`,
+          status: functionName.includes('Approve') ? 'APPROVED' : functionName.includes('Reject') ? 'REJECTED' : 'REGISTERED',
+          txId,
+        };
+      } else if (functionName.includes('LC')) {
+        simulatedData = {
+          lcId: args[0] || `LC-${Date.now()}`,
+          status: functionName.includes('Issue') ? 'ISSUED' : functionName.includes('Approve') ? 'APPROVED' : 'REQUESTED',
+          txId,
+        };
+      } else if (functionName.includes('Forex')) {
+        simulatedData = {
+          forexId: args[0] || `FX-${Date.now()}`,
+          status: 'ALLOCATED',
+          txId,
+        };
+      } else if (functionName.includes('Shipment')) {
+        simulatedData = {
+          shipmentId: args[0] || `SHIP-${Date.now()}`,
+          status: args[1] || 'CREATED',
+          txId,
+        };
+      } else if (functionName.includes('Customs') || functionName.includes('Declaration')) {
+        simulatedData = {
+          declarationId: args[0] || `DEC-${Date.now()}`,
+          status: functionName.includes('Clear') ? 'CLEARED' : 'SUBMITTED',
+          txId,
+        };
+      } else if (functionName.includes('Document') || functionName.includes('Signature')) {
+        simulatedData = {
+          documentId: args[0],
+          signatureId: `sig_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`,
+          verified: true,
+          txId,
+        };
+      }
+    } catch (_) {}
+
+    return {
+      success: true,
+      txId,
+      transactionId: txId,
+      submittingMspId: targetMsp,
+      data: simulatedData,
+      consensus: {
+        protocol: 'SimulatedRaft',
+        committed: true,
+        validationStatus: 'VALID',
+        outcome: 'VALID',
+      },
+      endorsement: {
+        policyStatus: 'RESOLVED',
+        policySource: 'simulated_policy',
+        requestedOrganizations: [targetMsp, 'BanksMSP', 'NBEMSP'],
+        matchedOrganizations: [targetMsp, 'BanksMSP', 'NBEMSP'],
+      },
+    };
   }
 
   private async invokeChaincodeLocked(functionName: string, args: string[], userMspId?: string, requestIdentityLabel?: string): Promise<ChaincodeResponse> {
@@ -1152,8 +1245,72 @@ export class FabricService {
 
   // Chaincode query operations
   public async queryChaincode(functionName: string, args: string[], userMspId?: string): Promise<ChaincodeResponse> {
+    if (this.isSimulationMode()) {
+      return this.queryMockChaincode(functionName, args, userMspId);
+    }
     const target = this.resolveSigningTarget(userMspId);
     return this.withGatewayLock(() => this.queryChaincodeLocked(functionName, args, target.mspId, target.identityLabel));
+  }
+
+  private async queryMockChaincode(functionName: string, args: string[], userMspId?: string): Promise<ChaincodeResponse> {
+    logger.info(`[SIMULATION] Fabric Mock query: ${functionName}`);
+    try {
+      const db = DatabaseService.getInstance();
+      if (functionName === 'GetSalesContract' || functionName === 'ReadSalesContract') {
+        const row = await db.get('SELECT * FROM contracts WHERE contract_id = $1', [args[0]]);
+        if (row) {
+          return {
+            success: true,
+            data: {
+              contractId: row.contract_id,
+              status: row.status,
+              quantity: row.quantity,
+              pricePerKg: row.price_per_kg,
+              currency: row.currency,
+              paymentMethod: row.payment_method,
+              exporterId: row.exporter_id,
+              buyerId: row.buyer_id,
+              buyerBank: row.buyer_bank,
+              exporterBank: row.exporter_bank,
+            },
+          };
+        }
+      } else if (functionName === 'QueryAllContracts' || functionName === 'GetAllContracts') {
+        const rows = await db.all('SELECT * FROM contracts ORDER BY created_at DESC LIMIT 50');
+        return {
+          success: true,
+          data: rows.map((r: any) => ({
+            contractId: r.contract_id,
+            status: r.status,
+            quantity: r.quantity,
+            pricePerKg: r.price_per_kg,
+            exporterId: r.exporter_id,
+          })),
+        };
+      } else if (functionName === 'GetLC' || functionName === 'ReadLC') {
+        const row = await db.get('SELECT * FROM letters_of_credit WHERE lc_id = $1', [args[0]]);
+        if (row) return { success: true, data: row };
+      } else if (functionName === 'QueryAllLCs') {
+        const rows = await db.all('SELECT * FROM letters_of_credit ORDER BY created_at DESC LIMIT 50');
+        return { success: true, data: rows };
+      } else if (functionName === 'GetShipment' || functionName === 'ReadShipment') {
+        const row = await db.get('SELECT * FROM shipments WHERE shipment_id = $1', [args[0]]);
+        if (row) return { success: true, data: row };
+      } else if (functionName === 'QueryAllShipments' || functionName === 'GetAllShipments') {
+        const rows = await db.all('SELECT * FROM shipments ORDER BY created_at DESC LIMIT 50');
+        return { success: true, data: rows };
+      } else if (functionName === 'GetForex' || functionName === 'QueryAllForex') {
+        const rows = await db.all('SELECT * FROM forex_records ORDER BY created_at DESC LIMIT 50');
+        return { success: true, data: functionName === 'GetForex' ? rows[0] || null : rows };
+      }
+    } catch (dbErr: any) {
+      logger.warn(`[SIMULATION] Mock query database lookup note: ${dbErr?.message}`);
+    }
+
+    return {
+      success: true,
+      data: null,
+    };
   }
 
   private async queryChaincodeLocked(functionName: string, args: string[], userMspId?: string, requestIdentityLabel?: string): Promise<ChaincodeResponse> {
@@ -1842,6 +1999,10 @@ export class FabricService {
 
   // Event listening
   public async startEventListener(): Promise<void> {
+    if (this.isSimulationMode()) {
+      logger.info('⚡ Fabric block event listener: simulation active');
+      return;
+    }
     await this.withGatewayLock(() => this.startEventListenerInGatewayLock());
   }
 
@@ -1874,6 +2035,23 @@ export class FabricService {
 
   // Network information
   public async getNetworkInfo(): Promise<any> {
+    if (this.isSimulationMode()) {
+      return {
+        status: 'simulated',
+        channel: process.env.FABRIC_CHANNEL_NAME || 'coffeechannel',
+        chaincode: process.env.FABRIC_CHAINCODE_NAME || 'coffee',
+        mode: 'Fast Dev Mode (Simulation)',
+        peers: [
+          { name: 'peer0.ecta.cecbs.et', msp: 'ECTAMSP', status: 'simulated' },
+          { name: 'peer0.ecx.cecbs.et', msp: 'ECXMSP', status: 'simulated' },
+          { name: 'peer0.banks.cecbs.et', msp: 'BanksMSP', status: 'simulated' },
+          { name: 'peer0.nbe.cecbs.et', msp: 'NBEMSP', status: 'simulated' },
+          { name: 'peer0.customs.cecbs.et', msp: 'CustomsMSP', status: 'simulated' },
+          { name: 'peer0.shipping.cecbs.et', msp: 'ShippingMSP', status: 'simulated' },
+        ],
+        orderer: { name: 'orderer.cecbs.et', status: 'simulated' },
+      };
+    }
     return this.withGatewayLock(() => this.getNetworkInfoInGatewayLock());
   }
 
@@ -1969,6 +2147,9 @@ export class FabricService {
 
   /** Confirm that QSCC can read the configured channel ledger, not just a Gateway socket. */
   public async checkLedgerConnectivity(): Promise<boolean> {
+    if (this.isSimulationMode()) {
+      return true;
+    }
     return this.withGatewayLock(async () => {
       const entry = await this.getReadEntry();
       if (!entry) return false;
@@ -2260,6 +2441,14 @@ export class FabricService {
 
   /** Read Fabric's ledger height and count transactions in committed blocks. */
   public async getBlockchainInfo(): Promise<FabricLedgerInfo> {
+    if (this.isSimulationMode()) {
+      return {
+        height: this.mockTxCounter,
+        currentBlockHash: '0x' + crypto.createHash('sha256').update(`sim-block-${this.mockTxCounter}`).digest('hex'),
+        previousBlockHash: '0x' + crypto.createHash('sha256').update(`sim-block-${this.mockTxCounter - 1}`).digest('hex'),
+        channelName: process.env.FABRIC_CHANNEL_NAME || 'coffeechannel',
+      };
+    }
     if (this.ledgerInfoCache && this.ledgerInfoCache.expiresAt > Date.now()) {
       return this.ledgerInfoCache.value;
     }
@@ -2386,6 +2575,29 @@ export class FabricService {
   public async getBlockDetails(blockNumber: number): Promise<any> {
     if (!Number.isSafeInteger(blockNumber) || blockNumber < 0) {
       throw new Error('Block number must be a non-negative safe integer');
+    }
+    if (this.isSimulationMode()) {
+      return {
+        number: blockNumber,
+        previousHash: '0x' + crypto.createHash('sha256').update(`sim-block-${Math.max(0, blockNumber - 1)}`).digest('hex'),
+        previousHashVerified: true,
+        dataHash: '0x' + crypto.createHash('sha256').update(`sim-data-${blockNumber}`).digest('hex'),
+        dataHashVerified: true,
+        headerHash: '0x' + crypto.createHash('sha256').update(`sim-header-${blockNumber}`).digest('hex'),
+        transactionCount: 1,
+        applicationTransactionCount: 1,
+        transactions: [
+          {
+            txId: `tx_sim_block_${blockNumber}`,
+            validationCode: 0,
+            validationStatus: 'VALID',
+            type: 3,
+            creatorMspId: 'ECTAMSP',
+            endorsingMspIds: ['ECTAMSP', 'BanksMSP', 'NBEMSP'],
+            timestamp: new Date().toISOString(),
+          }
+        ],
+      };
     }
     const block = await this.getRawBlockByNumber(blockNumber);
     const dataEntries: Uint8Array[] = block.data?.data || [];
@@ -3235,6 +3447,20 @@ export class FabricService {
 
   /** Query an actual committed transaction envelope and its block validation code. */
   public async getTransactionDetails(txId: string): Promise<LedgerTransactionDetails | null> {
+    if (this.isSimulationMode()) {
+      return {
+        txId,
+        blockNumber: this.mockTxCounter,
+        blockHash: '0x' + crypto.createHash('sha256').update(txId).digest('hex'),
+        validationCode: 0,
+        validationStatus: 'VALID',
+        channelId: process.env.FABRIC_CHANNEL_NAME || 'coffeechannel',
+        creatorMspId: this.getRequestMspId() || 'ECTAMSP',
+        endorsingMspIds: ['ECTAMSP', 'BanksMSP', 'NBEMSP'],
+        chaincodeName: process.env.FABRIC_CHAINCODE_NAME || 'coffee',
+        timestamp: new Date().toISOString(),
+      };
+    }
     try {
       const channelName = process.env.FABRIC_CHANNEL_NAME || 'coffeechannel';
       const rawTransaction = await this.evaluateQscc('GetTransactionByID', [channelName, txId]);
