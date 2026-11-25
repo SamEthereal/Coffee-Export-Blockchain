@@ -16,6 +16,7 @@ import {
   TableRow,
   Divider,
   Tooltip,
+  IconButton,
 } from '@mui/material';
 import {
   Description,
@@ -31,6 +32,12 @@ import {
   Security,
   Warning,
   Info,
+  FlightTakeoff,
+  DirectionsBoat,
+  Close,
+  Visibility as VisibilityIcon,
+  Download as DownloadIcon,
+  TrendingUp,
 } from '@mui/icons-material';
 import {
   PortalDialog,
@@ -40,7 +47,7 @@ import {
   DangerButton,
   StatusChip,
 } from '@/components/shared/portal';
-import { apiFetch } from '@/config/api.config';
+import { apiFetch, API_BASE_URL } from '@/config/api.config';
 import { DocumentManagementPanel } from '@/components/documents';
 import BlockchainSignatureVerification from '@/components/documents/BlockchainSignatureVerification';
 import BusinessActivityTimeline from '@/components/documents/BusinessActivityTimeline';
@@ -59,6 +66,7 @@ export interface LCDetailsDialogProps {
   onOpenUploadDocuments: (entityId: string, entityType: string) => void;
   onOpenAmendLC: (form: any) => void;
   shipments?: any[];
+  documentChecklist?: any;
 }
 
 export const LCDetailsDialog: React.FC<LCDetailsDialogProps> = ({
@@ -74,6 +82,7 @@ export const LCDetailsDialog: React.FC<LCDetailsDialogProps> = ({
   onOpenUploadDocuments,
   onOpenAmendLC,
   shipments = [],
+  documentChecklist,
 }) => {
   const chipStatus = (status?: string | null) => (status || 'PENDING') as any;
 
@@ -146,9 +155,7 @@ export const LCDetailsDialog: React.FC<LCDetailsDialogProps> = ({
                 color="secondary"
                 startIcon={<CloudUpload />}
                 onClick={() => {
-                  setUploadEntityId(selectedLC.lcId);
-                  setUploadEntityType('LC');
-                  setDocumentUploadDialogOpen(true);
+                  onOpenUploadDocuments(selectedLC.lcId, 'LC');
                 }}
               >
                 Upload Documents
@@ -156,8 +163,7 @@ export const LCDetailsDialog: React.FC<LCDetailsDialogProps> = ({
               <SecondaryButton brand="BANKS"
                 sx={{ fontWeight: 600 }}
                 onClick={() => {
-                  setDialogType('lcAmend');
-                  setAmendmentForm({
+                  onOpenAmendLC({
                     amendmentReason: '',
                     newAmount: selectedLC.amount.toString(),
                     newExpiryDate: selectedLC.expiryDate,
@@ -784,7 +790,7 @@ export const LCDetailsDialog: React.FC<LCDetailsDialogProps> = ({
                   {/* Business Activity Timeline - Shows WHO did WHAT */}
                   <BusinessActivityTimeline
                     entityType="LC"
-                    entityId={selectedLC.lcId}
+                    entityId={selectedLC?.lcId || selectedLC?.lcID || selectedLC?.id || ''}
                   />
                   
                   <Divider sx={{ my: 3 }} />
@@ -794,7 +800,7 @@ export const LCDetailsDialog: React.FC<LCDetailsDialogProps> = ({
                   </Typography>
                   <BlockchainSignatureVerification
                     entityType="LETTER_OF_CREDIT"
-                    entityId={selectedLC.lcId}
+                    entityId={selectedLC?.lcId || selectedLC?.lcID || selectedLC?.id || ''}
                   />
                 </Grid>
               </Grid>

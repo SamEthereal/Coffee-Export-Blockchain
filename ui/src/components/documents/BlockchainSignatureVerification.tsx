@@ -98,6 +98,9 @@ interface Props {
 }
 
 const BlockchainSignatureVerification: React.FC<Props> = ({ entityType, entityId }) => {
+  const safeEntityId = typeof entityId === 'string' ? entityId : String(entityId || '');
+  const safeEntityType = typeof entityType === 'string' ? entityType : String(entityType || '');
+
   const [loading, setLoading] = useState(false);
   const [documents, setDocuments] = useState<any[]>([]);
   const [signatures, setSignatures] = useState<BlockchainSignature[]>([]);
@@ -105,6 +108,10 @@ const BlockchainSignatureVerification: React.FC<Props> = ({ entityType, entityId
   const [error, setError] = useState<string | null>(null);
 
   const loadBlockchainVerification = async () => {
+    if (!safeEntityId || !safeEntityType) {
+      setLoading(false);
+      return;
+    }
     try {
       setLoading(true);
       setError(null);
@@ -113,7 +120,7 @@ const BlockchainSignatureVerification: React.FC<Props> = ({ entityType, entityId
       
       // STEP 1: Fetch document signatures from PostgreSQL
       const docsResponse = await axios.get(
-        `${API_BASE_URL}/documents/entity/${entityType}/${entityId}`,
+        `${API_BASE_URL}/documents/entity/${safeEntityType}/${encodeURIComponent(safeEntityId)}`,
         {
           headers: { Authorization: `Bearer ${token}` },
         }
@@ -150,7 +157,7 @@ const BlockchainSignatureVerification: React.FC<Props> = ({ entityType, entityId
       const entitySignatures: BlockchainSignature[] = [];
       try {
         const entitySigResponse = await axios.get(
-          `${API_BASE_URL}/blockchain-signatures/entity/${entityType}/${entityId}`,
+          `${API_BASE_URL}/blockchain-signatures/entity/${safeEntityType}/${encodeURIComponent(safeEntityId)}`,
           {
             headers: { Authorization: `Bearer ${token}` },
           }
@@ -165,7 +172,7 @@ const BlockchainSignatureVerification: React.FC<Props> = ({ entityType, entityId
               tx.creator?.signatureValid === true && hasVerifiedEndorsements;
             entitySignatures.push({
               signature_id: tx.txId,
-              document_id: entityId,
+              document_id: safeEntityId,
               signer_id: 0,
               signer_org: tx.creator.mspId,
               signature_type: 'BLOCKCHAIN_TRANSACTION',
@@ -193,7 +200,7 @@ const BlockchainSignatureVerification: React.FC<Props> = ({ entityType, entityId
               blockchainData: tx,
               transactionId: tx.txId,
               documentFileName: `${tx.chaincodeFunction}`,
-              documentType: entityType,
+              documentType: safeEntityType,
               signatureSource: tx.source === 'POSTGRESQL' ? 'APPLICATION_SIGNATURE' : 'BLOCKCHAIN_TRANSACTION'
             });
           }
@@ -229,10 +236,10 @@ const BlockchainSignatureVerification: React.FC<Props> = ({ entityType, entityId
   };
 
   useEffect(() => {
-    if (entityType && entityId) {
+    if (safeEntityType && safeEntityId) {
       loadBlockchainVerification();
     }
-  }, [entityType, entityId]);
+  }, [safeEntityType, safeEntityId]);
 
   const getStatusColor = (status: string) => {
     switch (status) {
@@ -288,9 +295,13 @@ const BlockchainSignatureVerification: React.FC<Props> = ({ entityType, entityId
     );
   }
 
+  if (!safeEntityId) {
+    return null;
+  }
+
   if (signatures.length === 0) {
     // Check if this is a REQUESTED status entity that hasn't been processed yet
-    const isPending = entityId.includes('_PENDING') || entityId.includes('_REQUESTED');
+    const isPending = safeEntityId.includes('_PENDING') || safeEntityId.includes('_REQUESTED');
     
     return (
       <Alert severity={isPending ? "warning" : "info"} sx={{ mb: 2 }}>

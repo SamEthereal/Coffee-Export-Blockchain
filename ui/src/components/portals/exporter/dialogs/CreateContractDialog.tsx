@@ -92,6 +92,20 @@ export const CreateContractDialog: React.FC<CreateContractDialogProps> = ({
   isSupportedCoffeeType,
   profile,
 }) => {
+  const missingRequiredFields: string[] = [];
+  if (!newContract.buyerCompany) missingRequiredFields.push('Buyer Company');
+  if (!newContract.buyerCountry) missingRequiredFields.push('Buyer Country');
+  if (!newContract.buyerBank) missingRequiredFields.push("Buyer's Bank");
+  if (!newContract.exporterBank) missingRequiredFields.push("Exporter's Bank");
+  if (!newContract.buyerEmail) missingRequiredFields.push('Buyer Email');
+  if (!newContract.coffeeType) missingRequiredFields.push('Coffee Type');
+  if (!newContract.quantity || parseFloat(newContract.quantity) <= 0) missingRequiredFields.push('Valid Quantity (> 0)');
+  if (!newContract.pricePerKg || parseFloat(newContract.pricePerKg) < 5.0) missingRequiredFields.push('Price Per Kg (≥ $5.00)');
+  if (!newContract.paymentMethod) missingRequiredFields.push('Payment Method');
+  if (!newContract.portOfDestination) missingRequiredFields.push('Port of Destination');
+  if (!newContract.deliveryDate) missingRequiredFields.push('Delivery Date');
+  if (contractDocuments.some((doc) => doc.status !== 'success')) missingRequiredFields.push('Document Upload In Progress');
+
   return (
         <PortalDialog brand='EXPORTER' 
           open={open} 
@@ -99,8 +113,8 @@ export const CreateContractDialog: React.FC<CreateContractDialogProps> = ({
           maxWidth="lg"
         
   icon={<Description />}
-  title={draftContractId && !correctingRejectedContractId ? 'Edit Contract' : correctingRejectedContractId ? 'Register Corrected Contract' : 'Register New Sales Contract'}
-  subtitle={draftContractId && !correctingRejectedContractId
+  title={isEditMode ? 'Edit Contract' : correctingRejectedContractId ? 'Register Corrected Contract' : 'Register New Sales Contract'}
+  subtitle={isEditMode
                     ? `Editing Contract ${draftContractId} - Update buyer details, shipping preferences, or additional notes`
                     : correctingRejectedContractId
                     ? `Correct the rejected details below. This creates a new contract linked to ${correctingRejectedContractId}.`
@@ -114,16 +128,8 @@ export const CreateContractDialog: React.FC<CreateContractDialogProps> = ({
               loading={isCreatingContract}
               loadingLabel={isEditMode ? 'Updating…' : 'Registering…'}
               ledgerWrite
-              disabled={isCreatingContract || !newContract.buyerCompany || !newContract.buyerCountry ||
-                        !newContract.buyerBank || !newContract.exporterBank ||
-                        !newContract.buyerEmail || !newContract.coffeeType || !newContract.quantity ||
-                        !newContract.pricePerKg || !newContract.portOfDestination || !newContract.deliveryDate ||
-                        // Validation fix (2026-11-13): the payment method
-                        // and a positive quantity were enforced only in the
-                        // submit handler, so the button looked submittable
-                        // while the handler refused the click.
-                        !newContract.paymentMethod || parseFloat(newContract.quantity) <= 0 ||
-                        (parseFloat(newContract.pricePerKg) < 5.0) || contractDocuments.some((doc) => doc.status !== 'success')}
+              disabled={isCreatingContract || missingRequiredFields.length > 0}
+              title={missingRequiredFields.length > 0 ? `Required: ${missingRequiredFields.join(', ')}` : undefined}
               size="large"
               sx={{ minWidth: 150 }}
             >
@@ -690,6 +696,19 @@ export const CreateContractDialog: React.FC<CreateContractDialogProps> = ({
                   );
                 })}
               </Grid>
+
+              {missingRequiredFields.length > 0 && (
+                <Grid item xs={12}>
+                  <Alert severity="warning" sx={{ mt: 1 }}>
+                    <Typography variant="body2" fontWeight={600} gutterBottom>
+                      Complete the following required fields to enable contract registration:
+                    </Typography>
+                    <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block' }}>
+                      {missingRequiredFields.join(' • ')}
+                    </Typography>
+                  </Alert>
+                </Grid>
+              )}
             </Grid>
           </PortalDialog>
   );

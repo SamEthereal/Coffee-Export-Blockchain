@@ -12,6 +12,8 @@ CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 -- Sequences
 CREATE SEQUENCE IF NOT EXISTS approval_seq START WITH 1000 INCREMENT BY 1;
 CREATE SEQUENCE IF NOT EXISTS reference_seq START WITH 5000 INCREMENT BY 1;
+CREATE SEQUENCE IF NOT EXISTS exporter_id_seq START WITH 1000000;
+CREATE SEQUENCE IF NOT EXISTS ecta_license_seq START WITH 1;
 
 -- ----------------------------------------------------------------------------
 -- Table: users

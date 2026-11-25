@@ -64,6 +64,10 @@ export const ContractDetailDialog: React.FC<ContractDetailDialogProps> = ({
   handleCreateShipmentForContract,
   handleRequestLCForContract,
 }) => {
+  const hasIssuedLC = (contractId: string) =>
+    (lcStatuses || []).some(lc => lc.contractId === contractId &&
+      ['ISSUED', 'FOREX_ALLOCATED', 'AMENDED', 'UTILIZED', 'PAYMENT_RELEASED', 'SETTLED'].includes(lc.status));
+
   return (
     <PortalDialog brand='EXPORTER'
       open={open}

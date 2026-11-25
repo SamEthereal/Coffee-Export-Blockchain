@@ -1767,7 +1767,7 @@ const BanksPortal: React.FC = () => {
     setValidationDialogOpen(true);
   };
 
-  const handleApproveLC = async (lcId: string, exporterId: string) => {
+  const handleApproveLC = async (lcId: string, exporterId?: string) => {
     const token = localStorage.getItem('authToken');
     if (!token) {
       showError('Authentication Required', 'You are not authenticated', 'Please login again to continue');
@@ -1783,7 +1783,7 @@ const BanksPortal: React.FC = () => {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          beneficiary: exporterId, // Use exporter ID as beneficiary
+          beneficiary: exporterId || selectedLC?.exporterId || '', // Use exporter ID as beneficiary
         }),
       });
 
@@ -4740,11 +4740,12 @@ const BanksPortal: React.FC = () => {
           setKpiDialogPage(0);
         }}
         title={kpiDataDialogTitle}
-        type={kpiDataDialogType}
+        type={(kpiDataDialogType || null) as any}
         data={kpiDataDialogData}
         page={kpiDialogPage}
         setPage={setKpiDialogPage}
         rowsPerPage={kpiDialogRowsPerPage}
+        setRowsPerPage={setKpiDialogRowsPerPage}
         showError={showError}
         showSuccess={showSuccess}
         generateForexCSV={generateForexCSV}
@@ -4757,7 +4758,7 @@ const BanksPortal: React.FC = () => {
         }}
         onSelectLC={(lc) => {
           setSelectedLC(lc);
-          handleOpenDialog('lcDetails', lc);
+          handleViewLCDetails(lc);
         }}
         onSelectSwift={(s) => {
           setSelectedSwiftMessage(s);
@@ -4775,18 +4776,27 @@ const BanksPortal: React.FC = () => {
         selectedForex={selectedForex}
         showError={showError}
         onOpenAllocationDialog={(rate, policy) => {
-          setAllocationExchangeRate(rate);
-          setAllocationRetentionRate(policy);
+          if (!selectedForex) return;
+          const approvalRef = `FOREX-ALLOC-${Date.now()}`;
+          setAllocationForm({
+            forexId: selectedForex.forexId,
+            lcId: selectedForex.lcId || '',
+            amount: selectedForex.requestedAmount || selectedForex.allocatedAmount || 0,
+            exchangeRate: rate,
+            retentionRate: policy,
+            officer: user?.fullName || user?.username || 'Bank Officer',
+            approvalRef: approvalRef,
+            expiryDate: selectedForex.expiryDate || new Date(Date.now() + 90 * 24 * 60 * 60 * 1000).toISOString(),
+          });
           setAllocationPolicyReady(true);
-          setForexAllocationOpen(true);
+          setAllocationDialogOpen(true);
         }}
         handleRejectForex={handleRejectForex}
         onOpenUtilizeDialog={(f) => {
           setUtilizeForm({
-            amount: '',
-            purpose: '',
-            importPermitNumber: '',
-            customsDeclarationNumber: '',
+            forexId: f.forexId || '',
+            maxAmount: f.allocatedAmount || 0,
+            utilizedAmount: f.utilizedAmount || 0,
           });
           setUtilizeDialogOpen(true);
         }}
@@ -4801,7 +4811,7 @@ const BanksPortal: React.FC = () => {
         onClose={() => setPaymentDetailsOpen(false)}
         selectedPayment={selectedPaymentForDetails}
         onViewAuditTrail={(entityType, entityId) => {
-          setAuditEntityType(entityType);
+          setAuditEntityType(entityType as 'LC' | 'PAYMENT' | 'FOREX');
           setAuditEntityId(entityId);
           setShowAuditTrail(true);
         }}
@@ -4870,7 +4880,8 @@ const BanksPortal: React.FC = () => {
           setDialogType('lcAmend');
           setAmendmentForm(form);
         }}
-        shipments={shipments}
+        shipments={deliveredShipments}
+        documentChecklist={documentChecklist}
       />
 
 
@@ -5308,10 +5319,10 @@ const BanksPortal: React.FC = () => {
           setValidationData(null);
         }}
         data={validationData}
-        readOnly={validationData?.readOnly ?? (validationData?.entityId && !validationData.entityId.includes('REQUESTED'))} // Read-only unless this item explicitly enables review actions
+        readOnly={validationData?.readOnly ?? (typeof validationData?.entityId === 'string' && !validationData.entityId.includes('REQUESTED'))} // Read-only unless this item explicitly enables review actions
         showApprovalOption={validationData?.showApprovalOption}
         onApprove={(notes) => {
-          if (validationData && validationData.entityId.startsWith('LC')) {
+          if (validationData && typeof validationData.entityId === 'string' && validationData.entityId.startsWith('LC')) {
             // Extract LC ID and exporter ID
             const lcId = validationData.entityId;
             const lc = letterOfCredits.find(l => l.lcId === lcId);
@@ -5395,7 +5406,7 @@ const BanksPortal: React.FC = () => {
           generateSwiftCSV={generateSwiftCSV}
           downloadCSV={downloadCSV}
           onViewDetails={(msg) => void openSwiftMessageDetails(msg)}
-          handleSwiftLifecycleAction={handleSwiftLifecycleAction}
+          handleSwiftLifecycleAction={(msg: any, action: any) => handleSwiftLifecycleAction(msg, action)}
         />
       )}
 
@@ -5816,7 +5827,7 @@ const BanksPortal: React.FC = () => {
           setAmountMin={setAmountMin}
           setAmountMax={setAmountMax}
           paymentReleaseFilter={paymentReleaseFilter}
-          setPaymentReleaseFilter={setPaymentReleaseFilter}
+          setPaymentReleaseFilter={(f: any) => setPaymentReleaseFilter(f)}
           currentPage={currentPage}
           setCurrentPage={setCurrentPage}
           rowsPerPage={rowsPerPage}
@@ -5825,7 +5836,7 @@ const BanksPortal: React.FC = () => {
           filteredLCs={getFilteredPaymentReleaseLCs()}
           paginatedLCs={getPaginatedData(getFilteredPaymentReleaseLCs())}
           onViewAuditTrail={(entityType, entityId) => {
-            setAuditEntityType(entityType);
+            setAuditEntityType(entityType as 'LC' | 'PAYMENT' | 'FOREX');
             setAuditEntityId(entityId);
             setShowAuditTrail(true);
           }}

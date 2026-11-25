@@ -759,28 +759,9 @@ router.post('/exporter-applications/:applicationId/approve',
       
       // ✅ NEW USERNAME: After approval, user logs in with exporterId (e.g., EXP3414033)
       // The convertToFullAccount method already updated the username in the database
+      // while preserving their existing password hash.
       const newUsername = exporterId;  // Standard format username
       const oldUsername = application.temp_username;  // Old temporary username
-      
-      // Get temporary password from application (same password, just username changed)
-      const tempPwdResult = await postgresDb.get(
-        'SELECT temp_password FROM exporter_applications WHERE application_id = $1',
-        [applicationId]
-      );
-      
-      // Decode the password hash to get the plain password
-      // NOTE: We can't decode bcrypt hashes, so we need to store the plain password temporarily
-      // For now, we'll generate a NEW password and update the user account
-      const newPassword = crypto.randomBytes(8).toString('hex'); // Generate 16-char password
-      const hashedPassword = await bcrypt.hash(newPassword, 10);
-      
-      // Update the user's password with the new one
-      await postgresDb.run(
-        `UPDATE users SET password_hash = $1 WHERE username = $2`,
-        [hashedPassword, newUsername]
-      );
-      
-      logger.info(`✅ Generated new password for ${newUsername}`);
       
       // Send approval email after the approval transaction and report its result.
       const approvalEmailSent = await emailService.sendApprovalEmail({
@@ -790,7 +771,7 @@ router.post('/exporter-applications/:applicationId/approve',
         email: application.email,
         username: newUsername,  // ✅ Send the NEW username (exporterId)
         oldUsername: oldUsername,  // Include old username for reference
-        temporaryPassword: newPassword,  // ✅ Send the NEW password
+        temporaryPassword: 'Use your existing application password',
         bankName: bankName || undefined,
         bankBranch: bankBranch || undefined,
         bankBranchCode: bankBranchCode || undefined,
@@ -1571,10 +1552,67 @@ router.get('/me/profile', authMiddleware, async (req, res) => {
     }
 
     // Get exporter data from blockchain
+    let profileData: any = null;
     const result = await fabricService.getExporter(exporterId);
-    
-    // Enrich with bank information from database
     if (result.success && result.data) {
+      profileData = { ...result.data };
+    }
+    
+    // Fallback to PostgreSQL if blockchain/mock returns null
+    if (!profileData) {
+      const dbExporter = await postgresDb.get(
+        'SELECT * FROM exporters WHERE exporter_id = $1',
+        [exporterId]
+      );
+      if (dbExporter) {
+        profileData = {
+          exporterId: dbExporter.exporter_id,
+          companyName: dbExporter.company_name,
+          ectaLicenseNumber: dbExporter.ecta_license_number,
+          licenseStatus: dbExporter.license_status,
+          licenseExpiryDate: dbExporter.license_expiry_date,
+          capitalRequirement: parseFloat(dbExporter.capital_requirement || 0),
+          laboratoryCertified: dbExporter.laboratory_certified === true || dbExporter.laboratory_certified === 't',
+          professionalTaster: dbExporter.professional_taster,
+          tasterCertificate: dbExporter.taster_certificate,
+          bankName: dbExporter.bank_name,
+          bankBranch: dbExporter.bank_branch,
+          bankBranchCode: dbExporter.bank_branch_code,
+          contactPerson: dbExporter.contact_person,
+          email: dbExporter.email,
+          phone: dbExporter.phone,
+          address: dbExporter.address,
+        };
+      } else {
+        const app = await postgresDb.get(
+          'SELECT * FROM exporter_applications WHERE exporter_id = $1 OR application_id = $1',
+          [exporterId]
+        );
+        if (app) {
+          profileData = {
+            exporterId: app.exporter_id || exporterId,
+            companyName: app.company_name,
+            ectaLicenseNumber: app.ecta_license_number || app.license_number,
+            licenseStatus: app.status === 'approved' ? 'ACTIVE' : app.status,
+            licenseExpiryDate: app.license_expiry_date || '2027-12-31',
+            capitalRequirement: parseFloat(app.capital_requirement || 0),
+            laboratoryCertified: app.laboratory_certified === true || app.laboratory_certified === 't',
+            professionalTaster: app.professional_taster,
+            tasterCertificate: app.taster_certificate,
+            bankName: app.bank_name,
+            bankBranch: app.bank_branch,
+            bankBranchCode: app.bank_branch_code,
+            contactPerson: app.contact_person,
+            email: app.email,
+            phone: app.phone,
+            address: app.address,
+          };
+        }
+      }
+    }
+
+    // Enrich with bank information from database
+    if (profileData) {
       try {
         const userBankInfo = await postgresDb.get(
           'SELECT bank_name, bank_branch, bank_branch_code FROM users WHERE exporter_id = $1 OR username = $2',
@@ -1582,9 +1620,9 @@ router.get('/me/profile', authMiddleware, async (req, res) => {
         );
 
         if (userBankInfo) {
-          result.data.bankName = userBankInfo.bank_name;
-          result.data.bankBranch = userBankInfo.bank_branch;
-          result.data.bankBranchCode = userBankInfo.bank_branch_code;
+          profileData.bankName = profileData.bankName || userBankInfo.bank_name;
+          profileData.bankBranch = profileData.bankBranch || userBankInfo.bank_branch;
+          profileData.bankBranchCode = profileData.bankBranchCode || userBankInfo.bank_branch_code;
         }
       } catch (dbError) {
         logger.warn('Failed to fetch bank information from database:', dbError);
@@ -1592,8 +1630,8 @@ router.get('/me/profile', authMiddleware, async (req, res) => {
     }
 
     res.json({
-      success: result.success,
-      data: result.data || null,
+      success: true,
+      data: profileData || null,
       timestamp: new Date().toISOString(),
     });
   } catch (error) {
@@ -2168,10 +2206,32 @@ router.get('/:exporterID',
       const { exporterID } = req.params;
       const result = await fabricService.getExporter(exporterID);
 
-      if (result.success) {
+      let exporterData = result.success && result.data ? result.data : null;
+      if (!exporterData) {
+        const dbRow = await postgresDb.get(
+          'SELECT * FROM exporters WHERE exporter_id = $1',
+          [exporterID]
+        );
+        if (dbRow) {
+          exporterData = {
+            exporterId: dbRow.exporter_id,
+            companyName: dbRow.company_name,
+            ectaLicenseNumber: dbRow.ecta_license_number,
+            licenseStatus: dbRow.license_status,
+            licenseExpiryDate: dbRow.license_expiry_date,
+            capitalRequirement: parseFloat(dbRow.capital_requirement || 0),
+            laboratoryCertified: dbRow.laboratory_certified === true || dbRow.laboratory_certified === 't',
+            bankName: dbRow.bank_name,
+            bankBranch: dbRow.bank_branch,
+            bankBranchCode: dbRow.bank_branch_code,
+          };
+        }
+      }
+
+      if (exporterData) {
         res.json({
           success: true,
-          data: result.data,
+          data: exporterData,
           timestamp: new Date().toISOString(),
         });
       } else {

@@ -4,7 +4,7 @@
 import { FabricService } from './fabricService';
 import { DatabaseService } from './databaseService';
 import { AuditService } from './auditService';
-import { BlockchainSignatureService } from './blockchainSignatureService';
+import { SignatureService } from './signatureService';
 import { statusManager } from '../utils/statusManager';
 import { logger } from '../utils/logger';
 
@@ -13,13 +13,13 @@ export class ForexService {
   private fabricService: FabricService;
   private dbService: DatabaseService;
   private auditService: AuditService;
-  private signatureService: BlockchainSignatureService;
+  private signatureService: SignatureService;
 
   private constructor() {
     this.fabricService = FabricService.getInstance();
     this.dbService = DatabaseService.getInstance();
     this.auditService = AuditService.getInstance();
-    this.signatureService = BlockchainSignatureService.getInstance();
+    this.signatureService = SignatureService.getInstance();
   }
 
   public static getInstance(): ForexService {

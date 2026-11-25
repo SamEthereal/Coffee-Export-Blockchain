@@ -168,6 +168,10 @@ export const PrimaryButton: React.FC<PortalButtonProps> = ({ brand, sx, ...props
       baseSx={{
         bgcolor: b.primary,
         '&:hover': { bgcolor: b.dark },
+        '&.Mui-disabled': {
+          bgcolor: 'rgba(0, 0, 0, 0.12)',
+          color: 'rgba(0, 0, 0, 0.26)',
+        },
         textTransform: 'none',
         fontWeight: 600,
       }}
@@ -187,6 +191,10 @@ export const SecondaryButton: React.FC<PortalButtonProps> = ({ brand, sx, ...pro
         borderColor: b.primary,
         color: b.primary,
         '&:hover': { borderColor: b.dark, bgcolor: alpha(b.primary, 0.05) },
+        '&.Mui-disabled': {
+          borderColor: 'rgba(0, 0, 0, 0.12)',
+          color: 'rgba(0, 0, 0, 0.26)',
+        },
         textTransform: 'none',
         fontWeight: 600,
       }}

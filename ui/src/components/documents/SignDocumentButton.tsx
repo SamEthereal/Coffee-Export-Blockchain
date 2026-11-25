@@ -324,19 +324,27 @@ const SignDocumentButton: React.FC<SignDocumentButtonProps> = ({
             {/* Signature Type Info */}
             <Alert severity="info" icon={<InfoIcon />}>
               <Typography variant="body2">{currentTypeInfo.description}</Typography>
-              {signatureType === 'APPROVE' && (
-                <Typography variant="caption" display="block" mt={1}>
-                  ✅ Visual signature stamp will be added to PDF with green checkmark
-                </Typography>
-              )}
-              {signatureType === 'VERIFY' && (
-                <Typography variant="caption" display="block" mt={1}>
-                  🔍 Visual signature stamp will be added to PDF with blue verification badge
-                </Typography>
-              )}
-              {signatureType === 'REJECT' && (
-                <Typography variant="caption" display="block" mt={1}>
-                  ❌ Visual signature stamp will be added to PDF with red rejection mark
+              {documentName?.toLowerCase().endsWith('.pdf') ? (
+                <>
+                  {signatureType === 'APPROVE' && (
+                    <Typography variant="caption" display="block" mt={1}>
+                      ✅ Visual signature stamp will be added to PDF with green checkmark
+                    </Typography>
+                  )}
+                  {signatureType === 'VERIFY' && (
+                    <Typography variant="caption" display="block" mt={1}>
+                      🔍 Visual signature stamp will be added to PDF with blue verification badge
+                    </Typography>
+                  )}
+                  {signatureType === 'REJECT' && (
+                    <Typography variant="caption" display="block" mt={1}>
+                      ❌ Visual signature stamp will be added to PDF with red rejection mark
+                    </Typography>
+                  )}
+                </>
+              ) : (
+                <Typography variant="caption" display="block" mt={1} color="text.secondary">
+                  🔐 Detached cryptographic X.509 signature and hash will be anchored to the blockchain (visual page stamps are applied to PDF documents).
                 </Typography>
               )}
             </Alert>

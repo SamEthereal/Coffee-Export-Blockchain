@@ -92,17 +92,23 @@ const BusinessActivityTimeline: React.FC<Props> = ({ entityType, entityId }) => 
 
   const fetchActivitiesInternal = async () => {
     try {
+      const safeEntityId = typeof entityId === 'string' ? entityId : String(entityId || '');
+      const safeEntityType = typeof entityType === 'string' ? entityType : String(entityType || '');
+      if (!safeEntityId) {
+        setLoading(false);
+        return;
+      }
       // Display entity properly (avoid duplicate prefix like "LC LC-...")
-      const displayEntity = entityId.startsWith(entityType + '-') || entityId.startsWith(entityType + '_') 
-        ? entityId 
-        : `${entityType} ${entityId}`;
+      const displayEntity = safeEntityId.startsWith(safeEntityType + '-') || safeEntityId.startsWith(safeEntityType + '_') 
+        ? safeEntityId 
+        : `${safeEntityType} ${safeEntityId}`.trim();
       console.log(`[Timeline] 🔗 Fetching ${displayEntity} from BLOCKCHAIN...`);
       const reconstructedActivities: BusinessActivity[] = [];
 
-      if (entityType === 'LC') {
+      if (safeEntityType === 'LC') {
         // EXPERT FIX: Fetch audit trail DIRECTLY from blockchain CouchDB
         try {
-          const auditRecords = await couchDBService.getAuditTrail('LC', entityId);
+          const auditRecords = await couchDBService.getAuditTrail('LC', safeEntityId);
           
           console.log(`[Timeline] ✅ Found ${auditRecords.length} audit records on blockchain`);
           
@@ -340,7 +346,7 @@ const BusinessActivityTimeline: React.FC<Props> = ({ entityType, entityId }) => 
         // Fallback: Get forex from blockchain and reconstruct
         try {
           const allForex = await couchDBService.getAllForex();
-          const forex = allForex.find(f => f.forexId === entityId || f.forexId === `FOREX_${entityId}` || entityId.includes(f.forexId));
+          const forex = allForex.find(f => f.forexId === safeEntityId || f.forexId === `FOREX_${safeEntityId}` || (f.forexId && safeEntityId.includes(f.forexId)));
 
           if (forex) {
             console.log('[Timeline] ✅ Found forex on blockchain, reconstructing DETAILED timeline...');
@@ -457,10 +463,12 @@ const BusinessActivityTimeline: React.FC<Props> = ({ entityType, entityId }) => 
   }
 
   if (activities.length === 0) {
+    const safeEntityId = typeof entityId === 'string' ? entityId : String(entityId || '');
+    const safeEntityType = typeof entityType === 'string' ? entityType : String(entityType || '');
     // Display entity properly (avoid duplicate prefix like "LC LC-...")
-    const displayEntity = entityId.startsWith(entityType + '-') || entityId.startsWith(entityType + '_') 
-      ? entityId 
-      : `${entityType} ${entityId}`;
+    const displayEntity = safeEntityId.startsWith(safeEntityType + '-') || safeEntityId.startsWith(safeEntityType + '_') 
+      ? safeEntityId 
+      : `${safeEntityType} ${safeEntityId}`.trim();
     
     return (
       <Alert severity="info" sx={{ mt: 2 }}>

@@ -1001,7 +1001,8 @@ export class FabricService {
         policyStatus: 'RESOLVED',
         policySource: 'simulated_policy',
         requestedOrganizations: [targetMsp, 'BanksMSP', 'NBEMSP'],
-        matchedOrganizations: [targetMsp, 'BanksMSP', 'NBEMSP'],
+        actualOrganizations: [targetMsp, 'BanksMSP', 'NBEMSP'],
+        verifiedFromLedger: true,
       },
     };
   }
@@ -1021,6 +1022,7 @@ export class FabricService {
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       let attemptTxId: string | undefined;
+      const requestedOrgs = this.resolveEndorsingOrgs(targetMspId, functionName);
       try {
         const entry = await this.getOrCreateEntry(targetMspId, targetIdentityLabel);
         if (!entry) {
@@ -1039,7 +1041,6 @@ export class FabricService {
         // We dynamically resolve required endorsing MSPs (or quorum) rather than forcing all 6
         // peers synchronously on every write, preventing massive latency and single-peer fragility.
         const transaction = contract.createTransaction(functionName);
-        const requestedOrgs = this.resolveEndorsingOrgs(targetMspId, functionName);
         if (requestedOrgs.length > 0) {
           transaction.setEndorsingOrganizations(...requestedOrgs);
         }
@@ -1302,6 +1303,88 @@ export class FabricService {
       } else if (functionName === 'GetForex' || functionName === 'QueryAllForex') {
         const rows = await db.all('SELECT * FROM forex_records ORDER BY created_at DESC LIMIT 50');
         return { success: true, data: functionName === 'GetForex' ? rows[0] || null : rows };
+      } else if (functionName === 'ReadExporter' || functionName === 'GetExporter') {
+        const row = await db.get('SELECT * FROM exporters WHERE exporter_id = $1', [args[0]]);
+        if (row) {
+          return {
+            success: true,
+            data: {
+              exporterId: row.exporter_id,
+              companyName: row.company_name,
+              ectaLicenseNumber: row.ecta_license_number,
+              licenseStatus: row.license_status,
+              licenseExpiryDate: row.license_expiry_date,
+              capitalRequirement: parseFloat(row.capital_requirement || 0),
+              laboratoryCertified: row.laboratory_certified === true || row.laboratory_certified === 't',
+              professionalTaster: row.professional_taster,
+              tasterCertificate: row.taster_certificate,
+              bankName: row.bank_name,
+              bankBranch: row.bank_branch,
+              bankBranchCode: row.bank_branch_code,
+              contactPerson: row.contact_person,
+              email: row.email,
+              phone: row.phone,
+              address: row.address,
+            },
+          };
+        }
+      } else if (functionName === 'QueryAllExporters' || functionName === 'GetAllExporters') {
+        const rows = await db.all('SELECT * FROM exporters ORDER BY created_at DESC LIMIT 50');
+        return {
+          success: true,
+          data: rows.map((row: any) => ({
+            exporterId: row.exporter_id,
+            companyName: row.company_name,
+            ectaLicenseNumber: row.ecta_license_number,
+            licenseStatus: row.license_status,
+            licenseExpiryDate: row.license_expiry_date,
+            capitalRequirement: parseFloat(row.capital_requirement || 0),
+            laboratoryCertified: row.laboratory_certified === true || row.laboratory_certified === 't',
+            bankName: row.bank_name,
+            bankBranch: row.bank_branch,
+            bankBranchCode: row.bank_branch_code,
+          })),
+        };
+      } else if (functionName === 'ReadDocumentHash' || functionName === 'GetDocumentHash') {
+        const row = await db.get('SELECT * FROM documents WHERE document_id = $1', [args[0]]);
+        if (row) {
+          return {
+            success: true,
+            data: {
+              documentId: row.document_id,
+              entityId: row.entity_id,
+              entityType: row.entity_type,
+              hash: row.file_hash,
+              Hash: row.file_hash,
+              fileName: row.file_name,
+              documentType: row.document_type,
+              status: row.status,
+            },
+          };
+        } else {
+          return {
+            success: false,
+            error: `Document hash ${args[0]} not found`,
+          };
+        }
+      } else if (functionName === 'GetDocumentSignatures' || functionName === 'QueryDocumentSignatures') {
+        const rows = await db.all('SELECT * FROM document_signatures WHERE document_id = $1 ORDER BY signed_at DESC', [args[0]]);
+        return {
+          success: true,
+          data: {
+            signatures: rows.map((r: any) => ({
+              signatureId: r.signature_id,
+              documentId: r.document_id,
+              signerId: r.signer_id,
+              signerOrg: r.signer_org,
+              signatureType: r.signature_type,
+              remarks: r.remarks,
+              transactionId: r.blockchain_tx_id,
+              signedAt: r.signed_at,
+              documentHash: r.document_hash_signed,
+            })),
+          },
+        };
       }
     } catch (dbErr: any) {
       logger.warn(`[SIMULATION] Mock query database lookup note: ${dbErr?.message}`);
@@ -2444,9 +2527,12 @@ export class FabricService {
     if (this.isSimulationMode()) {
       return {
         height: this.mockTxCounter,
+        transactionCount: this.mockTxCounter,
+        validTransactionCount: this.mockTxCounter,
+        invalidTransactionCount: 0,
+        unknownTransactionCount: 0,
         currentBlockHash: '0x' + crypto.createHash('sha256').update(`sim-block-${this.mockTxCounter}`).digest('hex'),
         previousBlockHash: '0x' + crypto.createHash('sha256').update(`sim-block-${this.mockTxCounter - 1}`).digest('hex'),
-        channelName: process.env.FABRIC_CHANNEL_NAME || 'coffeechannel',
       };
     }
     if (this.ledgerInfoCache && this.ledgerInfoCache.expiresAt > Date.now()) {
@@ -3448,6 +3534,7 @@ export class FabricService {
   /** Query an actual committed transaction envelope and its block validation code. */
   public async getTransactionDetails(txId: string): Promise<LedgerTransactionDetails | null> {
     if (this.isSimulationMode()) {
+      const creatorMsp = this.getRequestMspId() || 'ECTAMSP';
       return {
         txId,
         blockNumber: this.mockTxCounter,
@@ -3455,9 +3542,22 @@ export class FabricService {
         validationCode: 0,
         validationStatus: 'VALID',
         channelId: process.env.FABRIC_CHANNEL_NAME || 'coffeechannel',
-        creatorMspId: this.getRequestMspId() || 'ECTAMSP',
-        endorsingMspIds: ['ECTAMSP', 'BanksMSP', 'NBEMSP'],
+        creator: {
+          mspId: creatorMsp,
+          identity: `sim-user-${creatorMsp}`,
+          certificateSubject: `CN=sim-${creatorMsp}`,
+          signatureValid: true,
+          certificateTrustStatus: 'TRUSTED_SIMULATED',
+        },
+        endorsers: ['ECTAMSP', 'BanksMSP', 'NBEMSP'].map((mspId) => ({
+          mspId,
+          identity: `peer0.${mspId.toLowerCase()}.cecbs.et`,
+          signatureValid: true,
+          certificateTrustStatus: 'TRUSTED_SIMULATED',
+        })),
         chaincodeName: process.env.FABRIC_CHAINCODE_NAME || 'coffee',
+        chaincodeFunction: null,
+        args: [],
         timestamp: new Date().toISOString(),
       };
     }

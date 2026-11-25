@@ -1,6 +1,10 @@
 import React from 'react';
 import {
   Alert,
+  Box,
+  Button,
+  Chip,
+  MenuItem,
   Table,
   TableBody,
   TableCell,
@@ -8,16 +12,20 @@ import {
   TableHead,
   TableRow,
   TablePagination,
+  Typography,
 } from '@mui/material';
 import {
   Description,
 } from '@mui/icons-material';
 import {
   PortalDialog,
+  PortalField,
   GhostButton,
   PrimaryButton,
   StatusChip,
 } from '@/components/shared/portal';
+import BlockchainBadge from '@/components/blockchain/BlockchainBadge';
+import { ForexAllocation, LetterOfCredit } from '@/types';
 
 export interface KpiDataDialogProps {
   open: boolean;
@@ -28,6 +36,7 @@ export interface KpiDataDialogProps {
   page: number;
   setPage: (page: number) => void;
   rowsPerPage: number;
+  setRowsPerPage?: (rows: number) => void;
   showError: (title: string, message: string) => void;
   showSuccess: (title: string, message: string) => void;
   generateForexCSV: (data: any[]) => string;
@@ -48,6 +57,7 @@ export const KpiDataDialog: React.FC<KpiDataDialogProps> = ({
   page: kpiDialogPage,
   setPage: setKpiDialogPage,
   rowsPerPage: kpiDialogRowsPerPage,
+  setRowsPerPage: setKpiDialogRowsPerPage = () => {},
   showError,
   showSuccess,
   generateForexCSV,
@@ -61,7 +71,7 @@ export const KpiDataDialog: React.FC<KpiDataDialogProps> = ({
   const chipStatus = (status?: string | null) => (status || 'PENDING') as any;
 
   return (
-    <PortalDialog brand="BANKS" open={open} onClose={() => setKpiDataDialogOpen(false)} maxWidth="lg" title={kpiDataDialogTitle} actions={<>
+    <PortalDialog brand="BANKS" open={open} onClose={onClose} maxWidth="lg" title={kpiDataDialogTitle} actions={<>
           <GhostButton brand="BANKS" onClick={() => {
             onClose();
           }}>Close</GhostButton>
@@ -138,7 +148,7 @@ export const KpiDataDialog: React.FC<KpiDataDialogProps> = ({
                     select
                     size="small"
                     value={kpiDialogRowsPerPage}
-                    onChange={(e) => {
+                    onChange={(e: any) => {
                       setKpiDialogRowsPerPage(parseInt(e.target.value));
                       setKpiDialogPage(0);
                     }}
@@ -233,7 +243,7 @@ export const KpiDataDialog: React.FC<KpiDataDialogProps> = ({
                     select
                     size="small"
                     value={kpiDialogRowsPerPage}
-                    onChange={(e) => {
+                    onChange={(e: any) => {
                       setKpiDialogRowsPerPage(parseInt(e.target.value));
                       setKpiDialogPage(0);
                     }}
@@ -324,7 +334,7 @@ export const KpiDataDialog: React.FC<KpiDataDialogProps> = ({
                     select
                     size="small"
                     value={kpiDialogRowsPerPage}
-                    onChange={(e) => {
+                    onChange={(e: any) => {
                       setKpiDialogRowsPerPage(parseInt(e.target.value));
                       setKpiDialogPage(0);
                     }}

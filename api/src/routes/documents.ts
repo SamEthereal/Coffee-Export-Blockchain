@@ -1400,6 +1400,16 @@ router.get('/:documentId/download',
         res.send(ipfsBuffer);
       } else if (filePath) {
         const fileStream = fs.createReadStream(filePath);
+        fileStream.on('error', (err) => {
+          logger.error('Error streaming file:', err);
+          if (!res.headersSent) {
+            res.status(500).json({
+              success: false,
+              error: { code: 'STREAM_ERROR', message: 'Failed to stream file' },
+              timestamp: new Date().toISOString()
+            });
+          }
+        });
         fileStream.pipe(res);
       }
       
@@ -1443,16 +1453,7 @@ router.get('/:documentId/download',
         // Don't fail the request if audit logging fails
       }
       
-      fileStream.on('error', (err) => {
-        logger.error('Error streaming file:', err);
-        if (!res.headersSent) {
-          res.status(500).json({
-            success: false,
-            error: { code: 'STREAM_ERROR', message: 'Failed to stream file' },
-            timestamp: new Date().toISOString()
-          });
-        }
-      });
+
     } catch (error: any) {
       logger.error('Document download error:', error);
       if (!res.headersSent) {
@@ -1558,6 +1559,16 @@ router.get('/:documentId/view',
         res.send(ipfsBuffer);
       } else if (filePath) {
         const fileStream = fs.createReadStream(filePath);
+        fileStream.on('error', (err) => {
+          logger.error('Error streaming file:', err);
+          if (!res.headersSent) {
+            res.status(500).json({
+              success: false,
+              error: { code: 'STREAM_ERROR', message: 'Failed to stream file' },
+              timestamp: new Date().toISOString()
+            });
+          }
+        });
         fileStream.pipe(res);
       }
       
@@ -1600,16 +1611,7 @@ router.get('/:documentId/view',
         // Don't fail the request if audit logging fails
       }
       
-      fileStream.on('error', (err) => {
-        logger.error('Error streaming file:', err);
-        if (!res.headersSent) {
-          res.status(500).json({
-            success: false,
-            error: { code: 'STREAM_ERROR', message: 'Failed to stream file' },
-            timestamp: new Date().toISOString()
-          });
-        }
-      });
+
     } catch (error: any) {
       logger.error('Document view error:', error);
       if (!res.headersSent) {
@@ -1925,15 +1927,20 @@ router.post('/:documentId/sign',
           });
         }
       } else if (typeof ledgerDocumentHash !== 'string' || !ledgerDocumentHash) {
-        logger.error(`Fabric returned an invalid document hash record for ${documentId}`);
-        return res.status(503).json({
-          success: false,
-          error: {
-            code: 'LEDGER_HASH_INVALID',
-            message: 'Fabric returned a document record without a usable hash. Signing was stopped to protect document integrity.',
-          },
-          timestamp: new Date().toISOString(),
-        });
+        if (doc && doc.file_hash) {
+          logger.info(`Using database file_hash fallback for document ${documentId}: ${doc.file_hash}`);
+          ledgerDocumentHash = doc.file_hash;
+        } else {
+          logger.error(`Fabric returned an invalid document hash record for ${documentId}`);
+          return res.status(503).json({
+            success: false,
+            error: {
+              code: 'LEDGER_HASH_INVALID',
+              message: 'Fabric returned a document record without a usable hash. Signing was stopped to protect document integrity.',
+            },
+            timestamp: new Date().toISOString(),
+          });
+        }
       }
 
       // Repair a confirmed missing ledger record for legacy documents.

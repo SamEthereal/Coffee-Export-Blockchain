@@ -44,9 +44,7 @@ export const PaymentDetailsDialog: React.FC<PaymentDetailsDialogProps> = ({
             size="small"
             startIcon={<Assignment />}
             onClick={() => {
-              setAuditEntityType('PAYMENT');
-              setAuditEntityId(selectedPaymentForDetails?.paymentId || '');
-              setShowAuditTrail(true);
+              onViewAuditTrail('PAYMENT', selectedPaymentForDetails?.paymentId || '');
             }}
             sx={{ textTransform: 'none', mr: 'auto' }}
           >
@@ -57,15 +55,7 @@ export const PaymentDetailsDialog: React.FC<PaymentDetailsDialogProps> = ({
             <PrimaryButton brand="BANKS"
               variant="contained"
               onClick={() => {
-                setSettleForm({
-                  exchangeRate: selectedPaymentForDetails.exchangeRate ? String(selectedPaymentForDetails.exchangeRate) : '',
-                  retentionRate: '40',
-                  payingBank: selectedPaymentForDetails.payingBank || 'Commercial Bank of Ethiopia',
-                  payingBankBIC: selectedPaymentForDetails.payingBankBIC || 'CBETETAA',
-                  swiftReference: selectedPaymentForDetails.swiftReference || '',
-                  nbeApprovalRef: '',
-                });
-                setSettleDialogOpen(true);
+                onOpenSettle(selectedPaymentForDetails);
               }}
               sx={{ textTransform: 'none' }}
             >

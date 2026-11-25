@@ -122,11 +122,19 @@ router.post('/login', loginLimiter, async (req: Request, res: Response) => {
       });
     }
 
-    // Find user in database
+    // Find user in database (supports username, email, exporterId, or applicant temporary username)
     const user = await db.get(
       `SELECT id, username, email, password_hash, role, organization, status,
               exporter_id, ecta_license, phone, full_name, permissions
-       FROM users WHERE username = $1`,
+       FROM users 
+       WHERE username = $1 
+          OR email = $1 
+          OR exporter_id = $1
+          OR id IN (
+             SELECT u.id FROM users u 
+             JOIN exporter_applications ea ON (u.exporter_id = ea.exporter_id OR u.username = ea.exporter_id)
+             WHERE ea.temp_username = $1
+          )`,
       [username]
     );
 

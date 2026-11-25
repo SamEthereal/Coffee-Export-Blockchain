@@ -6,6 +6,7 @@ import {
   Chip,
   Alert,
   Divider,
+  Paper,
   Accordion,
   AccordionSummary,
   AccordionDetails,
@@ -13,6 +14,7 @@ import {
 import {
   CurrencyExchange,
   ExpandMore,
+  CheckCircle,
 } from '@mui/icons-material';
 import {
   PortalDialog,
@@ -23,6 +25,7 @@ import {
 } from '@/components/shared/portal';
 import { apiFetch } from '@/config/api.config';
 import BlockchainSignatureVerification from '@/components/documents/BlockchainSignatureVerification';
+import BusinessActivityTimeline from '@/components/documents/BusinessActivityTimeline';
 
 export interface ForexDetailsDialogProps {
   open: boolean;
@@ -54,11 +57,7 @@ export const ForexDetailsDialog: React.FC<ForexDetailsDialogProps> = ({
               <PrimaryButton 
                 brand="BANKS"
                 onClick={async () => {
-                  // Close details dialog and open allocation dialog
                   onClose();
-                  
-                  // Fetch NBE exchange rate and retention policy
-                  setAllocationPolicyReady(false);
                   try {
                     const token = localStorage.getItem('authToken');
                     const currency = String(selectedForex.currency || 'USD').toUpperCase();
@@ -86,33 +85,17 @@ export const ForexDetailsDialog: React.FC<ForexDetailsDialogProps> = ({
                       showError('NBE Ledger Data Required', 'An active exchange rate and COFFEE retention policy are required before forex can be allocated.');
                       return;
                     }
-                    
-                    // Auto-generate approval reference with timestamp
-                    const approvalRef = `FOREX-ALLOC-${Date.now()}`;
-                    
-                    setAllocationForm({
-                      forexId: selectedForex.forexId,
-                      lcId: selectedForex.lcId || '',
-                      amount: selectedForex.requestedAmount || 0,
-                      exchangeRate: activeRate,
-                      retentionRate: retentionRate,
-                      officer: user?.fullName || user?.username || 'Bank Officer',
-                      approvalRef: approvalRef,
-                      expiryDate: selectedForex.expiryDate || new Date(Date.now() + 90 * 24 * 60 * 60 * 1000).toISOString(),
-                    });
-                    setAllocationPolicyReady(true);
+                    onOpenAllocationDialog(activeRate, retentionRate);
                   } catch (error) {
                     showError('NBE Ledger Data Required', 'Unable to load the current exchange rate and retention policy.');
                   }
-                  
-                  setAllocationDialogOpen(true);
                 }}
                 startIcon={<CheckCircle />}
               >
                 Allocate Forex
               </PrimaryButton>
               <DangerButton brand="BANKS"
-                onClick={() => handleRejectForex(selectedForex)}
+                onClick={() => handleRejectForex(selectedForex.forexId)}
                 loadingLabel="Rejecting…"
                 ledgerWrite
                 color="error"
@@ -123,7 +106,7 @@ export const ForexDetailsDialog: React.FC<ForexDetailsDialogProps> = ({
           )}
           {selectedForex && selectedForex.status === 'CONFIRMED' && (
             <DangerButton brand="BANKS"
-              onClick={() => handleRejectForex(selectedForex)}
+              onClick={() => handleRejectForex(selectedForex.forexId)}
               loadingLabel="Rejecting…"
               ledgerWrite
               color="error"
@@ -132,7 +115,7 @@ export const ForexDetailsDialog: React.FC<ForexDetailsDialogProps> = ({
             </DangerButton>
           )}
           {selectedForex && selectedForex.status === 'ALLOCATED' && (
-            <PrimaryButton brand="BANKS" onClick={() => handleUtilizeForex(selectedForex)}
+            <PrimaryButton brand="BANKS" onClick={() => onOpenUtilizeDialog(selectedForex)}
             loadingLabel="Utilising…"
             ledgerWrite
             startIcon={<CheckCircle />}
@@ -304,7 +287,7 @@ export const ForexDetailsDialog: React.FC<ForexDetailsDialogProps> = ({
               <Box sx={{ mt: 3 }}>
                 <Divider sx={{ my: 2 }} />
                 <Typography variant="h6" gutterBottom>Activity Timeline</Typography>
-                {forexDetailsOpen && (
+                {open && (
                   <BusinessActivityTimeline entityType="FOREX" entityId={selectedForex.forexId || ''} />
                 )}
                 <Divider sx={{ my: 3 }} />
@@ -313,7 +296,7 @@ export const ForexDetailsDialog: React.FC<ForexDetailsDialogProps> = ({
                     <Typography>🔐 Blockchain Verification</Typography>
                   </AccordionSummary>
                   <AccordionDetails>
-                    {forexDetailsOpen && <BlockchainSignatureVerification entityType="FOREX_ALLOCATION" entityId={selectedForex.forexId || ''} />}
+                    {open && <BlockchainSignatureVerification entityType="FOREX_ALLOCATION" entityId={selectedForex.forexId || ''} />}
                   </AccordionDetails>
                 </Accordion>
               </Box>

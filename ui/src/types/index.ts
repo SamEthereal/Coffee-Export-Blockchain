@@ -18,6 +18,93 @@ export interface Exporter {
   updatedAt: string;
 }
 
+export interface ExportContract {
+  contractId: string;
+  buyerId?: string;
+  nbeReferenceNumber: string;
+  buyerName: string;
+  buyerCountry: string;
+  origin?: string;
+  buyerBank?: string;        // Issuing bank (buyer's bank)
+  exporterBank?: string;     // Advising bank (exporter's bank)
+  coffeeType: string;
+  quantity: number;
+  pricePerKg: number;
+  totalValue: number;
+  currency: string;
+  status: 'DRAFT' | 'REGISTERED' | 'APPROVED' | 'COMPLETED' | 'CANCELLED' | 'REJECTED';
+  rejectionReason?: string;
+  rejectionDate?: string | null;
+  rejectedBy?: string;
+  paymentMethod?: string;
+  eudrRequired?: boolean;
+  supersedesContractId?: string;
+  registrationDate?: string;
+  approvalDate?: string;
+  [key: string]: any;
+}
+
+export interface LetterOfCredit {
+  lcId: string;
+  contractId: string;
+  exporterId: string;
+  buyerId?: string;
+  buyerName?: string;
+  buyerCountry?: string;
+  bankName: string;
+  issuingBank: string;
+  advisingBank: string;
+  swiftReference?: string;
+  lcNumber?: string;
+  applicant?: string;
+  beneficiary?: string;
+  txId?: string;
+  blockchainVerified?: boolean;
+  amount: number;
+  currency: string;
+  transportMode?: 'SEA' | 'AIR';
+  portOfLoading?: string;
+  portOfDischarge?: string;
+  latestShipmentDate?: string;
+  status: string;
+  expiryDate: string;
+  requestDate: string;
+  issueDate?: string;
+  approvalDate?: string;
+  advisingDate?: string;
+  confirmationStatus?: 'CONFIRMED' | 'UNCONFIRMED';
+  paymentTerms?: string;
+  terms?: string;
+  documents?: any[];
+  relatedShipments?: any[];
+  approvedBy?: string;
+  approvedByMsp?: string;
+  issuedBy?: string;
+  issuedByMsp?: string;
+  lastUpdatedBy?: string;
+  lastUpdatedByMsp?: string;
+  [key: string]: any;
+}
+
+export interface ForexAllocation {
+  forexId: string;
+  contractId: string;
+  exporterId: string;
+  lcId: string;
+  buyerName?: string;
+  BuyerName?: string;
+  buyerCountry?: string;
+  requestedAmount: number;
+  allocatedAmount: number;
+  currency: string;
+  exchangeRate: number;
+  retentionRate: number;
+  status: string;
+  expiryDate: string | null;
+  isDraft?: boolean;
+  [key: string]: any;
+}
+
 export interface SalesContract {
   contractId: string;
   nbeReferenceNumber: string;

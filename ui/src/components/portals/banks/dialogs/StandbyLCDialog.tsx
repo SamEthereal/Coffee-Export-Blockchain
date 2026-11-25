@@ -92,7 +92,7 @@ export const StandbyLCDialog: React.FC<StandbyLCDialogProps> = ({
                   value={standbyForm.contractId}
                   onChange={(e) => {
                     const selected = contracts.find(c => c.contractId === e.target.value);
-                    setStandbyForm(prev => ({
+                    setStandbyForm((prev: any) => ({
                       ...prev,
                       contractId: e.target.value,
                       beneficiary: selected?.exporterId || prev.beneficiary,

@@ -17,6 +17,8 @@ import {
   Cancel,
   Assignment,
   CloudUpload,
+  AccessTime,
+  Visibility,
 } from '@mui/icons-material';
 import {
   PortalDialog,
@@ -24,7 +26,7 @@ import {
   PrimaryButton,
   DangerButton,
 } from '@/components/shared/portal';
-import { apiFetch } from '@/config/api.config';
+import { apiFetch, API_BASE_URL } from '@/config/api.config';
 
 export interface DocumentExaminationDialogProps {
   open: boolean;
