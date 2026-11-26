@@ -5,8 +5,16 @@
 
 .DESCRIPTION
   Boots PostgreSQL 15, Redis 7, and Kubo IPFS in ~5 seconds (<300MB RAM),
-  ensures environment files are populated, and displays service connection endpoints.
+  ensures environment files are populated, and automatically starts both
+  Backend API (port 3001) and Frontend UI (port 3000).
+
+.PARAMETER ServicesOnly
+  If specified, starts only the Docker backing services without launching the Node.js apps.
 #>
+
+param(
+    [switch]$ServicesOnly
+)
 
 $ErrorActionPreference = "Stop"
 
@@ -17,7 +25,7 @@ Write-Host "=================================================================" -
 Write-Host ""
 
 # 1. Check Docker
-Write-Host "[1/4] Checking Docker daemon status..." -ForegroundColor Yellow
+Write-Host "[1/5] Checking Docker daemon status..." -ForegroundColor Yellow
 try {
     $null = docker info 2>&1
     Write-Host "  --> Docker daemon is active and responding." -ForegroundColor Green
@@ -27,7 +35,7 @@ try {
 }
 
 # 2. Check & Prepare Environment Files
-Write-Host "[2/4] Ensuring environment configuration files..." -ForegroundColor Yellow
+Write-Host "[2/5] Ensuring environment configuration files..." -ForegroundColor Yellow
 
 if (-not (Test-Path "api\.env")) {
     if (Test-Path "api\.env.dev") {
@@ -54,11 +62,11 @@ if (-not (Test-Path "ui\.env.local")) {
 }
 
 # 3. Start Backing Containers
-Write-Host "[3/4] Launching lightweight backing stack (PostgreSQL + Redis + IPFS)..." -ForegroundColor Yellow
+Write-Host "[3/5] Launching lightweight backing stack (PostgreSQL + Redis + IPFS)..." -ForegroundColor Yellow
 docker compose -f docker-compose.dev.yml up -d
 
 # 4. Wait for PostgreSQL readiness
-Write-Host "[4/4] Verifying PostgreSQL readiness..." -ForegroundColor Yellow
+Write-Host "[4/5] Verifying PostgreSQL readiness..." -ForegroundColor Yellow
 $maxAttempts = 12
 $attempt = 0
 $dbReady = $false
@@ -73,9 +81,34 @@ while ($attempt -lt $maxAttempts -and -not $dbReady) {
 }
 
 if ($dbReady) {
-    Write-Host "  --> PostgreSQL database 'cecbs' is ready and accepting connections." -ForegroundColor Green
+    Write-Host "  --> PostgreSQL database 'cecbs' is ready on port 5433." -ForegroundColor Green
 } else {
     Write-Host "  --> PostgreSQL container started (initialization continuing in background)." -ForegroundColor Yellow
+}
+
+# 5. Launch Application Servers (API + UI)
+if (-not $ServicesOnly) {
+    Write-Host "[5/5] Launching Application Servers in separate windows..." -ForegroundColor Yellow
+
+    # Check if API is already running
+    $apiRunning = Get-NetTCPConnection -LocalPort 3001 -ErrorAction SilentlyContinue
+    if (-not $apiRunning) {
+        Write-Host "  --> Starting Backend API server on http://localhost:3001..." -ForegroundColor Cyan
+        Start-Process powershell -ArgumentList "-NoExit", "-Command", "`$Host.UI.RawUI.WindowTitle = 'CECBS Backend API (Port 3001)'; Set-Location '$PSScriptRoot\api'; npm run dev"
+    } else {
+        Write-Host "  --> Backend API is already running on port 3001." -ForegroundColor Green
+    }
+
+    # Check if UI is already running
+    $uiRunning = Get-NetTCPConnection -LocalPort 3000 -ErrorAction SilentlyContinue
+    if (-not $uiRunning) {
+        Write-Host "  --> Starting Frontend Next.js UI on http://localhost:3000..." -ForegroundColor Cyan
+        Start-Process powershell -ArgumentList "-NoExit", "-Command", "`$Host.UI.RawUI.WindowTitle = 'CECBS Frontend UI (Port 3000)'; Set-Location '$PSScriptRoot\ui'; npm run dev"
+    } else {
+        Write-Host "  --> Frontend UI is already running on port 3000." -ForegroundColor Green
+    }
+} else {
+    Write-Host "[5/5] Services-only mode: application servers not launched." -ForegroundColor Gray
 }
 
 Write-Host ""
@@ -87,14 +120,15 @@ Write-Host "  Redis Cache:  localhost:6379" -ForegroundColor White
 Write-Host "  IPFS API:     localhost:5001  (Gateway: http://localhost:8080/ipfs)" -ForegroundColor White
 Write-Host "  Blockchain:   SIMULATED (Built-in Simulated Ledger Engine Active)" -ForegroundColor Cyan
 Write-Host ""
-Write-Host "To start the application servers:" -ForegroundColor Yellow
-Write-Host "  Terminal 1 (Backend API):" -ForegroundColor White
-Write-Host "    cd api; npm install; npm run dev" -ForegroundColor Cyan
-Write-Host "  Terminal 2 (Frontend UI):" -ForegroundColor White
-Write-Host "    cd ui; npm install; npm run dev" -ForegroundColor Cyan
-Write-Host ""
 Write-Host "Access Portals at: http://localhost:3000" -ForegroundColor Green
 Write-Host "API Gateway at:    http://localhost:3001/api-docs" -ForegroundColor Green
+Write-Host ""
+Write-Host "Test Credentials:" -ForegroundColor Yellow
+Write-Host "  Exporter:     exporter1      / password123" -ForegroundColor White
+Write-Host "  Bank Admin:   bank_admin     / password123" -ForegroundColor White
+Write-Host "  ECTA Admin:   ecta_admin     / password123" -ForegroundColor White
+Write-Host "  System Admin: admin          / admin123" -ForegroundColor White
+Write-Host ""
 Write-Host "To stop services:  .\stop-dev.ps1" -ForegroundColor Gray
 Write-Host "=================================================================" -ForegroundColor Cyan
 Write-Host ""
